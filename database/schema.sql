@@ -1,0 +1,115 @@
+-- Base de Datos para Finanzas Personales de Juan
+-- MariaDB / MySQL
+-- IMPORTANTE: Esta es una base de datos totalmente separada e independiente
+-- No compartir con ninguna otra aplicación
+
+CREATE DATABASE IF NOT EXISTS finanzas_personales_juan CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE finanzas_personales_juan;
+
+-- Tabla de Usuario (un solo usuario)
+CREATE TABLE IF NOT EXISTS usuario (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  nombre VARCHAR(100) NOT NULL,
+  email VARCHAR(100) NOT NULL UNIQUE,
+  password_hash VARCHAR(255) NOT NULL,
+  creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Tabla de Cuentas y Tarjetas
+CREATE TABLE IF NOT EXISTS cuentas (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  nombre VARCHAR(150) NOT NULL,
+  tipo ENUM('cuenta_corriente', 'cuenta_vista', 'cuenta_ahorro', 'tarjeta_credito', 'tarjeta_debito') NOT NULL,
+  banco VARCHAR(100),
+  numero_cuenta VARCHAR(50),
+  cupo_total DECIMAL(15,2) DEFAULT NULL,
+  dia_facturacion INT DEFAULT NULL,
+  dia_vencimiento INT DEFAULT NULL,
+  activa BOOLEAN DEFAULT TRUE,
+  notas TEXT,
+  creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Tabla de Categorías
+CREATE TABLE IF NOT EXISTS categorias (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  nombre VARCHAR(100) NOT NULL UNIQUE,
+  color VARCHAR(7) DEFAULT '#6B7280',
+  icono VARCHAR(50) DEFAULT 'fa-folder',
+  creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Insertar categorías por defecto
+INSERT INTO categorias (nombre, color, icono) VALUES
+('Supermercado', '#10B981', 'fa-shopping-cart'),
+('Transporte', '#3B82F6', 'fa-bus'),
+('Comida', '#F59E0B', 'fa-utensils'),
+('Cuentas y Servicios', '#EF4444', 'fa-file-invoice-dollar'),
+('Suscripciones', '#8B5CF6', 'fa-sync'),
+('Salud', '#EC4899', 'fa-heartbeat'),
+('Entretenimiento', '#14B8A6', 'fa-film'),
+('Educación', '#6366F1', 'fa-graduation-cap'),
+('Vivienda', '#F97316', 'fa-home'),
+('Ingresos', '#22C55E', 'fa-arrow-down'),
+('Otros', '#6B7280', 'fa-ellipsis-h')
+ON DUPLICATE KEY UPDATE nombre=nombre;
+
+-- Tabla de Reglas de Autocategorización
+CREATE TABLE IF NOT EXISTS reglas_categoria (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  texto_buscar VARCHAR(255) NOT NULL,
+  categoria_id INT NOT NULL,
+  activa BOOLEAN DEFAULT TRUE,
+  creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (categoria_id) REFERENCES categorias(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Tabla de Movimientos
+CREATE TABLE IF NOT EXISTS movimientos (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  cuenta_id INT NOT NULL,
+  fecha DATE NOT NULL,
+  descripcion VARCHAR(255) NOT NULL,
+  monto DECIMAL(15,2) NOT NULL,
+  tipo ENUM('cargo', 'abono') NOT NULL,
+  categoria_id INT,
+  persona_prestamo VARCHAR(100) DEFAULT NULL,
+  es_prestamo BOOLEAN DEFAULT FALSE,
+  notas TEXT,
+  archivo_respaldo VARCHAR(255) DEFAULT NULL,
+  importado_de VARCHAR(255) DEFAULT NULL,
+  creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (cuenta_id) REFERENCES cuentas(id) ON DELETE CASCADE,
+  FOREIGN KEY (categoria_id) REFERENCES categorias(id) ON DELETE SET NULL,
+  INDEX idx_fecha (fecha),
+  INDEX idx_cuenta (cuenta_id),
+  INDEX idx_categoria (categoria_id),
+  INDEX idx_prestamo (es_prestamo, persona_prestamo)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Tabla de Pagos de Préstamos (para liquidar deudas entre personas)
+CREATE TABLE IF NOT EXISTS pagos_prestamos (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  persona VARCHAR(100) NOT NULL,
+  monto DECIMAL(15,2) NOT NULL,
+  fecha DATE NOT NULL,
+  notas TEXT,
+  creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_persona (persona)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Tabla de Archivos Importados (para evitar duplicados)
+CREATE TABLE IF NOT EXISTS archivos_importados (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  nombre_archivo VARCHAR(255) NOT NULL,
+  hash_archivo VARCHAR(64) NOT NULL,
+  cuenta_id INT,
+  cantidad_movimientos INT DEFAULT 0,
+  fecha_importacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  ruta_archivo VARCHAR(500),
+  FOREIGN KEY (cuenta_id) REFERENCES cuentas(id) ON DELETE SET NULL,
+  INDEX idx_hash (hash_archivo)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
