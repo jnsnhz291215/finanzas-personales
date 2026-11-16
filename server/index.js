@@ -12,6 +12,7 @@ import importarRoutes from './routes/importar.js';
 import dashboardRoutes from './routes/dashboard.js';
 import prestamosRoutes from './routes/prestamos.js';
 import { inicializarDB } from './db.js';
+import { iniciarBot, detenerBot } from './telegram/bot.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -73,10 +74,26 @@ async function iniciar() {
         console.log(`✓ Modo desarrollo - Frontend en http://localhost:5173`);
       }
     });
+    
+    // Iniciar bot de Telegram (si está configurado)
+    await iniciarBot();
   } catch (error) {
     console.error('Error al iniciar servidor:', error);
     process.exit(1);
   }
 }
+
+// Manejar cierre graceful
+process.on('SIGINT', async () => {
+  console.log('\n⏹ Deteniendo servidor...');
+  await detenerBot();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('\n⏹ Deteniendo servidor...');
+  await detenerBot();
+  process.exit(0);
+});
 
 iniciar();

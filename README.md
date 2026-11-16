@@ -363,6 +363,124 @@ pm2 restart finanzas-personales
 4. Seleccionar categoría (ej: "Transporte")
 5. Al importar, movimientos con "uber" se categorizarán automáticamente
 
+## 🤖 Bot de Telegram
+
+La aplicación incluye un bot de Telegram para registrar gastos/ingresos y consultar información desde tu móvil.
+
+### Configuración del Bot
+
+1. **Crear el bot en Telegram**:
+   - Habla con [@BotFather](https://t.me/botfather) en Telegram
+   - Envía `/newbot` y sigue las instrucciones
+   - Guarda el token que te entrega (parecido a `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`)
+
+2. **Obtener tu Chat ID**:
+   - Busca tu bot en Telegram y envíale `/miid`
+   - El bot te responderá con tu chat ID (un número como `123456789`)
+   - Copia este número
+
+3. **Configurar en el servidor**:
+   
+   Edita tu archivo `.env`:
+   ```env
+   # Token del bot (obtenido de @BotFather)
+   TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+   
+   # Tu chat ID (obtenido con /miid)
+   TELEGRAM_ALLOWED_CHAT_IDS=123456789
+   ```
+   
+   Si quieres autorizar varios chat IDs (por ejemplo, tu móvil y tu PC), sepáralos con comas:
+   ```env
+   TELEGRAM_ALLOWED_CHAT_IDS=123456789,987654321
+   ```
+
+4. **Reiniciar el servidor**:
+   ```bash
+   pm2 restart finanzas-personales
+   pm2 logs finanzas-personales
+   ```
+   
+   Deberías ver: `✓ Bot de Telegram iniciado (long polling)`
+
+### Uso del Bot
+
+#### Registrar Gastos e Ingresos
+
+Escribe en lenguaje natural. El bot entiende:
+
+**Montos**:
+- `12500`, `12.500`, `$12.500` (formato chileno)
+- `5 lucas`, `5k` (miles de pesos)
+
+**Fechas**:
+- `hoy`, `ayer`, `anteayer`
+- `lunes`, `martes`, etc. (asume la semana pasada)
+- `15/11`, `15-11` (día/mes del año actual)
+
+**Medios de pago**:
+- `con débito`, `con crédito`, `con la CMR`
+- `en efectivo`, `por transferencia`
+
+**Ejemplos**:
+```
+ayer pagué 12.500 en el super con débito
+gasté 5 lucas en uber con la CMR
+hoy pagué $2.500 en el metro
+me pagaron 300.000 de sueldo
+el 15/11 compré en jumbo con crédito $45.000
+```
+
+El bot te mostrará un resumen y te pedirá confirmar antes de guardar.
+
+#### Comandos Disponibles
+
+- `/start` - Iniciar el bot y ver instrucciones
+- `/ayuda` - Ver todos los comandos disponibles
+- `/resumen` - Resumen del mes actual (ingresos, gastos, saldo)
+- `/ultimos` - Ver los últimos 10 movimientos
+- `/borrar_ultimo` - Eliminar el último movimiento (con confirmación)
+- `/miid` - Obtener tu chat ID
+
+#### Importar Cartolas
+
+Envía directamente un archivo de cartola (CSV, Excel o PDF) al bot. El archivo se guardará en el servidor y podrás importarlo desde la aplicación web.
+
+#### Enviar Respaldos
+
+Envía fotos de boletas o comprobantes. Se guardarán en la carpeta de uploads del servidor.
+
+### Seguridad
+
+- El bot **solo responde a los chat IDs autorizados** configurados en `.env`
+- Cualquier otro usuario que intente usar el bot recibirá un mensaje de "No autorizado"
+- El comando `/miid` es el único disponible para usuarios no autorizados (para que puedas obtener tu chat ID)
+- El bot usa **long polling** (no webhook), por lo que no necesitas exponer puertos ni configurar HTTPS
+
+### Solución de Problemas
+
+**El bot no responde**:
+```bash
+# Ver logs
+pm2 logs finanzas-personales
+
+# Verificar que el token esté configurado
+grep TELEGRAM_BOT_TOKEN .env
+
+# Reiniciar
+pm2 restart finanzas-personales
+```
+
+**"No estás autorizado"**:
+- Envía `/miid` al bot para obtener tu chat ID
+- Verifica que ese ID esté en `TELEGRAM_ALLOWED_CHAT_IDS` en `.env`
+- Reinicia el servidor después de modificar `.env`
+
+**El bot no detecta correctamente los montos o fechas**:
+- Revisa los ejemplos de formato en `/ayuda`
+- Asegúrate de incluir el monto en el mensaje
+- Las fechas son opcionales (por defecto usa "hoy")
+
 ## 🔄 Actualizaciones
 
 ```bash
