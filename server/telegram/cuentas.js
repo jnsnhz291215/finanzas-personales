@@ -53,7 +53,13 @@ export const BANCOS = [
   { nombre: 'Itaú', terminos: ['itau'] },
   { nombre: 'BICE', terminos: ['bice'] },
   { nombre: 'Security', terminos: ['security'] },
-  { nombre: 'Ripley', terminos: ['ripley'] }
+  { nombre: 'Ripley', terminos: ['ripley'] },
+  // Instituciones no bancarias (billeteras y prepago), usadas sobre todo en datos de transferencia
+  { nombre: 'Mercado Pago', terminos: ['mercado pago', 'mercadopago'] },
+  { nombre: 'Tenpo', terminos: ['tenpo'] },
+  { nombre: 'MACH', terminos: ['mach'] },
+  { nombre: 'Coopeuch', terminos: ['coopeuch'] },
+  { nombre: 'Prepago Los Héroes', terminos: ['prepago los heroes', 'los heroes'] }
 ];
 
 export function normalizar(texto) {
@@ -107,7 +113,7 @@ export function nombrePorDefecto(tipo, banco) {
   return banco ? `${base} ${banco}` : base;
 }
 
-function capitalizarNombre(texto) {
+export function capitalizarNombre(texto) {
   const limpio = texto.replace(/\s+/g, ' ').trim();
   // Solo se reescribe si viene todo en minúsculas (o todo en mayúsculas)
   if (limpio !== limpio.toLowerCase() && limpio !== limpio.toUpperCase()) return limpio;

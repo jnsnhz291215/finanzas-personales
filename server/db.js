@@ -25,6 +25,32 @@ if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
   let pool;
 
   /**
+   * Migración idempotente (MariaDB): tabla datos_transferencia, con mis propios datos para que
+   * me depositen. Va aparte de cuentas porque cuenta_id es opcional y porque la API de cuentas
+   * devuelve todas sus columnas.
+   */
+  async function migrarDatosTransferencia(connection) {
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS datos_transferencia (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        cuenta_id INT NULL,
+        alias VARCHAR(100) NOT NULL,
+        nombre_titular VARCHAR(150) NOT NULL,
+        rut VARCHAR(12) NOT NULL,
+        banco VARCHAR(100) NOT NULL,
+        tipo_cuenta ENUM('corriente', 'vista', 'rut', 'ahorro') NOT NULL,
+        numero_cuenta VARCHAR(30) NOT NULL,
+        email VARCHAR(150) NULL,
+        activo BOOLEAN NOT NULL DEFAULT TRUE,
+        creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (cuenta_id) REFERENCES cuentas(id) ON DELETE SET NULL,
+        INDEX idx_banco_numero (banco, numero_cuenta)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+  }
+
+  /**
    * Migración idempotente (MariaDB): agrega ultimos4 (solo los 4 últimos dígitos de una
    * tarjeta o cuenta; nunca el número completo) y titular a cuentas.
    */
@@ -96,6 +122,7 @@ if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
         
         await migrarTipoMovimiento(connection);
         await migrarDatosCuenta(connection);
+        await migrarDatosTransferencia(connection);
         
         const [usuarios] = await connection.query('SELECT * FROM usuario LIMIT 1');
         

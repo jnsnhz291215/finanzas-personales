@@ -4,11 +4,26 @@ const TelegramBot = require('node-telegram-bot-api');
 
 import { query } from '../db.js';
 import { parsearMensaje, parsearMontoExacto, MEDIOS_PAGO_NOMBRES } from './parser.js';
-import { interpretarMovimiento, interpretarCuenta, geminiDisponible } from './gemini.js';
+import { interpretarMovimiento, interpretarCuenta, interpretarDatosTransferencia, geminiDisponible } from './gemini.js';
+import {
+  parsearDatos,
+  camposFaltantes,
+  detectarConsultaDatos,
+  terminoDesdeTexto,
+  buscarRegistros,
+  textoPlanoDatos,
+  formatearRut,
+  normalizarRut,
+  TIPOS_CUENTA_TRANSFERENCIA,
+  ETIQUETAS_TIPO_TRANSFERENCIA
+} from './datosTransferencia.js';
 import {
   parsearCuenta,
   nombrePorDefecto,
   enmascararDigitos,
+  buscarBanco,
+  normalizar,
+  capitalizarNombre,
   TIPOS_CUENTA,
   TIPO_DB,
   ETIQUETAS_TIPO_CUENTA,
@@ -133,6 +148,7 @@ export async function iniciarBot() {
 
     configurarComandos();
     configurarComandosCuentas();
+    configurarComandosDatos();
     configurarManejadores();
 
     console.log('✓ Bot de Telegram iniciado (long polling)');
@@ -227,6 +243,12 @@ function configurarComandos() {
       '/borrarcuenta - Desactivar una cuenta\n' +
       'Ejemplo: /savecard tarjeta debito FAN banco de chile terminada en 1234 a nombre mio (juan sanhueza)\n' +
       'Nunca envíes el número completo: solo los últimos 4 dígitos.\n\n' +
+      '<b>Mis datos de transferencia:</b>\n' +
+      '/savetrans - Guardar mis datos para que me depositen\n' +
+      '/misdatos - Ver los alias guardados\n' +
+      '/borrardatos - Eliminar un registro\n' +
+      'Ejemplo: /savetrans mercado pago cuenta vista 1234567890 juan sanhueza rut 12.345.678-5 correo juan@mail.com\n' +
+      'Para pedirlos escribe: pásame los datos de transferencia de la mercado pago\n\n' +
       '<b>Importar cartolas:</b>\n' +
       'Envía un archivo CSV, Excel o PDF de tu cartola bancaria.\n\n' +
       '<b>Otros:</b>\n' +
@@ -405,6 +427,17 @@ function configurarManejadores() {
       return;
     }
 
+    // Respuesta a una pregunta de /savetrans (RUT, número, titular...)
+    if (msg.text && await manejarRespuestaDato(msg)) {
+      return;
+    }
+
+    // Pedido de mis datos de transferencia ("pásame los datos de la mercado pago");
+    // nunca se trata como gasto
+    if (msg.text && await manejarConsultaDatos(msg)) {
+      return;
+    }
+
     // Un número solo corrige el monto del movimiento pendiente
     if (msg.text && await actualizarMontoPendiente(msg)) {
       return;
@@ -428,6 +461,11 @@ function configurarManejadores() {
 
     // Botones de cuentas (/savecard, /borrarcuenta)
     if (await manejarCallbackCuentas(cb, chatId, data)) {
+      return;
+    }
+
+    // Botones de datos de transferencia (/savetrans, /borrardatos, consultas)
+    if (await manejarCallbackDatos(cb, chatId, data)) {
       return;
     }
 
@@ -1400,6 +1438,640 @@ async function manejarCallbackCuentas(cb, chatId, data) {
   }
 
   if (data === 'bcn_x') {
+    await editar('Cancelado', { chat_id: chatId, message_id: messageId });
+    await responderCallback(cb.id, { text: 'Cancelado' });
+    return true;
+  }
+
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Mis datos de transferencia: /savetrans, /misdatos, /borrardatos, /datos y la consulta
+// en lenguaje natural. Son datos sensibles: solo se responden al chat autorizado y no se
+// escriben en consola (los errores de BD se registran solo con su código).
+// ---------------------------------------------------------------------------
+
+// Registros pendientes de confirmar: clave -> { datos, reusoOfrecido, refId }
+const pendingDatos = new Map();
+// Dato que se está esperando de un chat: chatId -> { key, campo }
+const esperandoDato = new Map();
+
+const CODIGOS_TIPO_TRANSFER = { corriente: 'co', vista: 'vi', rut: 'ru', ahorro: 'ah' };
+const TIPO_TRANSFER_POR_CODIGO = Object.fromEntries(
+  Object.entries(CODIGOS_TIPO_TRANSFER).map(([tipo, codigo]) => [codigo, tipo])
+);
+
+const ETIQUETAS_CAMPO_DATOS = {
+  banco: 'el banco o institución',
+  numeroCuenta: 'el número de cuenta',
+  titular: 'el nombre del titular',
+  rut: 'el RUT',
+  email: 'el correo'
+};
+
+/** sendMessage en texto plano (sin parse_mode), para respuestas que se copian tal cual; nunca lanza */
+async function enviarPlano(chatId, texto, opts = {}) {
+  try {
+    return await bot.sendMessage(chatId, texto, opts);
+  } catch (err) {
+    logErrorTelegram('sendMessage', err);
+    return null;
+  }
+}
+
+async function listarDatosTransferencia() {
+  const [filas] = await query(
+    `SELECT id, cuenta_id, alias, nombre_titular, rut, banco, tipo_cuenta, numero_cuenta, email
+     FROM datos_transferencia WHERE activo = 1 ORDER BY creado_en DESC, id DESC`
+  );
+  return filas;
+}
+
+function lineaDatos(registro, prefijo = '') {
+  return (
+    `${prefijo}<b>${esc(registro.alias)}</b> - ${esc(registro.banco)}` +
+    ` - ${esc(ETIQUETAS_TIPO_TRANSFERENCIA[registro.tipo_cuenta] ?? registro.tipo_cuenta)}`
+  );
+}
+
+function textoConfirmacionDatos(d) {
+  return [
+    '<b>Confirmar datos de transferencia:</b>',
+    '',
+    `Alias: ${esc(d.alias ?? d.banco)}`,
+    `Titular: ${esc(d.titular)}`,
+    `RUT: ${esc(formatearRut(d.rut))}`,
+    `Banco: ${esc(d.banco)}`,
+    `Tipo de cuenta: ${esc(ETIQUETAS_TIPO_TRANSFERENCIA[d.tipoCuenta])}`,
+    `Número: ${esc(d.numeroCuenta)}`,
+    `Correo: ${d.email ? esc(d.email) : 'sin indicar'}`
+  ].join('\n');
+}
+
+function tecladoConfirmacionDatos(key) {
+  return {
+    reply_markup: {
+      inline_keyboard: [[
+        { text: 'Guardar', callback_data: `dts_${key}` },
+        { text: 'Editar alias', callback_data: `dte_${key}` },
+        { text: 'Cancelar', callback_data: `dtx_${key}` }
+      ]]
+    }
+  };
+}
+
+function tecladoTiposTransferencia(key) {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        TIPOS_CUENTA_TRANSFERENCIA.slice(0, 2).map(t => ({
+          text: ETIQUETAS_TIPO_TRANSFERENCIA[t],
+          callback_data: `dtt_${key}_${CODIGOS_TIPO_TRANSFER[t]}`
+        })),
+        TIPOS_CUENTA_TRANSFERENCIA.slice(2).map(t => ({
+          text: ETIQUETAS_TIPO_TRANSFERENCIA[t],
+          callback_data: `dtt_${key}_${CODIGOS_TIPO_TRANSFER[t]}`
+        })),
+        [{ text: 'Cancelar', callback_data: `dtx_${key}` }]
+      ]
+    }
+  };
+}
+
+function botonCancelarDatos(key) {
+  return { reply_markup: { inline_keyboard: [[{ text: 'Cancelar', callback_data: `dtx_${key}` }]] } };
+}
+
+/** Pide al usuario el siguiente dato obligatorio que falta */
+async function pedirCampoDatos(chatId, key, campo) {
+  const pendiente = pendingDatos.get(key);
+  if (campo === 'tipoCuenta') {
+    await enviar(chatId, 'Falta el tipo de cuenta. Elige uno:', tecladoTiposTransferencia(key));
+    return;
+  }
+
+  esperandoDato.set(chatId, { key, campo });
+  if (campo === 'rut' && pendiente?.datos.rutInvalido) {
+    await enviar(chatId, 'El RUT no es válido (revisa el dígito verificador). Envíalo de nuevo, por ejemplo 12.345.678-5.', botonCancelarDatos(key));
+    return;
+  }
+  const ejemplos = {
+    banco: 'Escríbelo, por ejemplo: Mercado Pago.',
+    numeroCuenta: 'Escríbelo solo con dígitos.',
+    titular: 'Escríbelo, por ejemplo: Juan Sanhueza.',
+    rut: 'Escríbelo, por ejemplo: 12.345.678-5.'
+  };
+  await enviar(chatId, `Falta ${ETIQUETAS_CAMPO_DATOS[campo]}. ${ejemplos[campo]}`, botonCancelarDatos(key));
+}
+
+/**
+ * Avanza el alta: ofrece reutilizar titular, RUT y correo de otro registro (una vez), pide lo
+ * obligatorio que falta y, cuando está completo, muestra la confirmación.
+ */
+async function avanzarDatos(chatId, key) {
+  const pendiente = pendingDatos.get(key);
+  if (!pendiente) return;
+  const d = pendiente.datos;
+
+  if (!pendiente.reusoOfrecido) {
+    pendiente.reusoOfrecido = true;
+    const reutilizables = ['titular', 'rut', 'email'].filter(c => !d[c]);
+    if (reutilizables.length > 0) {
+      const referencia = (await listarDatosTransferencia())[0];
+      if (referencia) {
+        pendiente.refId = referencia.id;
+        await enviar(chatId,
+          `Faltan ${reutilizables.map(c => ETIQUETAS_CAMPO_DATOS[c]).join(', ')} en este registro. ` +
+          `¿Usar los de <b>${esc(referencia.alias)}</b>?`,
+          {
+            reply_markup: {
+              inline_keyboard: [[
+                { text: 'Usar esos datos', callback_data: `dtu_${key}` },
+                { text: 'No, los escribo', callback_data: `dtn_${key}` }
+              ]]
+            }
+          }
+        );
+        return;
+      }
+    }
+  }
+
+  const faltan = camposFaltantes(d);
+  if (faltan.length > 0) {
+    await pedirCampoDatos(chatId, key, faltan[0]);
+    return;
+  }
+
+  esperandoDato.delete(chatId);
+  if (!d.alias) d.alias = d.banco;
+  await enviar(chatId, textoConfirmacionDatos(d), tecladoConfirmacionDatos(key));
+}
+
+/** Completa lo que las reglas no encontraron con lo que devolvió Gemini (las reglas mandan) */
+function combinarDatos(reglas, ia) {
+  return {
+    ...reglas,
+    // Si el usuario escribió un RUT inválido no se reemplaza por otro
+    rut: reglas.rut || (reglas.rutInvalido ? null : ia.rut),
+    banco: reglas.banco || ia.banco,
+    tipoCuenta: reglas.tipoCuenta || ia.tipoCuenta,
+    numeroCuenta: reglas.numeroCuenta || ia.numeroCuenta,
+    titular: reglas.titular || ia.titular,
+    email: reglas.email || ia.email,
+    alias: reglas.alias && reglas.alias !== reglas.banco ? reglas.alias : (ia.alias || reglas.alias)
+  };
+}
+
+/** Si el chat está respondiendo a una pregunta de /savetrans, usa este mensaje como respuesta */
+async function manejarRespuestaDato(msg) {
+  const chatId = msg.chat.id;
+  const espera = esperandoDato.get(chatId);
+  if (!espera) return false;
+
+  const pendiente = pendingDatos.get(espera.key);
+  if (!pendiente) {
+    esperandoDato.delete(chatId);
+    return false;
+  }
+
+  const d = pendiente.datos;
+  const texto = msg.text.trim();
+
+  switch (espera.campo) {
+    case 'alias':
+      d.alias = texto.slice(0, 60);
+      break;
+    case 'banco': {
+      const banco = buscarBanco(normalizar(texto));
+      d.banco = banco ? banco.nombre : capitalizarNombre(texto.slice(0, 60));
+      break;
+    }
+    case 'numeroCuenta': {
+      const numero = texto.replace(/[\s.-]/g, '');
+      if (!/^\d{6,20}$/.test(numero)) {
+        await enviar(chatId, 'El número de cuenta debe tener entre 6 y 20 dígitos. Envíalo de nuevo.');
+        return true;
+      }
+      d.numeroCuenta = numero;
+      break;
+    }
+    case 'titular':
+      if (texto.length < 3 || /\d/.test(texto)) {
+        await enviar(chatId, 'Escribe el nombre completo del titular, sin números.');
+        return true;
+      }
+      d.titular = capitalizarNombre(texto.slice(0, 100));
+      break;
+    case 'rut': {
+      const rut = normalizarRut(texto);
+      if (!rut) {
+        d.rutInvalido = true;
+        await enviar(chatId, 'El RUT no es válido (revisa el dígito verificador). Envíalo de nuevo, por ejemplo 12.345.678-5.');
+        return true;
+      }
+      d.rut = rut;
+      d.rutInvalido = false;
+      break;
+    }
+    default:
+      esperandoDato.delete(chatId);
+      return false;
+  }
+
+  esperandoDato.delete(chatId);
+  await avanzarDatos(chatId, espera.key);
+  return true;
+}
+
+async function buscarDatosDuplicados(d) {
+  const [filas] = await query(
+    'SELECT id, alias FROM datos_transferencia WHERE activo = 1 AND LOWER(banco) = ? AND numero_cuenta = ? LIMIT 1',
+    [String(d.banco).toLowerCase(), d.numeroCuenta]
+  );
+  return filas[0] ?? null;
+}
+
+async function guardarDatos(d) {
+  // Si el alias o el banco coincide con exactamente una cuenta activa, se liga a ella
+  const [cuentas] = await query('SELECT id, nombre FROM cuentas WHERE activa = 1');
+  const claves = [normalizar(d.alias), normalizar(d.banco)];
+  const coincidencias = cuentas.filter(c => claves.includes(normalizar(c.nombre)));
+  const cuentaId = coincidencias.length === 1 ? coincidencias[0].id : null;
+
+  await query(
+    `INSERT INTO datos_transferencia (cuenta_id, alias, nombre_titular, rut, banco, tipo_cuenta, numero_cuenta, email)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [cuentaId, d.alias, d.titular, d.rut, d.banco, d.tipoCuenta, d.numeroCuenta, d.email ?? null]
+  );
+}
+
+/**
+ * Responde una consulta de datos propios. Una coincidencia: texto plano, un campo por línea,
+ * listo para copiar. Varias: botones. Ninguna: lista lo disponible.
+ */
+async function responderConsultaDatos(chatId, termino) {
+  try {
+    const registros = await listarDatosTransferencia();
+    if (registros.length === 0) {
+      await enviarPlano(chatId, 'No tienes datos de transferencia guardados. Usa /savetrans para agregarlos.');
+      return;
+    }
+
+    const disponibles = registros.map(r => `- ${r.alias}`).join('\n');
+    if (!termino) {
+      await enviarPlano(chatId, `Datos disponibles:\n${disponibles}\n\nPide por ejemplo: datos de ${registros[0].alias}`);
+      return;
+    }
+
+    const hallados = buscarRegistros(registros, termino);
+    if (hallados.length === 0) {
+      await enviarPlano(chatId, `No encontré datos para "${termino}". Disponibles:\n${disponibles}`);
+      return;
+    }
+
+    if (hallados.length === 1) {
+      await enviarPlano(chatId, textoPlanoDatos(hallados[0]));
+      return;
+    }
+
+    await enviar(chatId, 'Encontré varias coincidencias. Elige una:', {
+      reply_markup: {
+        inline_keyboard: hallados.map(r => [{
+          text: `${r.alias} - ${r.banco}`.slice(0, 60),
+          callback_data: `dtq_${r.id}`
+        }])
+      }
+    });
+  } catch (error) {
+    console.error('Error al consultar datos de transferencia:', error.code ?? error.name);
+    await enviar(chatId, 'Error al consultar los datos.');
+  }
+}
+
+/** Detecta un pedido de datos en un mensaje libre. Devuelve true si lo atendió. */
+async function manejarConsultaDatos(msg) {
+  const consulta = detectarConsultaDatos(msg.text);
+  if (!consulta) return false;
+  await responderConsultaDatos(msg.chat.id, consulta.termino);
+  return true;
+}
+
+function pedirConfirmacionBorrarDatos(chatId, registro) {
+  return enviar(chatId,
+    `¿Eliminar estos datos de transferencia?\n\n${lineaDatos(registro)}`,
+    {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: 'Sí, eliminar', callback_data: `bdy_${registro.id}` },
+          { text: 'Cancelar', callback_data: 'bdn_x' }
+        ]]
+      }
+    }
+  );
+}
+
+function configurarComandosDatos() {
+  const rechazarNoAutorizado = (chatId) => enviar(chatId, 'No estás autorizado para usar este bot.');
+
+  // /savetrans <texto libre>
+  bot.onText(/^\/savetrans(?:@\w+)?(?:\s+([\s\S]+))?$/i, async (msg, match) => {
+    const chatId = msg.chat.id;
+    if (!esChatAutorizado(chatId)) {
+      await rechazarNoAutorizado(chatId);
+      return;
+    }
+
+    const texto = (match[1] || '').trim();
+    if (!texto) {
+      await enviar(chatId,
+        '<b>Guardar mis datos de transferencia</b>\n\n' +
+        'Escríbelos en texto libre, por ejemplo:\n' +
+        '/savetrans mercado pago cuenta vista 1234567890 juan sanhueza rut 12.345.678-5 correo juan@mail.com\n\n' +
+        'Después puedes pedirlos con: pásame los datos de transferencia de la mercado pago'
+      );
+      return;
+    }
+
+    try {
+      let datos = parsearDatos(texto);
+
+      // Respaldo: Gemini si las reglas no encuentran banco, tipo de cuenta o número
+      if (!datos.banco || !datos.tipoCuenta || !datos.numeroCuenta) {
+        const ia = await interpretarDatosTransferencia(texto);
+        if (ia) datos = combinarDatos(datos, ia);
+      }
+      if (!datos.alias && datos.banco) datos.alias = datos.banco;
+
+      // Un RUT con dígito verificador inválido nunca se guarda
+      if (datos.rutInvalido) {
+        await enviar(chatId, 'El RUT no es válido (revisa el dígito verificador); no se guardará así.');
+      }
+
+      const key = `${chatId}_${Date.now()}`;
+      pendingDatos.set(key, { datos, reusoOfrecido: false, refId: null });
+      setTimeout(() => pendingDatos.delete(key), 5 * 60 * 1000);
+
+      await avanzarDatos(chatId, key);
+    } catch (error) {
+      console.error('Error al interpretar datos de transferencia:', error.code ?? error.name);
+      await enviar(chatId, 'Error al procesar los datos.');
+    }
+  });
+
+  // /misdatos: alias guardados
+  bot.onText(/^\/misdatos(?:@\w+)?\s*$/i, async (msg) => {
+    const chatId = msg.chat.id;
+    if (!esChatAutorizado(chatId)) {
+      await rechazarNoAutorizado(chatId);
+      return;
+    }
+
+    try {
+      const registros = await listarDatosTransferencia();
+      if (registros.length === 0) {
+        await enviar(chatId, 'No tienes datos de transferencia guardados. Usa /savetrans para agregarlos.');
+        return;
+      }
+      await enviar(chatId,
+        '<b>Tus datos de transferencia:</b>\n\n' +
+        registros.map((r, i) => lineaDatos(r, `${i + 1}. `)).join('\n') +
+        `\n\nPídelos con: pásame los datos de transferencia de ${esc(registros[0].alias)}`
+      );
+    } catch (error) {
+      console.error('Error al listar datos de transferencia:', error.code ?? error.name);
+      await enviar(chatId, 'Error al obtener los datos.');
+    }
+  });
+
+  // /datos <alias o banco>
+  bot.onText(/^\/datos(?:@\w+)?(?:\s+([\s\S]+))?$/i, async (msg, match) => {
+    const chatId = msg.chat.id;
+    if (!esChatAutorizado(chatId)) {
+      await rechazarNoAutorizado(chatId);
+      return;
+    }
+    await responderConsultaDatos(chatId, match[1] ? terminoDesdeTexto(match[1]) : null);
+  });
+
+  // /borrardatos [número]: desactiva (no borra) un registro, con confirmación
+  bot.onText(/^\/borrardatos(?:@\w+)?(?:\s+(\d+))?\s*$/i, async (msg, match) => {
+    const chatId = msg.chat.id;
+    if (!esChatAutorizado(chatId)) {
+      await rechazarNoAutorizado(chatId);
+      return;
+    }
+
+    try {
+      const registros = await listarDatosTransferencia();
+      if (registros.length === 0) {
+        await enviar(chatId, 'No tienes datos de transferencia guardados.');
+        return;
+      }
+
+      if (match[1]) {
+        const registro = registros[parseInt(match[1], 10) - 1];
+        if (!registro) {
+          await enviar(chatId, 'No existe un registro con ese número. Usa /misdatos para ver la lista.');
+          return;
+        }
+        await pedirConfirmacionBorrarDatos(chatId, registro);
+        return;
+      }
+
+      await enviar(chatId, 'Elige los datos que quieres eliminar:', {
+        reply_markup: {
+          inline_keyboard: [
+            ...registros.map((r, i) => [{ text: `${i + 1}. ${String(r.alias).slice(0, 40)}`, callback_data: `bds_${r.id}` }]),
+            [{ text: 'Cancelar', callback_data: 'bdn_x' }]
+          ]
+        }
+      });
+    } catch (error) {
+      console.error('Error en /borrardatos:', error.code ?? error.name);
+      await enviar(chatId, 'Error al obtener los datos.');
+    }
+  });
+}
+
+/** Botones de datos de transferencia. Devuelve true si el callback era de este módulo. */
+async function manejarCallbackDatos(cb, chatId, data) {
+  const messageId = cb.message.message_id;
+
+  // Guardar
+  if (data.startsWith('dts_')) {
+    const key = data.replace('dts_', '');
+    const pendiente = pendingDatos.get(key);
+    if (!pendiente) {
+      await responderCallback(cb.id, { text: 'Solicitud expirada' });
+      return true;
+    }
+
+    try {
+      if (camposFaltantes(pendiente.datos).length > 0) {
+        await responderCallback(cb.id, { text: 'Faltan datos obligatorios' });
+        return true;
+      }
+
+      const duplicado = await buscarDatosDuplicados(pendiente.datos);
+      if (duplicado) {
+        pendingDatos.delete(key);
+        await editar(
+          `Ya tienes guardado ese banco y número de cuenta: <b>${esc(duplicado.alias)}</b>. No se creó otro registro.`,
+          { chat_id: chatId, message_id: messageId }
+        );
+        await responderCallback(cb.id, { text: 'Registro duplicado' });
+        return true;
+      }
+
+      await guardarDatos(pendiente.datos);
+      pendingDatos.delete(key);
+      esperandoDato.delete(chatId);
+
+      // Se edita el mensaje para no dejar los datos completos en la conversación
+      await editar(
+        `Datos guardados: <b>${esc(pendiente.datos.alias)}</b>. Pídelos con: datos de ${esc(pendiente.datos.alias)}`,
+        { chat_id: chatId, message_id: messageId }
+      );
+      await responderCallback(cb.id, { text: 'Guardados' });
+    } catch (error) {
+      console.error('Error al guardar datos de transferencia:', error.code ?? error.name);
+      await responderCallback(cb.id, { text: 'Error al guardar' });
+    }
+    return true;
+  }
+
+  // Editar alias
+  if (data.startsWith('dte_')) {
+    const key = data.replace('dte_', '');
+    if (!pendingDatos.has(key)) {
+      await responderCallback(cb.id, { text: 'Solicitud expirada' });
+      return true;
+    }
+    esperandoDato.set(chatId, { key, campo: 'alias' });
+    await enviar(chatId, 'Escribe el alias nuevo.', botonCancelarDatos(key));
+    await responderCallback(cb.id, {});
+    return true;
+  }
+
+  // Cancelar
+  if (data.startsWith('dtx_')) {
+    const key = data.replace('dtx_', '');
+    pendingDatos.delete(key);
+    esperandoDato.delete(chatId);
+    await editar('Cancelado', { chat_id: chatId, message_id: messageId });
+    await responderCallback(cb.id, { text: 'Cancelado' });
+    return true;
+  }
+
+  // Reutilizar titular, RUT y correo de otro registro
+  if (data.startsWith('dtu_') || data.startsWith('dtn_')) {
+    const usar = data.startsWith('dtu_');
+    const key = data.slice(4);
+    const pendiente = pendingDatos.get(key);
+    if (!pendiente) {
+      await responderCallback(cb.id, { text: 'Solicitud expirada' });
+      return true;
+    }
+
+    try {
+      if (usar) {
+        const referencia = (await listarDatosTransferencia()).find(r => r.id === pendiente.refId);
+        if (referencia) {
+          const d = pendiente.datos;
+          if (!d.titular) d.titular = referencia.nombre_titular;
+          if (!d.rut) {
+            d.rut = referencia.rut;
+            d.rutInvalido = false;
+          }
+          if (!d.email) d.email = referencia.email;
+        }
+      }
+      await editar(usar ? 'Usando los datos del registro guardado.' : 'Entendido.', { chat_id: chatId, message_id: messageId });
+      await responderCallback(cb.id, {});
+      await avanzarDatos(chatId, key);
+    } catch (error) {
+      console.error('Error al reutilizar datos de transferencia:', error.code ?? error.name);
+      await responderCallback(cb.id, { text: 'Error' });
+    }
+    return true;
+  }
+
+  // Tipo de cuenta elegido con botones
+  if (data.startsWith('dtt_')) {
+    const partes = data.match(/^dtt_(.+)_([a-z]{2})$/);
+    const pendiente = partes && pendingDatos.get(partes[1]);
+    const tipo = partes && TIPO_TRANSFER_POR_CODIGO[partes[2]];
+    if (!pendiente || !tipo) {
+      await responderCallback(cb.id, { text: 'Solicitud expirada' });
+      return true;
+    }
+
+    const d = pendiente.datos;
+    d.tipoCuenta = tipo;
+    // En una cuenta RUT sin número se usa el RUT sin dígito verificador
+    if (tipo === 'rut' && !d.numeroCuenta && d.rut) d.numeroCuenta = d.rut.split('-')[0];
+
+    await editar(`Tipo de cuenta: ${esc(ETIQUETAS_TIPO_TRANSFERENCIA[tipo])}`, { chat_id: chatId, message_id: messageId });
+    await responderCallback(cb.id, {});
+    await avanzarDatos(chatId, partes[1]);
+    return true;
+  }
+
+  // Elegir entre varias coincidencias de una consulta
+  if (data.startsWith('dtq_')) {
+    try {
+      const registros = await listarDatosTransferencia();
+      const registro = registros.find(r => String(r.id) === data.replace('dtq_', ''));
+      if (!registro) {
+        await responderCallback(cb.id, { text: 'Ya no está disponible' });
+        return true;
+      }
+      await responderCallback(cb.id, {});
+      await enviarPlano(chatId, textoPlanoDatos(registro));
+    } catch (error) {
+      console.error('Error al consultar datos de transferencia:', error.code ?? error.name);
+      await responderCallback(cb.id, { text: 'Error' });
+    }
+    return true;
+  }
+
+  // /borrardatos: elegir de la lista
+  if (data.startsWith('bds_')) {
+    try {
+      const registros = await listarDatosTransferencia();
+      const registro = registros.find(r => String(r.id) === data.replace('bds_', ''));
+      if (!registro) {
+        await responderCallback(cb.id, { text: 'Ya no está disponible' });
+        return true;
+      }
+      await pedirConfirmacionBorrarDatos(chatId, registro);
+      await responderCallback(cb.id, {});
+    } catch (error) {
+      console.error('Error en /borrardatos:', error.code ?? error.name);
+      await responderCallback(cb.id, { text: 'Error' });
+    }
+    return true;
+  }
+
+  // /borrardatos: confirmar (soft delete: activo = 0)
+  if (data.startsWith('bdy_')) {
+    try {
+      await query(
+        'UPDATE datos_transferencia SET activo = 0, actualizado_en = CURRENT_TIMESTAMP WHERE id = ?',
+        [data.replace('bdy_', '')]
+      );
+      await editar('Datos eliminados.', { chat_id: chatId, message_id: messageId });
+      await responderCallback(cb.id, { text: 'Eliminados' });
+    } catch (error) {
+      console.error('Error al eliminar datos de transferencia:', error.code ?? error.name);
+      await responderCallback(cb.id, { text: 'Error' });
+    }
+    return true;
+  }
+
+  if (data === 'bdn_x') {
     await editar('Cancelado', { chat_id: chatId, message_id: messageId });
     await responderCallback(cb.id, { text: 'Cancelado' });
     return true;

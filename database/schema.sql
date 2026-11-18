@@ -97,6 +97,24 @@ CREATE TABLE IF NOT EXISTS movimientos (
   INDEX idx_prestamo (es_prestamo, persona_prestamo)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Mis datos de transferencia (los que entrego para que me depositen), uno por cuenta o institución
+CREATE TABLE IF NOT EXISTS datos_transferencia (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  cuenta_id INT NULL,
+  alias VARCHAR(100) NOT NULL,
+  nombre_titular VARCHAR(150) NOT NULL,
+  rut VARCHAR(12) NOT NULL,
+  banco VARCHAR(100) NOT NULL,
+  tipo_cuenta ENUM('corriente', 'vista', 'rut', 'ahorro') NOT NULL,
+  numero_cuenta VARCHAR(30) NOT NULL,
+  email VARCHAR(150) NULL,
+  activo BOOLEAN NOT NULL DEFAULT TRUE,
+  creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (cuenta_id) REFERENCES cuentas(id) ON DELETE SET NULL,
+  INDEX idx_banco_numero (banco, numero_cuenta)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Tabla de Pagos de Préstamos (para liquidar deudas entre personas)
 CREATE TABLE IF NOT EXISTS pagos_prestamos (
   id INT PRIMARY KEY AUTO_INCREMENT,

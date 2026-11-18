@@ -119,6 +119,9 @@ export async function inicializarDB() {
     // Migración: ultimos4 y titular en cuentas
     migrarDatosCuenta(database);
 
+    // Migración: tabla datos_transferencia
+    migrarDatosTransferencia(database);
+
     // Insertar categorías por defecto
     const categorias = [
       ['Supermercado', '#10B981', 'fa-shopping-cart'],
@@ -156,6 +159,32 @@ export async function inicializarDB() {
     console.error('Error al inicializar base de datos:', error.message);
     throw error;
   }
+}
+
+/**
+ * Migración idempotente (SQLite): tabla datos_transferencia, con mis propios datos para que
+ * me depositen. Va aparte de cuentas porque cuenta_id es opcional (puede haber datos de una
+ * cuenta que no uso para movimientos) y porque la API de cuentas devuelve todas sus columnas.
+ */
+function migrarDatosTransferencia(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS datos_transferencia (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cuenta_id INTEGER REFERENCES cuentas(id) ON DELETE SET NULL,
+      alias TEXT NOT NULL,
+      nombre_titular TEXT NOT NULL,
+      rut TEXT NOT NULL,
+      banco TEXT NOT NULL,
+      tipo_cuenta TEXT NOT NULL CHECK(tipo_cuenta IN ('corriente', 'vista', 'rut', 'ahorro')),
+      numero_cuenta TEXT NOT NULL,
+      email TEXT,
+      activo INTEGER NOT NULL DEFAULT 1,
+      creado_en DATETIME DEFAULT CURRENT_TIMESTAMP,
+      actualizado_en DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_datos_transferencia_banco_numero ON datos_transferencia(banco, numero_cuenta);
+    CREATE INDEX IF NOT EXISTS idx_datos_transferencia_cuenta ON datos_transferencia(cuenta_id);
+  `);
 }
 
 /**
