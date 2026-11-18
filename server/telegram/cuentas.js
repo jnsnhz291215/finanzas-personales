@@ -137,9 +137,28 @@ const PATRONES_TIPO = [
 
 // Palabras sueltas que no forman parte del alias
 const PALABRAS_VACIAS = new Set([
-  'tarjeta', 'cuenta', 'cta', 'de', 'del', 'la', 'el', 'mi', 'mia', 'mio', 'mis', 'a', 'en',
-  'con', 'y', 'para', 'es', 'un', 'una', 'banco', 'nombre', 'tipo'
+  'tarjeta', 'cuenta', 'cta', 'mi', 'mia', 'mio', 'mis', 'a', 'en',
+  'con', 'y', 'para', 'es', 'un', 'una', 'banco', 'nombre', 'tipo', 'titular'
 ]);
+
+// Preposiciones y artículos que se recortan solo si quedan al borde del alias
+const PALABRAS_BORDE = new Set(['de', 'del', 'la', 'el', 'los', 'las']);
+
+// Valores que significan "soy yo" en el titular
+const TITULAR_PROPIO = new Set(['yo', 'mio', 'mia', 'propia', 'propio', 'yo mismo', 'yo misma']);
+
+/**
+ * Titular cuando dice "yo / mío / propia": TITULAR_POR_DEFECTO del entorno, o "Yo" si
+ * está vacía. Se lee al llamar para respetar el entorno ya cargado.
+ */
+function titularPorDefecto() {
+  return (process.env.TITULAR_POR_DEFECTO || '').trim() || 'Yo';
+}
+
+/** Valor de un marcador de titular: "yo" -> titular por defecto; si no, el nombre capitalizado */
+function valorTitular(valor) {
+  return TITULAR_PROPIO.has(normalizar(valor).trim()) ? titularPorDefecto() : capitalizarNombre(valor);
+}
 
 /**
  * Interpreta el texto de /savecard (con o sin el comando delante).
@@ -186,20 +205,23 @@ export function parsearCuenta(texto) {
     quitar(ult.index, ult.index + ult[0].length);
   }
 
-  // 3. Titular: "a nombre mio (juan sanhueza)" o "a nombre de juan sanhueza"
+  // 3. Titular con marcador: "a nombre mio (juan sanhueza)", "a nombre de X", "titular X",
+  //    "titular: X". Si el valor es yo / mio / mia / propia se usa el titular por defecto.
   const mio = /\ba\s+nombre\s+mi[oa]\b\s*(?:\(([^)]*)\))?/d.exec(norm);
   if (mio) {
-    if (mio[1] && mio.indices[1]) {
-      const nombre = original.slice(mio.indices[1][0], mio.indices[1][1]).trim();
-      resultado.titular = nombre ? capitalizarNombre(nombre) : null;
-    }
+    const nombre = mio[1] && mio.indices[1] ? original.slice(mio.indices[1][0], mio.indices[1][1]).trim() : '';
+    resultado.titular = nombre ? capitalizarNombre(nombre) : titularPorDefecto();
     quitar(mio.index, mio.index + mio[0].length);
   } else {
-    const de = /\ba\s+nombre\s+del?\s+(.+?)(?=\s+(?:cupo|paga|pago|vence|banco|termina|final)\b|\s*$)/d.exec(norm);
-    if (de) {
-      const nombre = original.slice(de.indices[1][0], de.indices[1][1]).replace(/[()]/g, '').trim();
-      resultado.titular = nombre ? capitalizarNombre(nombre) : null;
-      quitar(de.index, de.index + de[0].length);
+    const marcador = /(?:\btitular\s*:?|\ba\s+nombre\s+del?)\s*(.+?)(?=\s+(?:cupo|paga|pago|vence|banco|termina|final)\b|\s*$)/d.exec(norm);
+    if (marcador) {
+      const valor = original
+        .slice(marcador.indices[1][0], marcador.indices[1][1])
+        .replace(/[()]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (valor) resultado.titular = valorTitular(valor);
+      quitar(marcador.index, marcador.index + marcador[0].length);
     }
   }
 
@@ -249,13 +271,25 @@ export function parsearCuenta(texto) {
     resultado.banco = 'BancoEstado';
   }
 
-  // 8. Alias: lo que queda, sin palabras vacías ni signos sueltos
-  const alias = original
+  // 8. Titular sin marcador: "... de Juan Sanhueza" al final. Debe ser un nombre propio con
+  //    mayúscula inicial y minúsculas ("de FAN", en mayúsculas, es un alias, no un titular).
+  if (!resultado.titular) {
+    const de = /(?<![\p{L}\p{N}])de\s+(\p{Lu}\p{Ll}+(?:\s+\p{Lu}\p{Ll}+){0,3})\s*$/du.exec(original);
+    if (de) {
+      resultado.titular = capitalizarNombre(de[1]);
+      quitar(de.index, de.index + de[0].length);
+    }
+  }
+
+  // 9. Alias: lo que queda, sin palabras vacías ni signos sueltos; "de", "del", "la" y "el"
+  //    sueltos se recortan solo en los bordes
+  const palabras = original
     .split(/\s+/)
     .map(p => p.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ''))
-    .filter(p => p && !PALABRAS_VACIAS.has(normalizar(p)))
-    .join(' ')
-    .slice(0, 100);
+    .filter(p => p && !PALABRAS_VACIAS.has(normalizar(p)));
+  while (palabras.length && PALABRAS_BORDE.has(normalizar(palabras[0]))) palabras.shift();
+  while (palabras.length && PALABRAS_BORDE.has(normalizar(palabras[palabras.length - 1]))) palabras.pop();
+  const alias = palabras.join(' ').slice(0, 100);
 
   resultado.nombre = alias || (resultado.tipo ? nombrePorDefecto(resultado.tipo, resultado.banco) : null);
 

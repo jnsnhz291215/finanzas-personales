@@ -95,6 +95,83 @@ describe('parsearCuenta', () => {
   });
 });
 
+describe('titular', () => {
+  const titularOriginal = process.env.TITULAR_POR_DEFECTO;
+
+  beforeEach(() => {
+    delete process.env.TITULAR_POR_DEFECTO;
+  });
+
+  afterAll(() => {
+    if (titularOriginal === undefined) delete process.env.TITULAR_POR_DEFECTO;
+    else process.env.TITULAR_POR_DEFECTO = titularOriginal;
+  });
+
+  test('"titular yo" no queda en el nombre y usa "Yo" si no hay titular por defecto', () => {
+    const r = parsearCuenta('/savecard tarjeta FAN del banco de chile debito terminada en 1234 titular yo');
+
+    expect(r.tipo).toBe('debito');
+    expect(r.banco).toBe('Banco de Chile');
+    expect(r.nombre).toBe('FAN');
+    expect(r.ultimos4).toBe('1234');
+    expect(r.titular).toBe('Yo');
+  });
+
+  test('"yo", "mio", "mía" y "propia" usan TITULAR_POR_DEFECTO si está definida', () => {
+    process.env.TITULAR_POR_DEFECTO = 'Juan Sanhueza';
+
+    expect(parsearCuenta('/savecard debito FAN titular yo').titular).toBe('Juan Sanhueza');
+    expect(parsearCuenta('/savecard debito FAN titular: mía').titular).toBe('Juan Sanhueza');
+    expect(parsearCuenta('/savecard debito FAN titular propia').titular).toBe('Juan Sanhueza');
+    expect(parsearCuenta('/savecard debito FAN a nombre mio').titular).toBe('Juan Sanhueza');
+    expect(parsearCuenta('/savecard debito FAN titular yo').nombre).toBe('FAN');
+  });
+
+  test('"a nombre mio" sin nombre entre paréntesis usa el titular por defecto', () => {
+    const r = parsearCuenta('/savecard debito FAN a nombre mio');
+
+    expect(r.titular).toBe('Yo');
+    expect(r.nombre).toBe('FAN');
+  });
+
+  test('debería reconocer "a nombre de Juan Sanhueza"', () => {
+    const r = parsearCuenta('/savecard tarjeta debito FAN a nombre de Juan Sanhueza');
+
+    expect(r.titular).toBe('Juan Sanhueza');
+    expect(r.nombre).toBe('FAN');
+  });
+
+  test('debería reconocer "titular: Juan Sanhueza"', () => {
+    const r = parsearCuenta('/savecard credito CMR titular: Juan Sanhueza');
+
+    expect(r.titular).toBe('Juan Sanhueza');
+    expect(r.nombre).toBe('CMR');
+    expect(r.banco).toBe('Falabella');
+  });
+
+  test('debería reconocer "de" seguido de un nombre propio al final', () => {
+    const r = parsearCuenta('/savecard cuenta vista bci de Juan Sanhueza');
+
+    expect(r.titular).toBe('Juan Sanhueza');
+    expect(r.banco).toBe('BCI');
+  });
+
+  test('"de FAN" en mayúsculas es un alias, no un titular', () => {
+    const r = parsearCuenta('/savecard tarjeta debito de FAN');
+
+    expect(r.titular).toBeNull();
+    expect(r.nombre).toBe('FAN');
+  });
+
+  test('sin titular queda sin indicar y el nombre no arrastra palabras sueltas', () => {
+    const r = parsearCuenta('/savecard debito FAN del banco santander');
+
+    expect(r.titular).toBeNull();
+    expect(r.nombre).toBe('FAN');
+    expect(r.banco).toBe('Santander');
+  });
+});
+
 describe('tipo efectivo', () => {
   test('efectivo se guarda como efectivo, no como cuenta_vista', () => {
     expect(TIPO_DB.efectivo).toBe('efectivo');
