@@ -381,7 +381,12 @@ La aplicación incluye un bot de Telegram para registrar gastos/ingresos y consu
 
 3. **Configurar en el servidor**:
    
-   Edita tu archivo `.env`:
+   Si aún no tienes un archivo `.env`, créalo desde el ejemplo:
+   ```bash
+   cp .env.example .env
+   ```
+   
+   Edita tu archivo `.env` y agrega:
    ```env
    # Token del bot (obtenido de @BotFather)
    TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
