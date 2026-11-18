@@ -242,13 +242,37 @@ const COMANDOS_MENU = [
   { command: 'miid', description: 'Obtener mi chat ID' }
 ];
 
-/** Publica la lista de comandos en el menú de Telegram; nunca lanza (si falla, solo el código) */
+// Menú para quien no está autorizado: solo /miid (para obtener su chat ID)
+const COMANDOS_PUBLICOS = COMANDOS_MENU.filter(c => c.command === 'miid');
+
+function codigoErrorTelegram(err) {
+  return err?.response?.body?.error_code ?? err?.code ?? 'desconocido';
+}
+
+/**
+ * Publica el menú "/" de Telegram. El alcance por defecto solo tiene /miid; el menú
+ * completo se publica con scope "chat" para cada ID de TELEGRAM_ALLOWED_CHAT_IDS.
+ * Nunca lanza: ante un error registra solo el código (sin IDs) y sigue.
+ */
 async function registrarComandosMenu() {
   try {
-    await bot.setMyCommands(COMANDOS_MENU);
+    await bot.setMyCommands(COMANDOS_PUBLICOS, { scope: { type: 'default' } });
   } catch (err) {
-    const codigo = err?.response?.body?.error_code ?? err?.code ?? 'desconocido';
-    console.error(`[telegram] setMyCommands: error_code=${codigo}`);
+    console.error(`[telegram] setMyCommands (por defecto): error_code=${codigoErrorTelegram(err)}`);
+  }
+
+  const ids = allowedChatIds.filter(id => Number.isInteger(id));
+  if (ids.length === 0) {
+    console.warn('[telegram] TELEGRAM_ALLOWED_CHAT_IDS está vacía: el menú solo incluye /miid');
+    return;
+  }
+
+  for (const chatId of ids) {
+    try {
+      await bot.setMyCommands(COMANDOS_MENU, { scope: { type: 'chat', chat_id: chatId } });
+    } catch (err) {
+      console.error(`[telegram] setMyCommands (chat autorizado): error_code=${codigoErrorTelegram(err)}`);
+    }
   }
 }
 
