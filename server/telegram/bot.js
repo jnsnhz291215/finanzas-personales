@@ -151,6 +151,9 @@ export async function iniciarBot() {
     configurarComandosDatos();
     configurarManejadores();
 
+    // Menú "/" de Telegram; no bloquea el arranque y no lanza
+    registrarComandosMenu();
+
     console.log('✓ Bot de Telegram iniciado (long polling)');
     if (allowedChatIds.length > 0) {
       console.log(`  Chat IDs autorizados: ${allowedChatIds.join(', ')}`);
@@ -186,6 +189,70 @@ function esChatAutorizado(chatId) {
 }
 
 /**
+ * Texto de ayuda (HTML), compartido por /start, /ayuda y /help.
+ * Los comandos listados son los que existen en este archivo.
+ */
+function textoAyuda() {
+  return (
+    '📋 <b>Comandos disponibles:</b>\n\n' +
+    '<b>Registrar movimientos:</b>\n' +
+    'Escribe en lenguaje natural, por ejemplo:\n' +
+    '• Gasto: "ayer pagué 12.500 en el super con débito"\n' +
+    '• Pago de tarjeta: "pagué la tarjeta de crédito 50 mil"\n' +
+    'También puedes enviar un archivo de cartola (CSV, Excel o PDF) para guardarlo.\n\n' +
+    '<b>Cuentas:</b>\n' +
+    '/savecard - Crear una cuenta (también /nuevacuenta)\n' +
+    '/cuentas - Ver tus cuentas activas\n' +
+    '/borrarcuenta - Desactivar una cuenta\n' +
+    'Ejemplo: /savecard tarjeta debito FAN banco de chile terminada en 1234 a nombre mio (juan sanhueza)\n' +
+    'Nunca envíes el número completo: solo los últimos 4 dígitos.\n\n' +
+    '<b>Mis datos de transferencia:</b>\n' +
+    '/savetrans - Guardar mis datos para que me depositen\n' +
+    '/misdatos - Ver los alias guardados\n' +
+    '/datos - Pedir los datos de un alias o banco\n' +
+    '/borrardatos - Eliminar un registro\n' +
+    'Ejemplo: /savetrans mercado pago cuenta vista 1234567890 juan sanhueza rut 12.345.678-5 correo juan@mail.com\n' +
+    'Para pedirlos escribe: pásame los datos de transferencia de la mercado pago\n\n' +
+    '<b>Consultas:</b>\n' +
+    '/resumen - Resumen del mes actual\n' +
+    '/ultimos - Últimos 10 movimientos\n' +
+    '/borrar_ultimo - Eliminar el último movimiento (con confirmación)\n\n' +
+    '<b>Otros:</b>\n' +
+    '/help - Mostrar esta ayuda (también /ayuda)\n' +
+    '/miid - Obtener tu chat ID\n\n' +
+    'Para empezar, crea una cuenta con /savecard (por ejemplo: /savecard efectivo).'
+  );
+}
+
+// Lista del menú "/" de Telegram (setMyCommands): nombre en minúsculas y descripción corta
+const COMANDOS_MENU = [
+  { command: 'start', description: 'Comenzar y ver la ayuda' },
+  { command: 'help', description: 'Ver todos los comandos' },
+  { command: 'ayuda', description: 'Ver todos los comandos (igual que /help)' },
+  { command: 'savecard', description: 'Crear una cuenta o tarjeta' },
+  { command: 'cuentas', description: 'Ver mis cuentas activas' },
+  { command: 'borrarcuenta', description: 'Desactivar una cuenta' },
+  { command: 'savetrans', description: 'Guardar mis datos de transferencia' },
+  { command: 'misdatos', description: 'Ver mis alias de transferencia' },
+  { command: 'datos', description: 'Pedir mis datos de transferencia' },
+  { command: 'borrardatos', description: 'Eliminar datos de transferencia' },
+  { command: 'resumen', description: 'Resumen del mes actual' },
+  { command: 'ultimos', description: 'Ver los últimos 10 movimientos' },
+  { command: 'borrar_ultimo', description: 'Eliminar el último movimiento' },
+  { command: 'miid', description: 'Obtener mi chat ID' }
+];
+
+/** Publica la lista de comandos en el menú de Telegram; nunca lanza (si falla, solo el código) */
+async function registrarComandosMenu() {
+  try {
+    await bot.setMyCommands(COMANDOS_MENU);
+  } catch (err) {
+    const codigo = err?.response?.body?.error_code ?? err?.code ?? 'desconocido';
+    console.error(`[telegram] setMyCommands: error_code=${codigo}`);
+  }
+}
+
+/**
  * Configura los comandos del bot
  */
 function configurarComandos() {
@@ -205,20 +272,12 @@ function configurarComandos() {
     }
 
     await enviar(chatId,
-      '¡Hola! 👋\n\n' +
-      'Soy tu asistente de finanzas personales.\n\n' +
-      'Puedes registrar gastos e ingresos escribiendo en lenguaje natural, por ejemplo:\n' +
-      '• "ayer pagué 12.500 en el super con débito"\n' +
-      '• "gasté 5 lucas en uber"\n' +
-      '• "me pagaron 300.000 de sueldo"\n\n' +
-      'También puedes enviar archivos de cartola (CSV, Excel, PDF) para importarlos.\n\n' +
-      'Para empezar, crea una cuenta con /savecard (por ejemplo: /savecard efectivo).\n\n' +
-      'Usa /ayuda para ver todos los comandos disponibles.'
+      '¡Hola! 👋 Soy tu asistente de finanzas personales.\n\n' + textoAyuda()
     );
   });
 
-  // Comando /ayuda
-  bot.onText(/\/ayuda/, async (msg) => {
+  // Comandos /ayuda y /help: misma respuesta
+  bot.onText(/^\/(?:ayuda|help)(?:@\w+)?\s*$/i, async (msg) => {
     const chatId = msg.chat.id;
 
     if (!esChatAutorizado(chatId)) {
@@ -226,35 +285,7 @@ function configurarComandos() {
       return;
     }
 
-    await enviar(chatId,
-      '📋 <b>Comandos disponibles:</b>\n\n' +
-      '<b>Registro de movimientos:</b>\n' +
-      'Escribe en lenguaje natural, por ejemplo:\n' +
-      '• "ayer pagué 12.500 en el super con débito"\n' +
-      '• "gasté 5 lucas en uber con la CMR"\n' +
-      '• "me pagaron 300.000 de sueldo"\n\n' +
-      '<b>Consultas:</b>\n' +
-      '/resumen - Resumen del mes actual\n' +
-      '/ultimos - Últimos 10 movimientos\n' +
-      '/borrar_ultimo - Eliminar el último movimiento (con confirmación)\n\n' +
-      '<b>Cuentas:</b>\n' +
-      '/savecard - Crear una cuenta (también /nuevacuenta)\n' +
-      '/cuentas - Ver tus cuentas activas\n' +
-      '/borrarcuenta - Desactivar una cuenta\n' +
-      'Ejemplo: /savecard tarjeta debito FAN banco de chile terminada en 1234 a nombre mio (juan sanhueza)\n' +
-      'Nunca envíes el número completo: solo los últimos 4 dígitos.\n\n' +
-      '<b>Mis datos de transferencia:</b>\n' +
-      '/savetrans - Guardar mis datos para que me depositen\n' +
-      '/misdatos - Ver los alias guardados\n' +
-      '/borrardatos - Eliminar un registro\n' +
-      'Ejemplo: /savetrans mercado pago cuenta vista 1234567890 juan sanhueza rut 12.345.678-5 correo juan@mail.com\n' +
-      'Para pedirlos escribe: pásame los datos de transferencia de la mercado pago\n\n' +
-      '<b>Importar cartolas:</b>\n' +
-      'Envía un archivo CSV, Excel o PDF de tu cartola bancaria.\n\n' +
-      '<b>Otros:</b>\n' +
-      '/ayuda - Mostrar esta ayuda\n' +
-      '/miid - Obtener tu chat ID'
-    );
+    await enviar(chatId, textoAyuda());
   });
 
   // Comando /resumen
