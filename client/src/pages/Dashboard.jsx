@@ -26,7 +26,7 @@ export default function Dashboard() {
         api.get(`/dashboard/resumen?mes=${mes}&anio=${anio}`),
         api.get('/dashboard/tarjetas'),
         api.get('/dashboard/prestamos-pendientes'),
-        api.get('/dashboard/recientes?limite=8')
+        api.get('/dashboard/recientes?limite=10')
       ]);
 
       setResumen(resumenRes.data);
