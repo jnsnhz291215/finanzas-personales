@@ -370,12 +370,12 @@ function configurarManejadores() {
   });
 
   // Manejador de callbacks (botones inline)
-  bot.on('callback_query', async (query) => {
-    const chatId = query.message.chat.id;
-    const data = query.data;
+  bot.on('callback_query', async (cb) => {
+    const chatId = cb.message.chat.id;
+    const data = cb.data;
 
     if (!esChatAutorizado(chatId)) {
-      await responderCallback(query.id, { text: '❌ No autorizado' });
+      await responderCallback(cb.id, { text: '❌ No autorizado' });
       return;
     }
 
@@ -385,7 +385,7 @@ function configurarManejadores() {
       const tx = pendingTransactions.get(txId);
 
       if (!tx) {
-        await responderCallback(query.id, { text: '❌ Transacción expirada' });
+        await responderCallback(cb.id, { text: '❌ Transacción expirada' });
         return;
       }
 
@@ -401,14 +401,14 @@ function configurarManejadores() {
           `🏷 ${esc(tx.categoria || 'Sin categoría')}`,
           {
             chat_id: chatId,
-            message_id: query.message.message_id
+            message_id: cb.message.message_id
           }
         );
 
-        await responderCallback(query.id, { text: '✅ Guardado' });
+        await responderCallback(cb.id, { text: '✅ Guardado' });
       } catch (error) {
         console.error('Error al guardar movimiento:', error);
-        await responderCallback(query.id, { text: '❌ Error al guardar' });
+        await responderCallback(cb.id, { text: '❌ Error al guardar' });
       }
     }
 
@@ -421,11 +421,11 @@ function configurarManejadores() {
         '❌ Cancelado',
         {
           chat_id: chatId,
-          message_id: query.message.message_id
+          message_id: cb.message.message_id
         }
       );
 
-      await responderCallback(query.id, { text: 'Cancelado' });
+      await responderCallback(cb.id, { text: 'Cancelado' });
     }
 
     // Eliminar movimiento
@@ -439,14 +439,14 @@ function configurarManejadores() {
           '✅ Movimiento eliminado',
           {
             chat_id: chatId,
-            message_id: query.message.message_id
+            message_id: cb.message.message_id
           }
         );
 
-        await responderCallback(query.id, { text: '✅ Eliminado' });
+        await responderCallback(cb.id, { text: '✅ Eliminado' });
       } catch (error) {
         console.error('Error al eliminar movimiento:', error);
-        await responderCallback(query.id, { text: '❌ Error' });
+        await responderCallback(cb.id, { text: '❌ Error' });
       }
     }
 
@@ -455,17 +455,17 @@ function configurarManejadores() {
         '❌ Cancelado',
         {
           chat_id: chatId,
-          message_id: query.message.message_id
+          message_id: cb.message.message_id
         }
       );
-      await responderCallback(query.id, { text: 'Cancelado' });
+      await responderCallback(cb.id, { text: 'Cancelado' });
     }
 
     // Confirmar importación de cartola
     if (data.startsWith('import_')) {
       const fileId = data.replace('import_', '');
       // TODO: Implementar confirmación de importación
-      await responderCallback(query.id, { text: '⏳ Importando...' });
+      await responderCallback(cb.id, { text: '⏳ Importando...' });
     }
   });
 }
@@ -580,23 +580,25 @@ async function manejarArchivo(msg) {
   const chatId = msg.chat.id;
   const documento = msg.document;
 
-  const ext = path.extname(documento.file_name).toLowerCase();
-  const permitidos = ['.csv', '.xlsx', '.xls', '.pdf'];
-
-  if (!permitidos.includes(ext)) {
-    await enviar(chatId, '❌ Formato no soportado. Envía archivos CSV, Excel o PDF.');
-    return;
-  }
-
-  await enviar(chatId, '⏳ Procesando archivo...');
-
   try {
+    // Telegram puede omitir file_name; basename evita rutas dentro del nombre
+    const nombreArchivo = path.basename(documento.file_name || `archivo_${Date.now()}`);
+    const ext = path.extname(nombreArchivo).toLowerCase();
+    const permitidos = ['.csv', '.xlsx', '.xls', '.pdf'];
+
+    if (!permitidos.includes(ext)) {
+      await enviar(chatId, '❌ Formato no compatible. Envía archivos CSV, Excel o PDF.');
+      return;
+    }
+
+    await enviar(chatId, '⏳ Procesando archivo...');
+
     // Descargar archivo
     const fileLink = await bot.getFileLink(documento.file_id);
     const uploadsPath = process.env.CARTOLAS_PATH || path.join(__dirname, '../../uploads/cartolas');
     await fs.mkdir(uploadsPath, { recursive: true });
 
-    const destino = path.join(uploadsPath, `telegram_${Date.now()}_${documento.file_name}`);
+    const destino = path.join(uploadsPath, `telegram_${Date.now()}_${nombreArchivo}`);
 
     // Descargar usando fetch
     const response = await fetch(fileLink);
@@ -606,7 +608,7 @@ async function manejarArchivo(msg) {
     await enviar(chatId,
       '✅ Archivo recibido.\n\n' +
       '⚠️ Para importar la cartola, ve a la aplicación web y usa el importador de cartolas.\n\n' +
-      `Archivo guardado: ${esc(documento.file_name)}`
+      `Archivo guardado: ${esc(nombreArchivo)}`
     );
   } catch (error) {
     // No imprimir el objeto completo: puede incluir la URL con el token
