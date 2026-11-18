@@ -2,6 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import { query } from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
+import { resolverTipos } from '../tiposMovimiento.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
@@ -359,9 +360,10 @@ router.post('/confirmar', async (req, res) => {
       }
       
       await query(
-        `INSERT INTO movimientos (cuenta_id, fecha, descripcion, monto, tipo, categoria_id, importado_de)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [cuenta_id, mov.fecha, mov.descripcion, mov.monto, mov.tipo, categoria_id, archivo]
+        `INSERT INTO movimientos (cuenta_id, fecha, descripcion, monto, tipo, tipo_movimiento, categoria_id, importado_de)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        // abono -> ingreso, cargo -> compra
+        [cuenta_id, mov.fecha, mov.descripcion, mov.monto, mov.tipo, resolverTipos({ tipo: mov.tipo }).tipo_movimiento, categoria_id, archivo]
       );
       
       importados++;
