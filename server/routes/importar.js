@@ -3,6 +3,7 @@ import multer from 'multer';
 import { query } from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
 import { resolverTipos } from '../tiposMovimiento.js';
+import { almacenamientoMulter, rutaRelativaDeMulter, resolverArchivo } from '../storage.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
@@ -18,18 +19,8 @@ const router = express.Router();
 
 router.use(requireAuth);
 
-// Configurar multer (usa ruta configurable del .env)
-const storage = multer.diskStorage({
-  destination: async (req, file, cb) => {
-    const uploadDir = process.env.CARTOLAS_PATH || path.join(__dirname, '../../uploads/cartolas');
-    await fs.mkdir(uploadDir, { recursive: true });
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, uniqueSuffix + '-' + file.originalname);
-  }
-});
+// Las cartolas se guardan en <FINANZAS_STORAGE>/cartolas/{YYYY-MM}/ (ver storage.js)
+const storage = almacenamientoMulter('cartolas');
 
 const upload = multer({ 
   storage,
@@ -304,7 +295,8 @@ router.post('/preview', upload.single('archivo'), async (req, res) => {
     const yaImportado = archivosExistentes.length > 0;
     
     res.json({
-      archivo: req.file.filename,
+      // Ruta relativa a la raíz del almacenamiento; el cliente la devuelve al confirmar
+      archivo: rutaRelativaDeMulter('cartolas', req.file),
       nombreOriginal: req.file.originalname,
       hash,
       yaImportado,
@@ -328,6 +320,11 @@ router.post('/confirmar', async (req, res) => {
     
     if (!archivo || !cuenta_id || !movimientos || movimientos.length === 0) {
       return res.status(400).json({ error: 'Datos incompletos' });
+    }
+
+    // El archivo debe existir dentro del almacenamiento (no se acepta una ruta cualquiera)
+    if (!(await resolverArchivo(archivo))) {
+      return res.status(400).json({ error: 'El archivo de la cartola ya no está disponible. Súbelo de nuevo.' });
     }
     
     // Verificar si ya fue importado
@@ -370,12 +367,10 @@ router.post('/confirmar', async (req, res) => {
     }
     
     // Registrar archivo importado
-    const cartolasPath = process.env.CARTOLAS_PATH || path.join(__dirname, '../../uploads/cartolas');
-    const archivoPath = path.join(cartolasPath, archivo);
     await query(
       `INSERT INTO archivos_importados (nombre_archivo, hash_archivo, cuenta_id, cantidad_movimientos, ruta_archivo)
        VALUES (?, ?, ?, ?, ?)`,
-      [archivo, hash, cuenta_id, importados, archivoPath]
+      [path.basename(archivo), hash, cuenta_id, importados, archivo]
     );
     
     res.json({ 

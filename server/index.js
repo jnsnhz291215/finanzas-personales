@@ -12,6 +12,7 @@ import importarRoutes from './routes/importar.js';
 import dashboardRoutes from './routes/dashboard.js';
 import prestamosRoutes from './routes/prestamos.js';
 import { planAhorroRouter, gastosFijosRouter } from './routes/planAhorro.js';
+import { ensureStorageDirs } from './storage.js';
 import { inicializarDB } from './db.js';
 import { iniciarBot, detenerBot } from './telegram/bot.js';
 
@@ -71,6 +72,7 @@ if (process.env.SERVIR_FRONTEND === 'true') {
 async function iniciar() {
   try {
     await inicializarDB();
+    await ensureStorageDirs();
     app.listen(PORT, () => {
       console.log(`✓ Servidor corriendo en puerto ${PORT}`);
       console.log(`✓ Base de datos conectada`);

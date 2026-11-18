@@ -28,6 +28,7 @@ import {
 } from '../planAhorro.js';
 import { crearAdmin } from './admin.js';
 import { crearCuotas } from './cuotasBot.js';
+import { guardarBuffer, borrarArchivo } from '../storage.js';
 import { categoriaPorReglas } from '../gestion.js';
 import { canonizarPersona } from '../deudas.js';
 import { detectarPrestamo } from './prestamo.js';
@@ -1255,36 +1256,25 @@ async function resolverCuentaPago(medioPago) {
   return elegirCuenta(cuentas, medioPago) || cuentaPorDefecto(cuentas);
 }
 
-// Carpeta de los respaldos de movimientos (la misma que usa la API), separada de las cartolas
-function carpetaRespaldos() {
-  return process.env.RESPALDOS_PATH || path.join(__dirname, '../../uploads/respaldos');
-}
-
 /**
- * Guarda el comprobante de un pago de cuota en la carpeta de respaldos (RESPALDOS_PATH, no la
- * de cartolas) con nombre seguro (path.basename). No se lee el contenido ni se envía a ningún
- * servicio. Devuelve la ruta para guardar en archivo_respaldo, con el mismo formato que usa la
- * API: /uploads/respaldos/<archivo>.
+ * Guarda el comprobante de un pago de cuota en <FINANZAS_STORAGE>/comprobantes/{YYYY-MM}/
+ * (ver storage.js). No se lee el contenido ni se envía a ningún servicio. Devuelve la ruta
+ * relativa a la raíz, que es lo que se guarda en archivo_respaldo.
  */
 async function guardarRespaldoCuota(fileId, nombreSugerido) {
   const fileLink = await bot.getFileLink(fileId);
-  const carpeta = carpetaRespaldos();
-  await fs.mkdir(carpeta, { recursive: true });
-
-  const nombre = `respaldo_cuota_${Date.now()}_${path.basename(nombreSugerido)}`;
   const respuesta = await fetch(fileLink);
   if (!respuesta.ok) throw new Error('la descarga del archivo falló');
-  await fs.writeFile(path.join(carpeta, nombre), Buffer.from(await respuesta.arrayBuffer()));
-  return `/uploads/respaldos/${nombre}`;
+
+  const guardado = await guardarBuffer('comprobantes', nombreSugerido, Buffer.from(await respuesta.arrayBuffer()), {
+    prefijo: `respaldo_cuota_${Date.now()}_`
+  });
+  return guardado.ruta;
 }
 
 /** Borra un respaldo guardado (si el pago se cancela); nunca lanza */
 async function eliminarRespaldoCuota(ruta) {
-  try {
-    await fs.unlink(path.join(carpetaRespaldos(), path.basename(ruta)));
-  } catch {
-    // si ya no existe no pasa nada
-  }
+  await borrarArchivo(ruta);
 }
 
 // ---------------------------------------------------------------------------
@@ -2598,17 +2588,13 @@ async function manejarArchivo(msg) {
 
     await enviar(chatId, '⏳ Procesando archivo...');
 
-    // Descargar archivo
+    // Descargar y guardar en <FINANZAS_STORAGE>/cartolas/{YYYY-MM}/ (ver storage.js)
     const fileLink = await bot.getFileLink(documento.file_id);
-    const uploadsPath = process.env.CARTOLAS_PATH || path.join(__dirname, '../../uploads/cartolas');
-    await fs.mkdir(uploadsPath, { recursive: true });
-
-    const destino = path.join(uploadsPath, `telegram_${Date.now()}_${nombreArchivo}`);
-
-    // Descargar usando fetch
     const response = await fetch(fileLink);
-    const buffer = await response.arrayBuffer();
-    await fs.writeFile(destino, Buffer.from(buffer));
+    if (!response.ok) throw new Error('la descarga del archivo falló');
+    await guardarBuffer('cartolas', nombreArchivo, Buffer.from(await response.arrayBuffer()), {
+      prefijo: `telegram_${Date.now()}_`
+    });
 
     await enviar(chatId,
       '✅ Archivo recibido.\n\n' +
@@ -2632,15 +2618,11 @@ async function manejarFoto(msg) {
   await enviar(chatId, '⏳ Guardando foto...');
 
   try {
+    // Otros archivos que se mandan al bot: <FINANZAS_STORAGE>/archivos/{YYYY-MM}/
     const fileLink = await bot.getFileLink(foto.file_id);
-    const uploadsPath = process.env.UPLOADS_PATH || path.join(__dirname, '../../uploads');
-    await fs.mkdir(uploadsPath, { recursive: true });
-
-    const destino = path.join(uploadsPath, `telegram_${Date.now()}.jpg`);
-
     const response = await fetch(fileLink);
-    const buffer = await response.arrayBuffer();
-    await fs.writeFile(destino, Buffer.from(buffer));
+    if (!response.ok) throw new Error('la descarga del archivo falló');
+    await guardarBuffer('archivos', `telegram_${Date.now()}.jpg`, Buffer.from(await response.arrayBuffer()));
 
     await enviar(chatId, '✅ Foto guardada correctamente.');
   } catch (error) {

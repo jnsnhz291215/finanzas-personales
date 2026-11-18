@@ -6,6 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import { resolverTipos, requiereDestino } from '../tiposMovimiento.js';
+import { almacenamientoMulter, rutaRelativaDeMulter } from '../storage.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,18 +15,8 @@ const router = express.Router();
 
 router.use(requireAuth);
 
-// Configurar multer para respaldos (usa ruta configurable del .env)
-const storage = multer.diskStorage({
-  destination: async (req, file, cb) => {
-    const uploadDir = process.env.RESPALDOS_PATH || path.join(__dirname, '../../uploads/respaldos');
-    await fs.mkdir(uploadDir, { recursive: true });
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, uniqueSuffix + path.extname(file.originalname));
-  }
-});
+// Los respaldos se guardan en <FINANZAS_STORAGE>/comprobantes/{YYYY-MM}/ (ver storage.js)
+const storage = almacenamientoMulter('comprobantes', { soloExtension: true });
 
 const upload = multer({ 
   storage,
@@ -144,7 +135,7 @@ router.post('/', upload.single('respaldo'), async (req, res) => {
       return res.status(400).json({ error: destino.error });
     }
     
-    const archivo_respaldo = req.file ? `/uploads/respaldos/${req.file.filename}` : null;
+    const archivo_respaldo = req.file ? rutaRelativaDeMulter('comprobantes', req.file) : null;
     
     const [result] = await query(
       `INSERT INTO movimientos (cuenta_id, cuenta_destino_id, fecha, descripcion, monto, tipo, tipo_movimiento, categoria_id, persona_prestamo, es_prestamo, notas, archivo_respaldo)
@@ -174,7 +165,7 @@ router.put('/:id', upload.single('respaldo'), async (req, res) => {
     let archivo_respaldo = req.body.archivo_respaldo_actual;
     
     if (req.file) {
-      archivo_respaldo = `/uploads/respaldos/${req.file.filename}`;
+      archivo_respaldo = rutaRelativaDeMulter('comprobantes', req.file);
     }
     
     await query(

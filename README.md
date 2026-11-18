@@ -95,19 +95,30 @@ source database/crear_usuario.sql
 exit
 ```
 
-### 3. Configurar Rutas de Almacenamiento
+### 3. Configurar el Almacenamiento
+
+Todos los archivos (cartolas, comprobantes y lo que se manda al bot) viven bajo **una sola raíz**,
+`FINANZAS_STORAGE`, ordenados por tipo y por mes de recepción (hora de Chile):
+
+```
+<FINANZAS_STORAGE>/
+├── cartolas/{YYYY-MM}/       cartolas importadas (web y bot)
+├── comprobantes/{YYYY-MM}/   comprobantes de cuotas y respaldos de movimientos
+├── archivos/{YYYY-MM}/       otros archivos que se mandan al bot
+└── tmp/
+```
+
+- **Producción** (junto a las apps de Basalto): `FINANZAS_STORAGE=/home/basalto/apps/finanzas-juan/storage`
+- **Desarrollo**: si la variable está vacía se usa `storage/` en la raíz del repo (ignorada por git).
+- El servidor crea las carpetas al arrancar; la raíz debe poder escribirse.
+- En la base de datos se guarda la ruta relativa a la raíz, por ejemplo `comprobantes/2026-11/respaldo_cuota_123_foto.jpg`.
+- `CARTOLAS_PATH` y `RESPALDOS_PATH` están **obsoletas**: si siguen definidas mandan para su tipo y el servidor avisa al
+  arrancar. Los registros anteriores (`/uploads/respaldos/<archivo>`, rutas absolutas de cartolas) se siguen resolviendo y los
+  archivos existentes **no se mueven**.
 
 ```bash
-# Crear carpetas en el NAS o servidor (ajustar rutas según tu configuración)
-mkdir -p /ruta/al/nas/finanzas-juan/uploads
-mkdir -p /ruta/al/nas/finanzas-juan/cartolas
-mkdir -p /ruta/al/nas/finanzas-juan/respaldos
-
-# Dar permisos de escritura
-chmod 755 /ruta/al/nas/finanzas-juan
-chmod 755 /ruta/al/nas/finanzas-juan/uploads
-chmod 755 /ruta/al/nas/finanzas-juan/cartolas
-chmod 755 /ruta/al/nas/finanzas-juan/respaldos
+mkdir -p /home/basalto/apps/finanzas-juan/storage
+chmod 755 /home/basalto/apps/finanzas-juan/storage
 ```
 
 ### 4. Configurar Variables de Entorno
@@ -138,10 +149,8 @@ SESSION_SECRET=genera_uno_con_openssl_rand_base64_32
 # Contraseña inicial (cambiarla después del primer login)
 ADMIN_PASSWORD=cambiar123
 
-# Rutas de almacenamiento (AJUSTAR A TU SERVIDOR/NAS)
-UPLOADS_PATH=/ruta/al/nas/finanzas-juan/uploads
-CARTOLAS_PATH=/ruta/al/nas/finanzas-juan/cartolas
-RESPALDOS_PATH=/ruta/al/nas/finanzas-juan/respaldos
+# Raíz del almacenamiento (ver la sección Configurar el Almacenamiento)
+FINANZAS_STORAGE=/home/basalto/apps/finanzas-juan/storage
 ```
 
 ### 5. Instalar Dependencias
