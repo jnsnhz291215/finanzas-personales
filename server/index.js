@@ -11,6 +11,7 @@ import movimientosRoutes from './routes/movimientos.js';
 import importarRoutes from './routes/importar.js';
 import dashboardRoutes from './routes/dashboard.js';
 import prestamosRoutes from './routes/prestamos.js';
+import { planAhorroRouter, gastosFijosRouter } from './routes/planAhorro.js';
 import { inicializarDB } from './db.js';
 import { iniciarBot, detenerBot } from './telegram/bot.js';
 
@@ -54,6 +55,8 @@ app.use('/api/movimientos', movimientosRoutes);
 app.use('/api/importar', importarRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/prestamos', prestamosRoutes);
+app.use('/api/plan-ahorro', planAhorroRouter);
+app.use('/api/gastos-fijos', gastosFijosRouter);
 
 // Servir frontend en producción
 if (process.env.NODE_ENV === 'production') {

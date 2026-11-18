@@ -18,6 +18,15 @@ import {
   ETIQUETAS_TIPO_TRANSFERENCIA
 } from './datosTransferencia.js';
 import {
+  obtenerPlan,
+  listarGastosFijos,
+  crearGastoFijo,
+  validarGastoFijo,
+  parsearFijo,
+  detectarConsultaPlan,
+  TIPOS_GASTO_LIBRE
+} from '../planAhorro.js';
+import {
   parsearCuenta,
   nombrePorDefecto,
   enmascararDigitos,
@@ -149,6 +158,7 @@ export async function iniciarBot() {
     configurarComandos();
     configurarComandosCuentas();
     configurarComandosDatos();
+    configurarComandosPlan();
     configurarManejadores();
 
     // Menú "/" de Telegram; no bloquea el arranque y no lanza
@@ -213,6 +223,12 @@ function textoAyuda() {
     '/borrardatos - Eliminar un registro\n' +
     'Ejemplo: /savetrans mercado pago cuenta vista 1234567890 juan sanhueza rut 12.345.678-5 correo juan@mail.com\n' +
     'Para pedirlos escribe: pásame los datos de transferencia de la mercado pago\n\n' +
+    '<b>Plan de ahorro:</b>\n' +
+    '/plan - Cuánto ahorrar, cuánto tienes fijo y cuánto te queda para gastar\n' +
+    '/fijo - Agregar un gasto fijo\n' +
+    '/fijos - Ver tus gastos fijos\n' +
+    'Ejemplo: /fijo arriendo 350 mil el 5\n' +
+    'También puedes preguntar: cuánto puedo gastar\n\n' +
     '<b>Consultas:</b>\n' +
     '/resumen - Resumen del mes actual\n' +
     '/ultimos - Últimos 10 movimientos\n' +
@@ -236,6 +252,9 @@ const COMANDOS_MENU = [
   { command: 'misdatos', description: 'Ver mis alias de transferencia' },
   { command: 'datos', description: 'Pedir mis datos de transferencia' },
   { command: 'borrardatos', description: 'Eliminar datos de transferencia' },
+  { command: 'plan', description: 'Ver mi plan de ahorro del mes' },
+  { command: 'fijo', description: 'Agregar un gasto fijo' },
+  { command: 'fijos', description: 'Ver mis gastos fijos' },
   { command: 'resumen', description: 'Resumen del mes actual' },
   { command: 'ultimos', description: 'Ver los últimos 10 movimientos' },
   { command: 'borrar_ultimo', description: 'Eliminar el último movimiento' },
@@ -493,6 +512,11 @@ function configurarManejadores() {
       return;
     }
 
+    // "cuánto puedo gastar", "cuánto me queda"... (sin monto): resumen del plan de ahorro
+    if (msg.text && await manejarConsultaPlan(msg)) {
+      return;
+    }
+
     // Un número solo corrige el monto del movimiento pendiente
     if (msg.text && await actualizarMontoPendiente(msg)) {
       return;
@@ -524,6 +548,11 @@ function configurarManejadores() {
       return;
     }
 
+    // Botones de gastos fijos (/fijo)
+    if (await manejarCallbackFijos(cb, chatId, data)) {
+      return;
+    }
+
     // Guardar transacción
     if (data.startsWith('save_')) {
       const txId = data.replace('save_', '');
@@ -542,6 +571,7 @@ function configurarManejadores() {
       try {
         await guardarMovimiento(tx);
         pendingTransactions.delete(txId);
+        const lineaPlan = await lineaDisponiblePlan(tx);
 
         await editar(
           `✅ <b>Movimiento guardado</b>\n\n` +
@@ -550,7 +580,7 @@ function configurarManejadores() {
           `Tipo: ${esc(ETIQUETAS_TIPO[tx.tipo_movimiento] ?? tx.tipo_movimiento)}\n` +
           `📅 ${formatearFechaCL(tx.fecha)}\n` +
           (tx.cuentaDestinoNombre ? `Cuenta destino: ${esc(tx.cuentaDestinoNombre)}\n` : '') +
-          `🏷 ${esc(tx.categoria || 'Sin categoría')}`,
+          `🏷 ${esc(tx.categoria || 'Sin categoría')}` + lineaPlan,
           {
             chat_id: chatId,
             message_id: cb.message.message_id
@@ -2143,6 +2173,216 @@ async function manejarCallbackDatos(cb, chatId, data) {
   }
 
   if (data === 'bdn_x') {
+    await editar('Cancelado', { chat_id: chatId, message_id: messageId });
+    await responderCallback(cb.id, { text: 'Cancelado' });
+    return true;
+  }
+
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Plan de ahorro: /plan, /fijo, /fijos y consultas sin comando
+// ---------------------------------------------------------------------------
+
+// Gastos fijos pendientes de confirmar: clave -> { datos }
+const pendingFijos = new Map();
+
+/** Monto en pesos con signo: -$12.345 */
+function montoPlan(n) {
+  return `${n < 0 ? '-' : ''}$${formatearMonto(Math.abs(n))}`;
+}
+
+function textoResumenPlan(r) {
+  const mesNombre = new Date(r.mes.anio, r.mes.mes - 1).toLocaleString('es-CL', { month: 'long' });
+  const lineas = [
+    `<b>Plan de ahorro de ${esc(mesNombre)} ${r.mes.anio}</b>`,
+    '',
+    `Ingreso del mes: ${montoPlan(r.ingreso)} (${r.ingresoOrigen === 'base' ? 'base' : 'real'})`,
+    `Meta de ahorro (${r.porcentajes.ahorro}%): ${montoPlan(r.metaAhorro)}`,
+    `Gastos fijos: ${montoPlan(r.fijos.real)} (presupuesto ${r.porcentajes.fijos}%: ${montoPlan(r.fijos.presupuesto)})`,
+    `Presupuesto libre: ${montoPlan(r.libre.presupuesto)}`,
+    `Gastado libre: ${montoPlan(r.libre.gastado)} (${r.libre.porcentajeUsado}%)`,
+    `Disponible para gastar: ${montoPlan(r.disponible)}`,
+    `Disponible por día: ${montoPlan(r.disponiblePorDia)} (quedan ${r.mes.diasRestantes} días)`
+  ];
+  if (r.alertas.length > 0) {
+    lineas.push('', '<b>Alertas:</b>', ...r.alertas.map(a => `- ${esc(a.mensaje)}`));
+  }
+  return lineas.join('\n');
+}
+
+async function responderPlan(chatId) {
+  try {
+    const { resumen } = await obtenerPlan();
+    await enviar(chatId, textoResumenPlan(resumen));
+  } catch (error) {
+    console.error('Error al calcular el plan de ahorro:', error.code ?? error.name);
+    await enviar(chatId, 'Error al calcular el plan de ahorro.');
+  }
+}
+
+/** "cuánto puedo gastar", "cuánto me queda"... sin comando y sin monto. true si lo atendió */
+async function manejarConsultaPlan(msg) {
+  if (!detectarConsultaPlan(msg.text)) return false;
+  await responderPlan(msg.chat.id);
+  return true;
+}
+
+/**
+ * Línea corta con lo que queda del mes, para agregar después de guardar un gasto.
+ * Vacía si no aplica (no es un gasto libre) o si el plan no tiene ingresos; nunca lanza.
+ */
+async function lineaDisponiblePlan(tx) {
+  try {
+    if (tx.tipo !== 'cargo' || !TIPOS_GASTO_LIBRE.includes(tx.tipo_movimiento)) return '';
+    const { resumen } = await obtenerPlan();
+    if (resumen.ingreso <= 0) return '';
+    return `\nDisponible este mes: ${montoPlan(resumen.disponible)}` +
+      (resumen.disponible > 0 ? ` (${montoPlan(resumen.disponiblePorDia)} por día)` : '');
+  } catch {
+    return '';
+  }
+}
+
+function textoConfirmacionFijo(datos) {
+  return (
+    '<b>Confirmar gasto fijo:</b>\n\n' +
+    `Nombre: ${esc(datos.nombre)}\n` +
+    `Monto: $${formatearMonto(datos.monto)}\n` +
+    `Día de pago: ${datos.diaPago ?? 'sin indicar'}`
+  );
+}
+
+function configurarComandosPlan() {
+  const rechazar = (chatId) => enviar(chatId, 'No estás autorizado para usar este bot.');
+
+  // /plan
+  bot.onText(/^\/plan(?:@\w+)?\s*$/i, async (msg) => {
+    const chatId = msg.chat.id;
+    if (!esChatAutorizado(chatId)) {
+      await rechazar(chatId);
+      return;
+    }
+    await responderPlan(chatId);
+  });
+
+  // /fijo arriendo 350 mil el 5
+  bot.onText(/^\/fijo(?:@\w+)?(?:\s+([\s\S]+))?$/i, async (msg, match) => {
+    const chatId = msg.chat.id;
+    if (!esChatAutorizado(chatId)) {
+      await rechazar(chatId);
+      return;
+    }
+
+    const parsed = parsearFijo(match[1] || '');
+    if (!parsed.nombre || !parsed.monto) {
+      await enviar(chatId,
+        '<b>Agregar un gasto fijo</b>\n\n' +
+        'Escribe el nombre, el monto y, si quieres, el día de pago:\n' +
+        '/fijo arriendo 350 mil el 5\n' +
+        '/fijo internet 25.990 el 10'
+      );
+      return;
+    }
+
+    try {
+      const existentes = await listarGastosFijos();
+      const repetido = existentes.find(f => normalizar(f.nombre) === normalizar(parsed.nombre));
+      if (repetido) {
+        await enviar(chatId,
+          `Ya existe un gasto fijo llamado <b>${esc(repetido.nombre)}</b> ($${formatearMonto(repetido.monto)}). ` +
+          'Edítalo desde la página Plan de ahorro.'
+        );
+        return;
+      }
+
+      const key = `${chatId}_${Date.now()}`;
+      pendingFijos.set(key, { datos: parsed });
+      setTimeout(() => pendingFijos.delete(key), 5 * 60 * 1000);
+
+      await enviar(chatId, textoConfirmacionFijo(parsed), {
+        reply_markup: {
+          inline_keyboard: [[
+            { text: 'Guardar', callback_data: `fjs_${key}` },
+            { text: 'Cancelar', callback_data: `fjx_${key}` }
+          ]]
+        }
+      });
+    } catch (error) {
+      console.error('Error al preparar el gasto fijo:', error.code ?? error.name);
+      await enviar(chatId, 'Error al procesar el gasto fijo.');
+    }
+  });
+
+  // /fijos
+  bot.onText(/^\/fijos(?:@\w+)?\s*$/i, async (msg) => {
+    const chatId = msg.chat.id;
+    if (!esChatAutorizado(chatId)) {
+      await rechazar(chatId);
+      return;
+    }
+
+    try {
+      const fijos = await listarGastosFijos();
+      if (fijos.length === 0) {
+        await enviar(chatId, 'No tienes gastos fijos. Agrega uno con /fijo arriendo 350 mil el 5.');
+        return;
+      }
+      const total = fijos.reduce((suma, f) => suma + f.monto, 0);
+      await enviar(chatId,
+        '<b>Tus gastos fijos:</b>\n\n' +
+        fijos
+          .map((f, i) => `${i + 1}. <b>${esc(f.nombre)}</b> - $${formatearMonto(f.monto)}${f.dia_pago ? ` - día ${f.dia_pago}` : ''}`)
+          .join('\n') +
+        `\n\nTotal: $${formatearMonto(total)}`
+      );
+    } catch (error) {
+      console.error('Error al listar gastos fijos:', error.code ?? error.name);
+      await enviar(chatId, 'Error al obtener los gastos fijos.');
+    }
+  });
+}
+
+/** Botones de /fijo. Devuelve true si el callback era de este módulo. */
+async function manejarCallbackFijos(cb, chatId, data) {
+  const messageId = cb.message.message_id;
+
+  if (data.startsWith('fjs_')) {
+    const key = data.replace('fjs_', '');
+    const pendiente = pendingFijos.get(key);
+    if (!pendiente) {
+      await responderCallback(cb.id, { text: 'Solicitud expirada' });
+      return true;
+    }
+
+    try {
+      const validado = validarGastoFijo({
+        nombre: pendiente.datos.nombre,
+        monto: pendiente.datos.monto,
+        dia_pago: pendiente.datos.diaPago
+      });
+      if (!validado.ok) {
+        await responderCallback(cb.id, { text: validado.error });
+        return true;
+      }
+
+      await crearGastoFijo(validado.valores);
+      pendingFijos.delete(key);
+      await editar(
+        `Gasto fijo guardado: <b>${esc(validado.valores.nombre)}</b> ($${formatearMonto(validado.valores.monto)}).`,
+        { chat_id: chatId, message_id: messageId }
+      );
+      await responderCallback(cb.id, { text: 'Guardado' });
+    } catch (error) {
+      console.error('Error al guardar gasto fijo:', error.code ?? error.name);
+      await responderCallback(cb.id, { text: 'Error al guardar' });
+    }
+    return true;
+  }
+
+  if (data.startsWith('fjx_')) {
+    pendingFijos.delete(data.replace('fjx_', ''));
     await editar('Cancelado', { chat_id: chatId, message_id: messageId });
     await responderCallback(cb.id, { text: 'Cancelado' });
     return true;

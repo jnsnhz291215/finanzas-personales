@@ -13,6 +13,7 @@ export default function Dashboard() {
   const [tarjetas, setTarjetas] = useState([]);
   const [prestamos, setPrestamos] = useState([]);
   const [recientes, setRecientes] = useState([]);
+  const [plan, setPlan] = useState(null);
   const [cargando, setCargando] = useState(true);
   const { mes, anio } = mesAnioActual();
 
@@ -28,6 +29,9 @@ export default function Dashboard() {
         api.get('/dashboard/prestamos-pendientes'),
         api.get('/dashboard/recientes?limite=10')
       ]);
+
+      // El plan de ahorro es opcional: si falla, el panel se muestra igual
+      api.get('/plan-ahorro').then(res => setPlan(res.data.resumen)).catch(() => setPlan(null));
 
       setResumen(resumenRes.data);
       setTarjetas(tarjetasRes.data);
@@ -288,6 +292,30 @@ export default function Dashboard() {
             ))}
           </div>
         </div>
+      )}
+
+      {/* Plan de ahorro */}
+      {plan && (
+        <Link to="/plan-ahorro" className="card hover:shadow-md transition-shadow cursor-pointer block">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center">
+              <div className="w-12 h-12 bg-green-200 rounded-full flex items-center justify-center mr-4">
+                <i className="fas fa-piggy-bank text-green-700 text-xl"></i>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-600">Plan de ahorro</p>
+                <p className={`text-xl font-bold ${plan.disponible >= 0 ? 'text-blue-900' : 'text-orange-900'}`}>
+                  {formatCLP(plan.disponible)} <span className="text-sm font-normal text-gray-600">para gastar</span>
+                </p>
+              </div>
+            </div>
+            <div className="text-right">
+              <p className="text-xs text-gray-500">Meta de ahorro</p>
+              <p className="font-semibold text-green-700">{formatCLP(plan.metaAhorro)}</p>
+              <p className="text-xs text-blue-600 mt-1">Ver plan <i className="fas fa-arrow-right ml-1"></i></p>
+            </div>
+          </div>
+        </Link>
       )}
 
       {/* Movimientos Recientes */}

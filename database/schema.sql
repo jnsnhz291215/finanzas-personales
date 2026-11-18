@@ -97,6 +97,33 @@ CREATE TABLE IF NOT EXISTS movimientos (
   INDEX idx_prestamo (es_prestamo, persona_prestamo)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Plan de ahorro mensual (una sola fila) y gastos fijos
+CREATE TABLE IF NOT EXISTS plan_ahorro (
+  id TINYINT PRIMARY KEY DEFAULT 1,
+  ingreso_base DECIMAL(15,2) NULL,
+  pct_fijos DECIMAL(5,2) NOT NULL DEFAULT 50,
+  pct_libres DECIMAL(5,2) NOT NULL DEFAULT 30,
+  pct_ahorro DECIMAL(5,2) NOT NULL DEFAULT 20,
+  actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CHECK (id = 1)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+INSERT IGNORE INTO plan_ahorro (id) VALUES (1);
+
+CREATE TABLE IF NOT EXISTS gastos_fijos (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  nombre VARCHAR(100) NOT NULL,
+  monto DECIMAL(15,2) NOT NULL,
+  dia_pago TINYINT NULL,
+  categoria_id INT NULL,
+  cuenta_id INT NULL,
+  activo BOOLEAN NOT NULL DEFAULT TRUE,
+  creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (categoria_id) REFERENCES categorias(id) ON DELETE SET NULL,
+  FOREIGN KEY (cuenta_id) REFERENCES cuentas(id) ON DELETE SET NULL,
+  INDEX idx_activo (activo)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Mis datos de transferencia (los que entrego para que me depositen), uno por cuenta o institución
 CREATE TABLE IF NOT EXISTS datos_transferencia (
   id INT PRIMARY KEY AUTO_INCREMENT,

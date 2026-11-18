@@ -9,6 +9,7 @@ import Movimientos from './pages/Movimientos';
 import Importar from './pages/Importar';
 import Prestamos from './pages/Prestamos';
 import Categorias from './pages/Categorias';
+import PlanAhorro from './pages/PlanAhorro';
 
 function App() {
   const [usuario, setUsuario] = useState(null);
@@ -74,6 +75,7 @@ function App() {
         <Route path="/importar" element={<Importar />} />
         <Route path="/prestamos" element={<Prestamos />} />
         <Route path="/categorias" element={<Categorias />} />
+        <Route path="/plan-ahorro" element={<PlanAhorro />} />
         <Route path="*" element={<Navigate to="/" />} />
       </Routes>
     </Layout>

@@ -41,6 +41,40 @@ if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
   }
 
   /**
+   * Migración idempotente (MariaDB): plan_ahorro (una sola fila, id = 1) y gastos_fijos.
+   */
+  async function migrarPlanAhorro(connection) {
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS plan_ahorro (
+        id TINYINT PRIMARY KEY DEFAULT 1,
+        ingreso_base DECIMAL(15,2) NULL,
+        pct_fijos DECIMAL(5,2) NOT NULL DEFAULT 50,
+        pct_libres DECIMAL(5,2) NOT NULL DEFAULT 30,
+        pct_ahorro DECIMAL(5,2) NOT NULL DEFAULT 20,
+        actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        CHECK (id = 1)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await connection.query('INSERT IGNORE INTO plan_ahorro (id) VALUES (1)');
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS gastos_fijos (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        nombre VARCHAR(100) NOT NULL,
+        monto DECIMAL(15,2) NOT NULL,
+        dia_pago TINYINT NULL,
+        categoria_id INT NULL,
+        cuenta_id INT NULL,
+        activo BOOLEAN NOT NULL DEFAULT TRUE,
+        creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (categoria_id) REFERENCES categorias(id) ON DELETE SET NULL,
+        FOREIGN KEY (cuenta_id) REFERENCES cuentas(id) ON DELETE SET NULL,
+        INDEX idx_activo (activo)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+  }
+
+  /**
    * Migración idempotente (MariaDB): tabla datos_transferencia, con mis propios datos para que
    * me depositen. Va aparte de cuentas porque cuenta_id es opcional y porque la API de cuentas
    * devuelve todas sus columnas.
@@ -140,6 +174,7 @@ if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
         await migrarDatosCuenta(connection);
         await migrarTipoEfectivo(connection);
         await migrarDatosTransferencia(connection);
+        await migrarPlanAhorro(connection);
         
         const [usuarios] = await connection.query('SELECT * FROM usuario LIMIT 1');
         

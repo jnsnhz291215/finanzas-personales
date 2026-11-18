@@ -125,6 +125,9 @@ export async function inicializarDB() {
     // Migración: tabla datos_transferencia
     migrarDatosTransferencia(database);
 
+    // Migración: plan de ahorro y gastos fijos
+    migrarPlanAhorro(database);
+
     // Insertar categorías por defecto
     const categorias = [
       ['Supermercado', '#10B981', 'fa-shopping-cart'],
@@ -251,6 +254,38 @@ function migrarTipoEfectivo(database) {
   } finally {
     database.pragma('foreign_keys = ON');
   }
+}
+
+/**
+ * Migración idempotente (SQLite): plan_ahorro (una sola fila, id = 1) y gastos_fijos.
+ * La suma de porcentajes (100) se valida en la API: un CHECK sobre REAL fallaría por
+ * redondeo de decimales.
+ */
+function migrarPlanAhorro(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS plan_ahorro (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      ingreso_base REAL,
+      pct_fijos REAL NOT NULL DEFAULT 50,
+      pct_libres REAL NOT NULL DEFAULT 30,
+      pct_ahorro REAL NOT NULL DEFAULT 20,
+      actualizado_en DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    INSERT OR IGNORE INTO plan_ahorro (id) VALUES (1);
+
+    CREATE TABLE IF NOT EXISTS gastos_fijos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nombre TEXT NOT NULL,
+      monto REAL NOT NULL,
+      dia_pago INTEGER,
+      categoria_id INTEGER REFERENCES categorias(id) ON DELETE SET NULL,
+      cuenta_id INTEGER REFERENCES cuentas(id) ON DELETE SET NULL,
+      activo INTEGER NOT NULL DEFAULT 1,
+      creado_en DATETIME DEFAULT CURRENT_TIMESTAMP,
+      actualizado_en DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_gastos_fijos_activo ON gastos_fijos(activo);
+  `);
 }
 
 /**
