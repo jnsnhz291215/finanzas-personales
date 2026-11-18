@@ -25,9 +25,10 @@ import {
   separarReglaYCategoria,
   listarReglas,
   crearRegla,
-  borrarRegla
+  borrarRegla,
+  gastosDelMes
 } from '../gestion.js';
-import { resumenDeudas, registrarPagoDeuda } from '../deudas.js';
+import { resumenDeudas, registrarPagoDeuda, canonizarPersona } from '../deudas.js';
 import {
   cargarPlan,
   guardarPlan,
@@ -88,11 +89,15 @@ export function crearAdmin(ctx) {
       `Tipo: ${esc(ETIQUETAS_TIPO[m.tipo_movimiento] ?? m.tipo_movimiento)}`,
       `Categoría: ${m.categoria_nombre ? esc(m.categoria_nombre) : 'sin categoría'}`,
       `Cuenta: ${m.cuenta_nombre ? esc(m.cuenta_nombre) : 'sin indicar'}`,
-      ...(m.cuenta_destino_nombre ? [`Cuenta destino: ${esc(m.cuenta_destino_nombre)}`] : [])
+      ...(m.cuenta_destino_nombre ? [`Cuenta destino: ${esc(m.cuenta_destino_nombre)}`] : []),
+      ...(esPrestamo(m) ? [`Préstamo a: ${esc(m.persona_prestamo)}`] : [])
     ].join('\n');
   }
 
-  function tecladoMovimiento(id) {
+  const esPrestamo = (m) => Number(m.es_prestamo) === 1 && Boolean(m.persona_prestamo);
+
+  function tecladoMovimiento(m) {
+    const id = m.id;
     return {
       reply_markup: {
         inline_keyboard: [
@@ -104,7 +109,12 @@ export function crearAdmin(ctx) {
             { text: 'Editar cuenta', callback_data: `mvu_${id}` },
             { text: 'Editar tipo', callback_data: `mvt_${id}` }
           ],
-          [{ text: 'Borrar', callback_data: `mvb_${id}` }]
+          [
+            esPrestamo(m)
+              ? { text: 'Quitar préstamo', callback_data: `mvq_${id}` }
+              : { text: 'Marcar como préstamo', callback_data: `mvl_${id}` },
+            { text: 'Borrar', callback_data: `mvb_${id}` }
+          ]
         ]
       }
     };
@@ -120,7 +130,7 @@ export function crearAdmin(ctx) {
     await editar(textoMovimiento(movimiento) + aviso, {
       chat_id: chatId,
       message_id: messageId,
-      ...tecladoMovimiento(id)
+      ...tecladoMovimiento(movimiento)
     });
   }
 
@@ -131,7 +141,9 @@ export function crearAdmin(ctx) {
     }
 
     const lineas = filas.map((m, i) =>
-      `${i + 1}. ${formatearFechaCL(m.fecha)} - ${esc(m.descripcion)} - ${m.tipo === 'cargo' ? '-' : '+'}${dinero(Number(m.monto))}`
+      `${i + 1}. ${formatearFechaCL(m.fecha)} - ${esc(m.descripcion)} - ${m.tipo === 'cargo' ? '-' : '+'}${dinero(Number(m.monto))}\n` +
+      `   ${esc(m.categoria_nombre || 'sin categoría')} | ${esc(m.cuenta_nombre || 'sin cuenta')}` +
+      (esPrestamo(m) ? ` | préstamo: ${esc(m.persona_prestamo)}` : '')
     );
     await enviar(chatId, `<b>${esc(titulo)}</b>\n\n${lineas.join('\n')}\n\nToca un movimiento para editarlo o borrarlo.`, {
       reply_markup: {
@@ -173,7 +185,7 @@ export function crearAdmin(ctx) {
         await responderCallback(cb.id, { text: 'El movimiento ya no existe' });
         return true;
       }
-      await enviar(chatId, textoMovimiento(movimiento), tecladoMovimiento(m[1]));
+      await enviar(chatId, textoMovimiento(movimiento), tecladoMovimiento(movimiento));
       await responderCallback(cb.id, {});
       return true;
     }
@@ -256,6 +268,20 @@ export function crearAdmin(ctx) {
         ? await actualizarMovimiento(m[1], { tipo_movimiento: tipo, cuenta_destino_id: Number(m[3]) })
         : { ok: false, error: 'Tipo no válido' };
       await responderCallback(cb.id, { text: r.ok ? 'Tipo actualizado' : r.error });
+      await refrescarMovimiento(chatId, messageId, m[1]);
+      return true;
+    }
+
+    // Marcar como préstamo: se espera el nombre de la persona
+    if ((m = partes(/^mvl_(\d+)$/))) {
+      esperar(chatId, { accion: 'mov_prestamo', id: m[1], messageId });
+      await enviar(chatId, 'Escribe el nombre de la persona a quien le prestaste.', botonCancelar);
+      await responderCallback(cb.id, {});
+      return true;
+    }
+    if ((m = partes(/^mvq_(\d+)$/))) {
+      const r = await actualizarMovimiento(m[1], { es_prestamo: 0, persona_prestamo: null });
+      await responderCallback(cb.id, { text: r.ok ? 'Ya no es préstamo' : r.error });
       await refrescarMovimiento(chatId, messageId, m[1]);
       return true;
     }
@@ -666,6 +692,18 @@ export function crearAdmin(ctx) {
         return true;
       }
 
+      if (espera.accion === 'mov_prestamo') {
+        const persona = await canonizarPersona(texto.slice(0, 100));
+        const r = await actualizarMovimiento(espera.id, { es_prestamo: 1, persona_prestamo: persona });
+        esperando.delete(chatId);
+        if (!r.ok) {
+          await enviar(chatId, esc(r.error));
+          return true;
+        }
+        await refrescarMovimiento(chatId, espera.messageId, espera.id, `\n\nMarcado como préstamo a ${esc(persona)}.`);
+        return true;
+      }
+
       if (espera.accion === 'plan_ingreso') {
         if (await aplicarIngresoBase(chatId, texto)) esperando.delete(chatId);
         return true;
@@ -837,6 +875,36 @@ export function crearAdmin(ctx) {
           ? `Regla creada: los mensajes que contengan "${esc(texto.toLowerCase())}" se asignan a <b>${esc(categoria.nombre)}</b>.`
           : esc(r.error)
       );
+    });
+
+    // /gastos: gastos del mes por categoría y uso de cupo de las tarjetas de crédito
+    comando(/^\/gastos(?:@\w+)?\s*$/i, async (chatId) => {
+      const r = await gastosDelMes(fechaHoySantiago());
+      const mesNombre = new Date(r.anio, r.mes - 1).toLocaleString('es-CL', { month: 'long' });
+
+      const lineas = [`<b>Gastos de ${esc(mesNombre)} ${r.anio}</b>`, '', `Total: ${dinero(r.total)}`];
+      if (r.categorias.length === 0) {
+        lineas.push('', 'Todavía no hay gastos este mes.');
+      } else {
+        lineas.push('', '<b>Por categoría:</b>');
+        for (const c of r.categorias) {
+          const pct = r.total > 0 ? Math.round(c.total / r.total * 100) : 0;
+          lineas.push(`${esc(c.categoria)}: ${dinero(c.total)} (${pct}%)`);
+        }
+      }
+
+      if (r.tarjetas.length > 0) {
+        lineas.push('', '<b>Tarjetas de crédito (uso del mes):</b>');
+        for (const t of r.tarjetas) {
+          lineas.push(
+            t.cupo === null
+              ? `${esc(t.nombre)}: usado ${dinero(t.usado)} (sin cupo definido)`
+              : `${esc(t.nombre)}: usado ${dinero(t.usado)} de ${dinero(t.cupo)} (${t.porcentaje}%), disponible ${dinero(t.disponible)}`
+          );
+        }
+      }
+
+      await enviar(chatId, lineas.join('\n'));
     });
 
     // /deudas

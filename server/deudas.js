@@ -63,3 +63,19 @@ export async function registrarPagoDeuda({ persona, monto, fecha, notas }) {
   const [pago] = await query('SELECT * FROM pagos_prestamos WHERE id = ?', [resultado.insertId]);
   return pago[0];
 }
+
+function sinTildes(texto) {
+  return String(texto ?? '').normalize('NFC').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+/**
+ * Nombre de una persona tal como ya existe en tus préstamos y pagos (sin distinguir tildes ni
+ * mayúsculas) para no duplicarla; si es nueva, se devuelve con la primera letra de cada
+ * palabra en mayúscula.
+ */
+export async function canonizarPersona(texto) {
+  const limpio = String(texto ?? '').replace(/\s+/g, ' ').trim();
+  const existente = (await resumenDeudas()).find(r => sinTildes(r.persona) === sinTildes(limpio));
+  if (existente) return existente.persona;
+  return limpio.split(' ').map(p => (p ? p[0].toUpperCase() + p.slice(1) : p)).join(' ');
+}

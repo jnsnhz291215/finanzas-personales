@@ -4,7 +4,7 @@
  * las funciones puras se puedan probar sin base de datos.
  */
 
-import { resolverTipos, requiereDestino } from './tiposMovimiento.js';
+import { resolverTipos, requiereDestino, sqlExcluirInternos } from './tiposMovimiento.js';
 
 async function consulta() {
   return (await import('./db.js')).query;
@@ -99,7 +99,7 @@ export function interpretarBusqueda(consultaTexto, hoy) {
 
 const SELECT_MOVIMIENTO = `
   SELECT m.id, m.fecha, m.descripcion, m.monto, m.tipo, m.tipo_movimiento,
-         m.cuenta_id, m.cuenta_destino_id, m.categoria_id,
+         m.cuenta_id, m.cuenta_destino_id, m.categoria_id, m.es_prestamo, m.persona_prestamo,
          c.nombre AS cuenta_nombre, cd.nombre AS cuenta_destino_nombre, cat.nombre AS categoria_nombre
   FROM movimientos m
   LEFT JOIN cuentas c ON m.cuenta_id = c.id
@@ -119,15 +119,15 @@ export async function ultimosMovimientos(limite = 10) {
   return filas;
 }
 
-/** Movimientos que calzan con la búsqueda (texto en la descripción y/o rango de fechas) */
+/**
+ * Movimientos que calzan con la búsqueda (texto en la descripción y/o rango de fechas).
+ * El texto se compara en JS sin tildes ni mayúsculas, porque LIKE de SQLite solo ignora
+ * mayúsculas ASCII: se leen los 5.000 movimientos más recientes del rango y se filtra aquí.
+ */
 export async function buscarMovimientos({ texto, desde, hasta }, limite = 15) {
   const query = await consulta();
   const condiciones = [];
   const params = [];
-  if (texto) {
-    condiciones.push('m.descripcion LIKE ?');
-    params.push(`%${texto}%`);
-  }
   if (desde && hasta) {
     condiciones.push('m.fecha BETWEEN ? AND ?');
     params.push(desde, hasta);
@@ -135,9 +135,12 @@ export async function buscarMovimientos({ texto, desde, hasta }, limite = 15) {
   const donde = condiciones.length > 0 ? `WHERE ${condiciones.join(' AND ')}` : '';
   const [filas] = await query(
     `${SELECT_MOVIMIENTO} ${donde} ORDER BY m.fecha DESC, m.creado_en DESC LIMIT ?`,
-    [...params, limite]
+    [...params, texto ? 5000 : limite]
   );
-  return filas;
+  if (!texto) return filas;
+
+  const buscado = normalizar(texto);
+  return filas.filter(f => normalizar(f.descripcion).includes(buscado)).slice(0, limite);
 }
 
 export async function obtenerMovimiento(id) {
@@ -163,6 +166,8 @@ export async function actualizarMovimiento(id, cambios) {
     cuenta_destino_id: actual.cuenta_destino_id,
     tipo: actual.tipo,
     tipo_movimiento: actual.tipo_movimiento,
+    es_prestamo: actual.es_prestamo,
+    persona_prestamo: actual.persona_prestamo,
     ...cambios
   };
 
@@ -182,11 +187,20 @@ export async function actualizarMovimiento(id, cambios) {
   const monto = Number(nuevo.monto);
   if (!Number.isFinite(monto) || monto <= 0) return { ok: false, error: 'El monto debe ser mayor que 0' };
 
+  // Un préstamo necesita la persona; sin préstamo no se guarda persona
+  const esPrestamo = Number(nuevo.es_prestamo) === 1 || nuevo.es_prestamo === true;
+  const persona = esPrestamo ? String(nuevo.persona_prestamo ?? '').trim() : '';
+  if (esPrestamo && !persona) return { ok: false, error: 'Indica la persona del préstamo' };
+
   await query(
     `UPDATE movimientos
-     SET monto = ?, categoria_id = ?, cuenta_id = ?, cuenta_destino_id = ?, tipo = ?, tipo_movimiento = ?
+     SET monto = ?, categoria_id = ?, cuenta_id = ?, cuenta_destino_id = ?, tipo = ?, tipo_movimiento = ?,
+         es_prestamo = ?, persona_prestamo = ?
      WHERE id = ?`,
-    [monto, nuevo.categoria_id ?? null, nuevo.cuenta_id, nuevo.cuenta_destino_id ?? null, nuevo.tipo, nuevo.tipo_movimiento, id]
+    [
+      monto, nuevo.categoria_id ?? null, nuevo.cuenta_id, nuevo.cuenta_destino_id ?? null,
+      nuevo.tipo, nuevo.tipo_movimiento, esPrestamo ? 1 : 0, persona || null, id
+    ]
   );
   return { ok: true, movimiento: await obtenerMovimiento(id) };
 }
@@ -196,6 +210,62 @@ export async function borrarMovimiento(id) {
   const query = await consulta();
   const [resultado] = await query('DELETE FROM movimientos WHERE id = ?', [id]);
   return resultado.affectedRows > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Gastos del mes y uso de cupo (mismos criterios que el dashboard)
+// ---------------------------------------------------------------------------
+
+/**
+ * Gastos del mes de `hoy` por categoría (cargos sin pagos de tarjeta ni transferencias
+ * propias) y uso de cupo de cada tarjeta de crédito activa: cargos del mes menos los pagos
+ * recibidos, sin bajar de 0. Devuelve { anio, mes, total, categorias, tarjetas }.
+ */
+export async function gastosDelMes(hoy) {
+  const [anio, mes] = hoy.split('-').map(Number);
+  const { desde, hasta } = rangoMes(anio, mes);
+  const query = await consulta();
+  const interno = sqlExcluirInternos('m.');
+
+  const [filas] = await query(
+    `SELECT cat.nombre AS categoria, SUM(m.monto) AS total
+     FROM movimientos m
+     LEFT JOIN categorias cat ON m.categoria_id = cat.id
+     WHERE m.tipo = 'cargo' AND ${interno} AND m.fecha BETWEEN ? AND ?
+     GROUP BY cat.id, cat.nombre
+     ORDER BY total DESC`,
+    [desde, hasta]
+  );
+  const categorias = filas.map(f => ({ categoria: f.categoria ?? 'Sin categoría', total: Number(f.total) }));
+  const total = categorias.reduce((suma, c) => suma + c.total, 0);
+
+  const [cuentas] = await query(
+    "SELECT id, nombre, cupo_total FROM cuentas WHERE tipo = 'tarjeta_credito' AND activa = 1 ORDER BY nombre"
+  );
+  const tarjetas = [];
+  for (const t of cuentas) {
+    const [uso] = await query(
+      `SELECT COALESCE(SUM(m.monto), 0) AS total FROM movimientos m
+       WHERE m.cuenta_id = ? AND m.tipo = 'cargo' AND ${interno} AND m.fecha BETWEEN ? AND ?`,
+      [t.id, desde, hasta]
+    );
+    const [pagos] = await query(
+      `SELECT COALESCE(SUM(m.monto), 0) AS total FROM movimientos m
+       WHERE m.cuenta_destino_id = ? AND m.tipo_movimiento = 'pago_tarjeta' AND m.fecha BETWEEN ? AND ?`,
+      [t.id, desde, hasta]
+    );
+    const usado = Math.max(0, Number(uso[0].total) - Number(pagos[0].total));
+    const cupo = t.cupo_total === null || t.cupo_total === undefined ? null : Number(t.cupo_total);
+    tarjetas.push({
+      nombre: t.nombre,
+      usado,
+      cupo,
+      disponible: cupo === null ? null : cupo - usado,
+      porcentaje: cupo ? Math.round(usado / cupo * 100) : null
+    });
+  }
+
+  return { anio, mes, total, categorias, tarjetas };
 }
 
 // ---------------------------------------------------------------------------

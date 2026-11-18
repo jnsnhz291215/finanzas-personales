@@ -28,6 +28,8 @@ import {
 } from '../planAhorro.js';
 import { crearAdmin } from './admin.js';
 import { categoriaPorReglas } from '../gestion.js';
+import { canonizarPersona } from '../deudas.js';
+import { detectarPrestamo } from './prestamo.js';
 import {
   parsearCuenta,
   nombrePorDefecto,
@@ -63,6 +65,9 @@ let admin = null;
 
 // Estado temporal para confirmaciones
 const pendingTransactions = new Map();
+
+// Chat que está escribiendo la persona de un préstamo: chatId -> txId
+const esperandoPersona = new Map();
 
 // Códigos cortos de tipo para callback_data (Telegram limita a 64 bytes)
 const CODIGOS_TIPO = {
@@ -247,9 +252,11 @@ function textoAyuda() {
     '/regla uber transporte - Asignar una categoría automática por texto (sin argumentos lista las reglas)\n\n' +
     '<b>Deudas:</b>\n' +
     '/deudas - Quién te debe y cuánto\n' +
-    '/pago Pedro 20 mil - Registrar un pago\n\n' +
+    '/pago Pedro 20 mil - Registrar un pago\n' +
+    'Para marcar un gasto como préstamo escribe, por ejemplo: le pagué 15 mil a Christian con la CMR, me lo devuelve\n\n' +
     '<b>Consultas:</b>\n' +
-    '/resumen - Resumen del mes actual\n\n' +
+    '/resumen - Resumen del mes actual\n' +
+    '/gastos - Gastos del mes por categoría y uso de cupo de tus tarjetas\n\n' +
     '<b>Otros:</b>\n' +
     '/help - Mostrar esta ayuda (también /ayuda)\n' +
     '/miid - Obtener tu chat ID\n\n' +
@@ -273,6 +280,7 @@ const COMANDOS_MENU = [
   { command: 'fijo', description: 'Agregar un gasto fijo' },
   { command: 'fijos', description: 'Ver mis gastos fijos' },
   { command: 'resumen', description: 'Resumen del mes actual' },
+  { command: 'gastos', description: 'Gastos del mes por categoría y tarjetas' },
   { command: 'ultimos', description: 'Últimos movimientos (editar o borrar)' },
   { command: 'buscar', description: 'Buscar movimientos por texto o mes' },
   { command: 'categorias', description: 'Ver las categorías' },
@@ -496,6 +504,11 @@ function configurarManejadores() {
       return;
     }
 
+    // Nombre de la persona de un préstamo pendiente de confirmar
+    if (msg.text && await manejarPersonaPrestamo(msg)) {
+      return;
+    }
+
     // Respuesta pendiente de administración (monto de un movimiento, plan, gastos fijos)
     if (msg.text && admin && await admin.manejarTexto(msg)) {
       return;
@@ -572,6 +585,10 @@ function configurarManejadores() {
         await responderCallback(cb.id, { text: 'Falta elegir la cuenta destino' });
         return;
       }
+      if (tx.es_prestamo && !tx.persona) {
+        await responderCallback(cb.id, { text: 'Falta indicar la persona del préstamo' });
+        return;
+      }
 
       try {
         await guardarMovimiento(tx);
@@ -585,6 +602,7 @@ function configurarManejadores() {
           `Tipo: ${esc(ETIQUETAS_TIPO[tx.tipo_movimiento] ?? tx.tipo_movimiento)}\n` +
           `📅 ${formatearFechaCL(tx.fecha)}\n` +
           (tx.cuentaDestinoNombre ? `Cuenta destino: ${esc(tx.cuentaDestinoNombre)}\n` : '') +
+          (tx.es_prestamo && tx.persona ? `Préstamo a: ${esc(tx.persona)}\n` : '') +
           `🏷 ${esc(tx.categoria || 'Sin categoría')}` + lineaPlan,
           {
             chat_id: chatId,
@@ -675,6 +693,36 @@ function configurarManejadores() {
       }
     }
 
+    // Préstamo en la confirmación: marcar, quitar o indicar la persona
+    if (data.startsWith('prm_') || data.startsWith('prq_') || data.startsWith('prp_')) {
+      const accion = data.slice(0, 3);
+      const txId = data.slice(4);
+      const tx = pendingTransactions.get(txId);
+      if (!tx) {
+        await responderCallback(cb.id, { text: '❌ Transacción expirada' });
+        return;
+      }
+
+      if (accion === 'prq') {
+        tx.es_prestamo = false;
+        tx.persona = null;
+        await refrescarConfirmacion(chatId, cb.message.message_id, txId, tx);
+        await responderCallback(cb.id, { text: 'Ya no es préstamo' });
+        return;
+      }
+
+      if (accion === 'prm') {
+        tx.es_prestamo = true;
+        await refrescarConfirmacion(chatId, cb.message.message_id, txId, tx);
+      }
+      if (!tx.persona) {
+        esperandoPersona.set(chatId, txId);
+        await enviar(chatId, 'Escribe el nombre de la persona a quien le prestaste.');
+      }
+      await responderCallback(cb.id, {});
+      return;
+    }
+
     // Abrir el menú para cambiar el tipo
     if (data.startsWith('tmenu_')) {
       const txId = data.replace('tmenu_', '');
@@ -709,6 +757,10 @@ function configurarManejadores() {
         if (!requiereDestino(tipoMovimiento)) {
           tx.cuenta_destino_id = null;
           tx.cuentaDestinoNombre = null;
+        } else {
+          // Pagos de tarjeta y transferencias propias no son préstamos
+          tx.es_prestamo = false;
+          tx.persona = null;
         }
 
         await refrescarConfirmacion(chatId, cb.message.message_id, partes[1], tx);
@@ -759,6 +811,7 @@ function textoConfirmacion(tx) {
     `<b>Confirmar movimiento:</b>\n\n` +
     lineaMonto +
     `Tipo: ${esc(ETIQUETAS_TIPO[tx.tipo_movimiento] ?? tx.tipo_movimiento)}\n` +
+    (tx.es_prestamo ? `Préstamo: ${tx.persona ? `a ${esc(tx.persona)}` : 'falta indicar la persona'}\n` : '') +
     `📝 ${esc(tx.descripcion)}\n` +
     `📅 ${formatearFechaCL(tx.fecha)}\n` +
     (conDestino
@@ -798,11 +851,24 @@ async function armarTeclado(txId, tx) {
       { text: '❌ Cancelar', callback_data: `cancel_${txId}` }
     ]);
   } else {
+    const faltaPersona = tx.es_prestamo && !tx.persona;
+    filas.push(
+      faltaPersona
+        ? [
+            { text: 'Indicar persona', callback_data: `prp_${txId}` },
+            { text: '❌ Cancelar', callback_data: `cancel_${txId}` }
+          ]
+        : [
+            { text: '✅ Guardar', callback_data: `save_${txId}` },
+            { text: '❌ Cancelar', callback_data: `cancel_${txId}` }
+          ]
+    );
     filas.push([
-      { text: '✅ Guardar', callback_data: `save_${txId}` },
-      { text: '❌ Cancelar', callback_data: `cancel_${txId}` }
+      { text: 'Cambiar tipo', callback_data: `tmenu_${txId}` },
+      tx.es_prestamo
+        ? { text: 'Quitar préstamo', callback_data: `prq_${txId}` }
+        : { text: 'Marcar como préstamo', callback_data: `prm_${txId}` }
     ]);
-    filas.push([{ text: 'Cambiar tipo', callback_data: `tmenu_${txId}` }]);
   }
 
   return { reply_markup: { inline_keyboard: filas } };
@@ -833,6 +899,31 @@ async function refrescarConfirmacion(chatId, messageId, txId, tx) {
     message_id: messageId,
     ...(await armarTeclado(txId, tx))
   });
+}
+
+/** Si se esperaba la persona de un préstamo, usa este mensaje como nombre. true si lo consumió. */
+async function manejarPersonaPrestamo(msg) {
+  const chatId = msg.chat.id;
+  const txId = esperandoPersona.get(chatId);
+  if (!txId) return false;
+
+  const tx = pendingTransactions.get(txId);
+  if (!tx) {
+    esperandoPersona.delete(chatId);
+    return false;
+  }
+
+  esperandoPersona.delete(chatId);
+  tx.es_prestamo = true;
+  tx.persona = await canonizarPersona(msg.text.trim().slice(0, 100));
+  if (!tx.descripcion || /^Préstamo a /.test(tx.descripcion)) tx.descripcion = `Préstamo a ${tx.persona}`;
+
+  const editado = tx.messageId ? await refrescarConfirmacion(chatId, tx.messageId, txId, tx) : null;
+  if (!editado) {
+    const enviado = await enviar(chatId, textoConfirmacion(tx), await armarTeclado(txId, tx));
+    tx.messageId = enviado?.message_id ?? tx.messageId;
+  }
+  return true;
 }
 
 /**
@@ -1032,6 +1123,19 @@ async function registrarTransaccion(msg) {
       }
     }
 
+    // Préstamo: "le pagué 15 mil a Christian con la CMR, me lo devuelve"
+    let esPrestamo = false;
+    let persona = null;
+    let descripcion = datos.descripcion;
+    if (datos.tipo === 'cargo' && !requiereDestino(datos.tipoMovimiento)) {
+      const prestamo = detectarPrestamo(texto);
+      if (prestamo.esPrestamo) {
+        esPrestamo = true;
+        persona = prestamo.persona ? await canonizarPersona(prestamo.persona) : null;
+        if (persona) descripcion = `Préstamo a ${persona}`;
+      }
+    }
+
     // Crear ID temporal para la transacción pendiente
     const txId = `${chatId}_${Date.now()}`;
     const tx = {
@@ -1040,10 +1144,12 @@ async function registrarTransaccion(msg) {
       cuenta_destino_id: cuentaDestino?.id ?? null,
       cuentaDestinoNombre: cuentaDestino?.nombre ?? null,
       fecha: datos.fecha,
-      descripcion: datos.descripcion,
+      descripcion,
       monto: datos.monto,
       tipo: datos.tipo,
       tipo_movimiento: datos.tipoMovimiento,
+      es_prestamo: esPrestamo,
+      persona,
       categoria_id: categoriaId,
       categoria: categoriaNombre,
       medioPago: datos.medioPago,
@@ -1073,8 +1179,9 @@ async function registrarTransaccion(msg) {
  */
 async function guardarMovimiento(tx) {
   await query(
-    `INSERT INTO movimientos (cuenta_id, cuenta_destino_id, fecha, descripcion, monto, tipo, tipo_movimiento, categoria_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO movimientos (cuenta_id, cuenta_destino_id, fecha, descripcion, monto, tipo, tipo_movimiento, categoria_id,
+                              es_prestamo, persona_prestamo)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     // categoria_id y cuenta_destino_id pueden ser null; undefined no es válido para el driver
     [
       tx.cuenta_id,
@@ -1084,7 +1191,9 @@ async function guardarMovimiento(tx) {
       tx.monto,
       tx.tipo,
       tx.tipo_movimiento ?? 'compra',
-      tx.categoria_id ?? null
+      tx.categoria_id ?? null,
+      tx.es_prestamo && tx.persona ? 1 : 0,
+      tx.es_prestamo && tx.persona ? tx.persona : null
     ]
   );
 }
