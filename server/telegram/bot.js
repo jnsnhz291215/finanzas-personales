@@ -1556,9 +1556,9 @@ async function pedirCampoDatos(chatId, key, campo) {
     return;
   }
 
-  esperandoDato.set(chatId, { key, campo });
   if (campo === 'rut' && pendiente?.datos.rutInvalido) {
-    await enviar(chatId, 'El RUT no es válido (revisa el dígito verificador). Envíalo de nuevo, por ejemplo 12.345.678-5.', botonCancelarDatos(key));
+    const pregunta = await enviar(chatId, 'El RUT no es válido (revisa el dígito verificador). Envíalo de nuevo, por ejemplo 12.345.678-5.', botonCancelarDatos(key));
+    esperandoDato.set(chatId, { key, campo, messageId: pregunta?.message_id ?? null });
     return;
   }
   const ejemplos = {
@@ -1567,7 +1567,28 @@ async function pedirCampoDatos(chatId, key, campo) {
     titular: 'Escríbelo, por ejemplo: Juan Sanhueza.',
     rut: 'Escríbelo, por ejemplo: 12.345.678-5.'
   };
-  await enviar(chatId, `Falta ${ETIQUETAS_CAMPO_DATOS[campo]}. ${ejemplos[campo]}`, botonCancelarDatos(key));
+  const pregunta = await enviar(chatId, `Falta ${ETIQUETAS_CAMPO_DATOS[campo]}. ${ejemplos[campo]}`, botonCancelarDatos(key));
+  esperandoDato.set(chatId, { key, campo, messageId: pregunta?.message_id ?? null });
+}
+
+// Respuestas con datos personales: se borran del chat apenas se reciben
+const CAMPOS_SENSIBLES_DATOS = ['numeroCuenta', 'titular', 'rut'];
+
+const ETIQUETAS_RECIBIDO_DATOS = {
+  alias: 'Alias',
+  banco: 'Banco',
+  numeroCuenta: 'Número de cuenta',
+  titular: 'Titular',
+  rut: 'RUT'
+};
+
+/** Edita la pregunta del bot (si se puede) o, si no, envía un mensaje nuevo */
+async function editarPregunta(chatId, espera, texto, opts = {}) {
+  if (espera.messageId) {
+    const editado = await editar(texto, { chat_id: chatId, message_id: espera.messageId, ...opts });
+    if (editado) return;
+  }
+  await enviar(chatId, texto, opts);
 }
 
 /**
@@ -1629,6 +1650,11 @@ async function manejarRespuestaDato(msg) {
   const d = pendiente.datos;
   const texto = msg.text.trim();
 
+  // La respuesta trae un dato personal: se borra del chat aunque sea inválida
+  if (CAMPOS_SENSIBLES_DATOS.includes(espera.campo)) {
+    await borrarMensaje(chatId, msg.message_id);
+  }
+
   switch (espera.campo) {
     case 'alias':
       d.alias = texto.slice(0, 60);
@@ -1641,7 +1667,7 @@ async function manejarRespuestaDato(msg) {
     case 'numeroCuenta': {
       const numero = texto.replace(/[\s.-]/g, '');
       if (!/^\d{6,20}$/.test(numero)) {
-        await enviar(chatId, 'El número de cuenta debe tener entre 6 y 20 dígitos. Envíalo de nuevo.');
+        await editarPregunta(chatId, espera, 'El número de cuenta debe tener entre 6 y 20 dígitos. Envíalo de nuevo.', botonCancelarDatos(espera.key));
         return true;
       }
       d.numeroCuenta = numero;
@@ -1649,7 +1675,7 @@ async function manejarRespuestaDato(msg) {
     }
     case 'titular':
       if (texto.length < 3 || /\d/.test(texto)) {
-        await enviar(chatId, 'Escribe el nombre completo del titular, sin números.');
+        await editarPregunta(chatId, espera, 'Escribe el nombre completo del titular, sin números.', botonCancelarDatos(espera.key));
         return true;
       }
       d.titular = capitalizarNombre(texto.slice(0, 100));
@@ -1658,7 +1684,7 @@ async function manejarRespuestaDato(msg) {
       const rut = normalizarRut(texto);
       if (!rut) {
         d.rutInvalido = true;
-        await enviar(chatId, 'El RUT no es válido (revisa el dígito verificador). Envíalo de nuevo, por ejemplo 12.345.678-5.');
+        await editarPregunta(chatId, espera, 'El RUT no es válido (revisa el dígito verificador). Envíalo de nuevo, por ejemplo 12.345.678-5.', botonCancelarDatos(espera.key));
         return true;
       }
       d.rut = rut;
@@ -1671,6 +1697,8 @@ async function manejarRespuestaDato(msg) {
   }
 
   esperandoDato.delete(chatId);
+  // La pregunta queda sin botones y sin rastro del dato
+  await editarPregunta(chatId, espera, `${ETIQUETAS_RECIBIDO_DATOS[espera.campo]} recibido.`);
   await avanzarDatos(chatId, espera.key);
   return true;
 }
@@ -1937,8 +1965,8 @@ async function manejarCallbackDatos(cb, chatId, data) {
       await responderCallback(cb.id, { text: 'Solicitud expirada' });
       return true;
     }
-    esperandoDato.set(chatId, { key, campo: 'alias' });
-    await enviar(chatId, 'Escribe el alias nuevo.', botonCancelarDatos(key));
+    const pregunta = await enviar(chatId, 'Escribe el alias nuevo.', botonCancelarDatos(key));
+    esperandoDato.set(chatId, { key, campo: 'alias', messageId: pregunta?.message_id ?? null });
     await responderCallback(cb.id, {});
     return true;
   }
