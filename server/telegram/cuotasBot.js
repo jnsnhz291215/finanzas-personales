@@ -26,6 +26,7 @@ import {
   listarCompras,
   obtenerCompra,
   crearCompra,
+  desactivarCompra,
   fijarAliasCartola,
   registrarPagoCuota,
   vincularMovimientoACuota,
@@ -35,7 +36,7 @@ import {
 const ESPERA_MS = 5 * 60 * 1000;
 
 const PREGUNTAS_ALTA = {
-  alias: '¿Cómo le llamas a la compra? Escribe una palabra, por ejemplo: mac.',
+  alias: '¿Cómo le llamas a la compra? Por ejemplo: mac, "macbook pro" o macbook-pro.',
   totalCuotas: '¿En cuántas cuotas es? Por ejemplo: 12.',
   montoCuota: '¿De cuánto es cada cuota? Por ejemplo: 85 mil.',
   acreedor: '¿A quién se le debe? Por ejemplo: tía.'
@@ -91,7 +92,15 @@ export function crearCuotas(ctx) {
     await enviar(chatId,
       '<b>Compras en cuotas:</b>\n\n' +
       compras.map((c, i) => lineaCompra(c, hoy, `${i + 1}. `)).join('\n') +
-      `\n\nTotal pendiente: ${dinero(total)}\n\nPaga una cuota escribiendo, por ejemplo: pagué cuota tía mac`
+      `\n\nTotal pendiente: ${dinero(total)}\n\nPaga una cuota escribiendo, por ejemplo: pagué cuota tía mac`,
+      {
+        reply_markup: {
+          inline_keyboard: compras.map((c, i) => [{
+            text: `Desactivar ${i + 1}. ${c.alias}`.slice(0, 40),
+            callback_data: `cqe_${c.id}`
+          }])
+        }
+      }
     );
   }
 
@@ -179,8 +188,9 @@ export function crearCuotas(ctx) {
     const reintentar = (aviso) => enviar(chatId, aviso, botonCancelarAlta(espera.key));
 
     if (espera.campo === 'alias') {
-      const alias = texto.split(/\s+/)[0].toLowerCase();
-      if (!alias) return (await reintentar('Escribe una palabra para identificar la compra.'), true);
+      // Acepta varias palabras (con o sin comillas): "macbook pro", macbook-pro
+      const alias = texto.replace(/["“”]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+      if (!alias) return (await reintentar('Escribe un nombre para identificar la compra.'), true);
       d.alias = alias.slice(0, 100);
     } else if (espera.campo === 'totalCuotas') {
       const n = parseInt(texto, 10);
@@ -594,6 +604,40 @@ export function crearCuotas(ctx) {
         return true;
       }
 
+      // Desactivar una compra (soft delete), con confirmación
+      if ((m = data.match(/^cqe_(\d+)$/))) {
+        const compra = await obtenerCompra(m[1]);
+        if (!compra || !compra.activa) {
+          await responderCallback(cb.id, { text: 'La compra ya no está activa' });
+          return true;
+        }
+        await enviar(chatId,
+          `¿Desactivar la compra <b>${esc(compra.alias)}</b> (${esc(compra.acreedor)})? ` +
+          'Deja de contar en tus cuotas y en el plan de ahorro; sus pagos ya registrados se conservan.',
+          {
+            reply_markup: {
+              inline_keyboard: [[
+                { text: 'Sí, desactivar', callback_data: `cqy_${compra.id}` },
+                { text: 'Cancelar', callback_data: 'cqz_x' }
+              ]]
+            }
+          }
+        );
+        await responderCallback(cb.id, {});
+        return true;
+      }
+      if ((m = data.match(/^cqy_(\d+)$/))) {
+        const hecho = await desactivarCompra(m[1]);
+        await editar(hecho ? 'Compra desactivada.' : 'La compra ya no estaba activa.', { chat_id: chatId, message_id: messageId });
+        await responderCallback(cb.id, { text: hecho ? 'Desactivada' : 'Sin cambios' });
+        return true;
+      }
+      if (data === 'cqz_x') {
+        await editar('Cancelado', { chat_id: chatId, message_id: messageId });
+        await responderCallback(cb.id, {});
+        return true;
+      }
+
       // Transferencia que parece una cuota: ligar o descartar
       if ((m = data.match(/^cqv_(\d+)_(\d+)$/))) {
         const r = await vincularMovimientoACuota(m[1], m[2]);
@@ -649,7 +693,8 @@ export function crearCuotas(ctx) {
 
         const cartola = /^cartola\s+(.+)\s+(\S+)$/i.exec(argumento);
         if (cartola) {
-          const calzan = buscarCompras(await listarCompras(), normalizar(cartola[1]).split(/\s+/).filter(Boolean));
+          const palabras = normalizar(cartola[1]).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+          const calzan = buscarCompras(await listarCompras(), palabras);
           if (calzan.length !== 1) {
             await enviar(chatId, 'No encontré una única compra con ese nombre. Usa /cuotas para ver la lista.');
             return;
@@ -664,6 +709,7 @@ export function crearCuotas(ctx) {
         await enviar(chatId,
           '<b>Compras en cuotas</b>\n\n/cuotas - Ver las compras en curso\n' +
           '/cuotas nueva mac 12 cuotas de 85 mil tía, pagadas 6 - Crear una compra\n' +
+          '(nombre de varias palabras: "macbook pro" o macbook-pro)\n' +
           '/cuotas cartola mac valeska - Alias con que aparece en la cartola\n\n' +
           'Paga una cuota escribiendo: pagué cuota tía mac 7/12'
         );

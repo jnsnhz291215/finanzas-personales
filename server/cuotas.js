@@ -91,6 +91,16 @@ export async function crearCompra(datos) {
   return { ok: true, id: resultado.insertId };
 }
 
+/** Desactiva una compra (activa = 0, no se borra la fila ni sus pagos). true si existía. */
+export async function desactivarCompra(id) {
+  const query = await consulta();
+  const [resultado] = await query(
+    'UPDATE compras_cuotas SET activa = 0, actualizado_en = CURRENT_TIMESTAMP WHERE id = ? AND activa = 1',
+    [id]
+  );
+  return resultado.affectedRows > 0;
+}
+
 export async function fijarAliasCartola(id, aliasCartola) {
   const query = await consulta();
   const limpio = aliasCartola ? normalizar(aliasCartola).trim() : null;

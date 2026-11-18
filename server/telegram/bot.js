@@ -1255,28 +1255,33 @@ async function resolverCuentaPago(medioPago) {
   return elegirCuenta(cuentas, medioPago) || cuentaPorDefecto(cuentas);
 }
 
+// Carpeta de los respaldos de movimientos (la misma que usa la API), separada de las cartolas
+function carpetaRespaldos() {
+  return process.env.RESPALDOS_PATH || path.join(__dirname, '../../uploads/respaldos');
+}
+
 /**
- * Guarda el comprobante de un pago de cuota en la misma carpeta (configurable con
- * CARTOLAS_PATH) y con el mismo criterio de nombre seguro que manejarArchivo. No se lee el
- * contenido ni se envía a ningún servicio. Devuelve el nombre del archivo guardado.
+ * Guarda el comprobante de un pago de cuota en la carpeta de respaldos (RESPALDOS_PATH, no la
+ * de cartolas) con nombre seguro (path.basename). No se lee el contenido ni se envía a ningún
+ * servicio. Devuelve la ruta para guardar en archivo_respaldo, con el mismo formato que usa la
+ * API: /uploads/respaldos/<archivo>.
  */
 async function guardarRespaldoCuota(fileId, nombreSugerido) {
   const fileLink = await bot.getFileLink(fileId);
-  const carpeta = process.env.CARTOLAS_PATH || path.join(__dirname, '../../uploads/cartolas');
+  const carpeta = carpetaRespaldos();
   await fs.mkdir(carpeta, { recursive: true });
 
   const nombre = `respaldo_cuota_${Date.now()}_${path.basename(nombreSugerido)}`;
   const respuesta = await fetch(fileLink);
   if (!respuesta.ok) throw new Error('la descarga del archivo falló');
   await fs.writeFile(path.join(carpeta, nombre), Buffer.from(await respuesta.arrayBuffer()));
-  return nombre;
+  return `/uploads/respaldos/${nombre}`;
 }
 
 /** Borra un respaldo guardado (si el pago se cancela); nunca lanza */
-async function eliminarRespaldoCuota(nombre) {
+async function eliminarRespaldoCuota(ruta) {
   try {
-    const carpeta = process.env.CARTOLAS_PATH || path.join(__dirname, '../../uploads/cartolas');
-    await fs.unlink(path.join(carpeta, path.basename(nombre)));
+    await fs.unlink(path.join(carpetaRespaldos(), path.basename(ruta)));
   } catch {
     // si ya no existe no pasa nada
   }

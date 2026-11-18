@@ -74,8 +74,16 @@ export function parsearAltaCuotas(texto) {
     aliasCartola: null
   };
 
+  // Alias de varias palabras entre comillas: "macbook pro" (macbook-pro ya viene como una palabra)
+  let aliasEntreComillas = null;
+  let m = /["“”]([^"“”]+)["“”]/.exec(original);
+  if (m) {
+    aliasEntreComillas = m[1].replace(/\s+/g, ' ').trim().toLowerCase() || null;
+    quitar(m.index, m.index + m[0].length);
+  }
+
   // Alias con el que aparece en la cartola: "cartola valeska"
-  let m = /\bcartola\s+(\p{L}[\p{L}\p{N}]*)/u.exec(norm);
+  m = /\bcartola\s+(\p{L}[\p{L}\p{N}]*)/u.exec(norm);
   if (m) {
     r.aliasCartola = normalizar(m[1]);
     quitar(m.index, m.index + m[0].length);
@@ -135,8 +143,13 @@ export function parsearAltaCuotas(texto) {
     .split(/\s+/)
     .map(p => p.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ''))
     .filter(p => p && !PALABRAS_VACIAS.has(normalizar(p)));
-  if (palabras.length > 0) r.alias = palabras[0].toLowerCase();
-  if (palabras.length > 1) r.acreedor = palabras.slice(1).join(' ');
+  if (aliasEntreComillas) {
+    r.alias = aliasEntreComillas;
+    if (palabras.length > 0) r.acreedor = palabras.join(' ');
+  } else {
+    if (palabras.length > 0) r.alias = palabras[0].toLowerCase();
+    if (palabras.length > 1) r.acreedor = palabras.slice(1).join(' ');
+  }
 
   return r;
 }

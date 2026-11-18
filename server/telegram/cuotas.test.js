@@ -64,6 +64,39 @@ describe('parsearAltaCuotas', () => {
   });
 });
 
+describe('alias de varias palabras', () => {
+  test('entre comillas', () => {
+    const r = parsearAltaCuotas('/cuotas nueva "macbook pro" 12 cuotas de 85 mil tía');
+
+    expect(r.alias).toBe('macbook pro');
+    expect(r.acreedor).toBe('tía');
+    expect(r.totalCuotas).toBe(12);
+    expect(r.montoCuota).toBe(85000);
+  });
+
+  test('con comillas tipográficas y en el alta en texto libre', () => {
+    const r = parsearAltaCuotas('compré el “macbook pro” en 12 cuotas de 85 mil con la tarjeta de la tía');
+
+    expect(r.alias).toBe('macbook pro');
+    expect(r.acreedor).toBe('tía');
+  });
+
+  test('separado con guion', () => {
+    const r = parsearAltaCuotas('/cuotas nueva macbook-pro 12 cuotas de 85 mil tía');
+
+    expect(r.alias).toBe('macbook-pro');
+    expect(r.acreedor).toBe('tía');
+  });
+
+  test('el pago calza con el alias tanto si se escribe con guion como con espacio', () => {
+    const compras = [{ id: 1, alias: 'macbook-pro', acreedor: 'tía' }, { id: 2, alias: 'macbook pro', acreedor: 'tía' }];
+
+    expect(buscarCompras(compras, parsearPagoCuota('pagué cuota macbook pro 3/12').palabras).map(c => c.id)).toEqual([1, 2]);
+    expect(buscarCompras(compras, parsearPagoCuota('pagué cuota macbook-pro 3/12').palabras).map(c => c.id)).toEqual([1, 2]);
+    expect(buscarCompras(compras, parsearPagoCuota('pagué la cuota del "macbook pro"').palabras).map(c => c.id)).toEqual([1, 2]);
+  });
+});
+
 describe('parsearPagoCuota', () => {
   test('"pagué cuota tía mac 6/12"', () => {
     expect(parsearPagoCuota('pagué cuota tía mac 6/12')).toEqual({ numero: 6, total: 12, monto: null, palabras: ['tia', 'mac'] });
