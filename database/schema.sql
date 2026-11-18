@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS cuentas (
   tipo ENUM('cuenta_corriente', 'cuenta_vista', 'cuenta_ahorro', 'tarjeta_credito', 'tarjeta_debito') NOT NULL,
   banco VARCHAR(100),
   numero_cuenta VARCHAR(50),
+  ultimos4 VARCHAR(4) NULL,
+  titular VARCHAR(150) NULL,
   cupo_total DECIMAL(15,2) DEFAULT NULL,
   dia_facturacion INT DEFAULT NULL,
   dia_vencimiento INT DEFAULT NULL,

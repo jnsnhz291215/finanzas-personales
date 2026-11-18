@@ -116,6 +116,9 @@ export async function inicializarDB() {
     // Migración: tipo_movimiento y cuenta_destino_id
     migrarTipoMovimiento(database);
 
+    // Migración: ultimos4 y titular en cuentas
+    migrarDatosCuenta(database);
+
     // Insertar categorías por defecto
     const categorias = [
       ['Supermercado', '#10B981', 'fa-shopping-cart'],
@@ -152,6 +155,20 @@ export async function inicializarDB() {
   } catch (error) {
     console.error('Error al inicializar base de datos:', error.message);
     throw error;
+  }
+}
+
+/**
+ * Migración idempotente (SQLite): agrega ultimos4 (solo los 4 últimos dígitos de una
+ * tarjeta o cuenta; nunca el número completo) y titular a cuentas.
+ */
+function migrarDatosCuenta(database) {
+  const columnas = database.prepare('PRAGMA table_info(cuentas)').all().map(c => c.name);
+  if (!columnas.includes('ultimos4')) {
+    database.exec('ALTER TABLE cuentas ADD COLUMN ultimos4 TEXT');
+  }
+  if (!columnas.includes('titular')) {
+    database.exec('ALTER TABLE cuentas ADD COLUMN titular TEXT');
   }
 }
 

@@ -25,6 +25,26 @@ if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
   let pool;
 
   /**
+   * Migración idempotente (MariaDB): agrega ultimos4 (solo los 4 últimos dígitos de una
+   * tarjeta o cuenta; nunca el número completo) y titular a cuentas.
+   */
+  async function migrarDatosCuenta(connection) {
+    const [existentes] = await connection.query(
+      `SELECT COLUMN_NAME AS nombre FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'cuentas'
+         AND COLUMN_NAME IN ('ultimos4', 'titular')`
+    );
+    const columnas = existentes.map(c => c.nombre);
+
+    if (!columnas.includes('ultimos4')) {
+      await connection.query('ALTER TABLE cuentas ADD COLUMN ultimos4 VARCHAR(4) NULL AFTER numero_cuenta');
+    }
+    if (!columnas.includes('titular')) {
+      await connection.query('ALTER TABLE cuentas ADD COLUMN titular VARCHAR(150) NULL AFTER ultimos4');
+    }
+  }
+
+  /**
    * Migración idempotente (MariaDB): agrega tipo_movimiento y cuenta_destino_id a movimientos.
    * Registros existentes: abono -> ingreso, cargo -> compra.
    */
@@ -75,6 +95,7 @@ if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
         console.log('✓ Conexión a MariaDB/MySQL establecida');
         
         await migrarTipoMovimiento(connection);
+        await migrarDatosCuenta(connection);
         
         const [usuarios] = await connection.query('SELECT * FROM usuario LIMIT 1');
         

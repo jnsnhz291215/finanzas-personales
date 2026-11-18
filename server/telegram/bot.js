@@ -4,7 +4,16 @@ const TelegramBot = require('node-telegram-bot-api');
 
 import { query } from '../db.js';
 import { parsearMensaje, parsearMontoExacto, MEDIOS_PAGO_NOMBRES } from './parser.js';
-import { interpretarMovimiento, geminiDisponible } from './gemini.js';
+import { interpretarMovimiento, interpretarCuenta, geminiDisponible } from './gemini.js';
+import {
+  parsearCuenta,
+  nombrePorDefecto,
+  enmascararDigitos,
+  TIPOS_CUENTA,
+  TIPO_DB,
+  ETIQUETAS_TIPO_CUENTA,
+  ETIQUETAS_TIPO_DB
+} from './cuentas.js';
 import { fechaHoySantiago, formatearFechaCL } from './fechas.js';
 import {
   TIPOS_MOVIMIENTO,
@@ -123,6 +132,7 @@ export async function iniciarBot() {
     bot.on('polling_error', (err) => logErrorTelegram('polling_error', err));
 
     configurarComandos();
+    configurarComandosCuentas();
     configurarManejadores();
 
     console.log('✓ Bot de Telegram iniciado (long polling)');
@@ -186,6 +196,7 @@ function configurarComandos() {
       '• "gasté 5 lucas en uber"\n' +
       '• "me pagaron 300.000 de sueldo"\n\n' +
       'También puedes enviar archivos de cartola (CSV, Excel, PDF) para importarlos.\n\n' +
+      'Para empezar, crea una cuenta con /savecard (por ejemplo: /savecard efectivo).\n\n' +
       'Usa /ayuda para ver todos los comandos disponibles.'
     );
   });
@@ -210,6 +221,12 @@ function configurarComandos() {
       '/resumen - Resumen del mes actual\n' +
       '/ultimos - Últimos 10 movimientos\n' +
       '/borrar_ultimo - Eliminar el último movimiento (con confirmación)\n\n' +
+      '<b>Cuentas:</b>\n' +
+      '/savecard - Crear una cuenta (también /nuevacuenta)\n' +
+      '/cuentas - Ver tus cuentas activas\n' +
+      '/borrarcuenta - Desactivar una cuenta\n' +
+      'Ejemplo: /savecard tarjeta debito FAN banco de chile terminada en 1234 a nombre mio (juan sanhueza)\n' +
+      'Nunca envíes el número completo: solo los últimos 4 dígitos.\n\n' +
       '<b>Importar cartolas:</b>\n' +
       'Envía un archivo CSV, Excel o PDF de tu cartola bancaria.\n\n' +
       '<b>Otros:</b>\n' +
@@ -383,6 +400,11 @@ function configurarManejadores() {
       return;
     }
 
+    // Nombre nuevo para una cuenta pendiente (botón "Editar nombre")
+    if (msg.text && await manejarNombreCuentaPendiente(msg)) {
+      return;
+    }
+
     // Un número solo corrige el monto del movimiento pendiente
     if (msg.text && await actualizarMontoPendiente(msg)) {
       return;
@@ -401,6 +423,11 @@ function configurarManejadores() {
 
     if (!esChatAutorizado(chatId)) {
       await responderCallback(cb.id, { text: '❌ No autorizado' });
+      return;
+    }
+
+    // Botones de cuentas (/savecard, /borrarcuenta)
+    if (await manejarCallbackCuentas(cb, chatId, data)) {
       return;
     }
 
@@ -716,7 +743,7 @@ async function actualizarMontoPendiente(msg) {
  * Cuentas para resolver nombres y medios de pago, la activa más antigua primero
  */
 async function listarCuentas() {
-  const [cuentas] = await query('SELECT id, nombre, tipo, activa FROM cuentas ORDER BY activa DESC, creado_en ASC, id ASC');
+  const [cuentas] = await query('SELECT id, nombre, tipo, activa FROM cuentas WHERE activa = 1 ORDER BY creado_en ASC, id ASC');
   return cuentas;
 }
 
@@ -927,6 +954,458 @@ async function guardarMovimiento(tx) {
       tx.categoria_id ?? null
     ]
   );
+}
+
+// ---------------------------------------------------------------------------
+// Cuentas: /savecard (alias /nuevacuenta), /cuentas y /borrarcuenta
+// ---------------------------------------------------------------------------
+
+// Cuentas pendientes de confirmar: clave -> { datos }
+const pendingCuentas = new Map();
+// Chat que está escribiendo un nombre nuevo para su cuenta pendiente: chatId -> clave
+const esperandoNombreCuenta = new Map();
+
+// Códigos cortos de tipo de cuenta para callback_data
+const CODIGOS_TIPO_CUENTA = {
+  debito: 'db',
+  credito: 'cr',
+  efectivo: 'ef',
+  cuenta_corriente: 'cc',
+  cuenta_vista: 'cv',
+  ahorro: 'ah'
+};
+const TIPO_CUENTA_POR_CODIGO = Object.fromEntries(Object.entries(CODIGOS_TIPO_CUENTA).map(([tipo, codigo]) => [codigo, tipo]));
+
+/** Borra un mensaje del usuario (por ejemplo si trae un número de tarjeta); nunca lanza */
+async function borrarMensaje(chatId, messageId) {
+  try {
+    await bot.deleteMessage(chatId, messageId);
+  } catch (err) {
+    logErrorTelegram('deleteMessage', err);
+  }
+}
+
+function textoConfirmacionCuenta(datos) {
+  const lineas = [
+    '<b>Confirmar cuenta:</b>',
+    '',
+    `Tipo: ${esc(ETIQUETAS_TIPO_CUENTA[datos.tipo])}`,
+    `Banco: ${datos.banco ? esc(datos.banco) : 'sin indicar'}`,
+    `Nombre: ${esc(datos.nombre)}`,
+    `Terminada en: ${datos.ultimos4 ? esc(datos.ultimos4) : 'sin indicar'}`,
+    `Titular: ${datos.titular ? esc(datos.titular) : 'sin indicar'}`
+  ];
+  if (datos.tipo === 'credito' && datos.cupo) lineas.push(`Cupo: $${formatearMonto(datos.cupo)}`);
+  if (datos.tipo === 'credito' && datos.diaPago) lineas.push(`Día de pago: ${datos.diaPago}`);
+  if (datos.numeroCompletoRechazado) {
+    lineas.push(
+      '',
+      'Se ignoró un número largo del mensaje. Por seguridad solo se aceptan los últimos 4 dígitos ' +
+      '(por ejemplo: terminada en 1234).'
+    );
+  }
+  return lineas.join('\n');
+}
+
+function tecladoConfirmacionCuenta(key) {
+  return {
+    reply_markup: {
+      inline_keyboard: [[
+        { text: 'Guardar', callback_data: `ncs_${key}` },
+        { text: 'Editar nombre', callback_data: `nce_${key}` },
+        { text: 'Cancelar', callback_data: `ncx_${key}` }
+      ]]
+    }
+  };
+}
+
+function tecladoTiposCuenta(key) {
+  const filas = [];
+  for (let i = 0; i < TIPOS_CUENTA.length; i += 2) {
+    filas.push(
+      TIPOS_CUENTA.slice(i, i + 2).map(t => ({
+        text: ETIQUETAS_TIPO_CUENTA[t],
+        callback_data: `nct_${key}_${CODIGOS_TIPO_CUENTA[t]}`
+      }))
+    );
+  }
+  filas.push([{ text: 'Cancelar', callback_data: `ncx_${key}` }]);
+  return { reply_markup: { inline_keyboard: filas } };
+}
+
+/** Envía (o edita, si se da messageId) la confirmación de la cuenta pendiente */
+async function mostrarConfirmacionCuenta(chatId, key, messageId = null) {
+  const pendiente = pendingCuentas.get(key);
+  if (!pendiente) return;
+
+  const texto = textoConfirmacionCuenta(pendiente.datos);
+  const teclado = tecladoConfirmacionCuenta(key);
+  const editado = messageId
+    ? await editar(texto, { chat_id: chatId, message_id: messageId, ...teclado })
+    : null;
+  if (!editado) await enviar(chatId, texto, teclado);
+}
+
+/** Completa el resultado de las reglas con el de Gemini (solo lo que las reglas no tenían) */
+function combinarCuenta(reglas, ia) {
+  const tipo = ia.tipo;
+  const banco = reglas.banco || ia.banco;
+  return {
+    ...reglas,
+    tipo,
+    banco,
+    nombre: reglas.nombre || ia.nombre || nombrePorDefecto(tipo, banco),
+    ultimos4: reglas.ultimos4 || ia.ultimos4,
+    titular: reglas.titular || ia.titular,
+    cupo: tipo === 'credito' ? (reglas.cupo ?? ia.cupo) : null,
+    diaPago: tipo === 'credito' ? (reglas.diaPago ?? ia.diaPago) : null
+  };
+}
+
+/** Cuenta activa con el mismo banco, tipo y últimos 4 (sin últimos 4: mismo nombre) */
+async function buscarCuentaDuplicada(datos) {
+  const tipoDb = TIPO_DB[datos.tipo];
+  const banco = (datos.banco || '').toLowerCase();
+  const [filas] = datos.ultimos4
+    ? await query(
+        `SELECT id, nombre FROM cuentas
+         WHERE activa = 1 AND tipo = ? AND COALESCE(LOWER(banco), '') = ? AND ultimos4 = ?
+         LIMIT 1`,
+        [tipoDb, banco, datos.ultimos4]
+      )
+    : await query(
+        `SELECT id, nombre FROM cuentas
+         WHERE activa = 1 AND tipo = ? AND COALESCE(LOWER(banco), '') = ? AND LOWER(nombre) = ?
+         LIMIT 1`,
+        [tipoDb, banco, String(datos.nombre).toLowerCase()]
+      );
+  return filas[0] ?? null;
+}
+
+async function guardarCuenta(datos) {
+  // Nunca se guarda el número completo: solo ultimos4
+  await query(
+    `INSERT INTO cuentas (nombre, tipo, banco, ultimos4, titular, cupo_total, dia_vencimiento)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      datos.nombre,
+      TIPO_DB[datos.tipo],
+      datos.banco ?? null,
+      datos.ultimos4 ?? null,
+      datos.titular ?? null,
+      datos.tipo === 'credito' ? (datos.cupo ?? null) : null,
+      datos.tipo === 'credito' ? (datos.diaPago ?? null) : null
+    ]
+  );
+}
+
+async function listarCuentasActivas() {
+  const [filas] = await query(
+    'SELECT id, nombre, tipo, banco, ultimos4 FROM cuentas WHERE activa = 1 ORDER BY creado_en ASC, id ASC'
+  );
+  return filas;
+}
+
+function lineaCuenta(cuenta, prefijo = '') {
+  return (
+    `${prefijo}<b>${esc(cuenta.nombre)}</b> - ${esc(ETIQUETAS_TIPO_DB[cuenta.tipo] ?? cuenta.tipo)}` +
+    `${cuenta.banco ? ' - ' + esc(cuenta.banco) : ''}` +
+    `${cuenta.ultimos4 ? ' - terminada en ' + esc(cuenta.ultimos4) : ''}`
+  );
+}
+
+function pedirConfirmacionBorrarCuenta(chatId, cuenta) {
+  return enviar(chatId,
+    `¿Desactivar esta cuenta?\n\n${lineaCuenta(cuenta)}\n\n` +
+    'Los movimientos ya registrados se conservan.',
+    {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: 'Sí, desactivar', callback_data: `bcy_${cuenta.id}` },
+          { text: 'Cancelar', callback_data: 'bcn_x' }
+        ]]
+      }
+    }
+  );
+}
+
+function configurarComandosCuentas() {
+  // /savecard o /nuevacuenta <texto libre>
+  bot.onText(/^\/(?:savecard|nuevacuenta)(?:@\w+)?(?:\s+([\s\S]+))?$/i, async (msg, match) => {
+    const chatId = msg.chat.id;
+
+    if (!esChatAutorizado(chatId)) {
+      await enviar(chatId, 'No estás autorizado para usar este bot.');
+      return;
+    }
+
+    const texto = (match[1] || '').trim();
+    if (!texto) {
+      await enviar(chatId,
+        '<b>Crear una cuenta</b>\n\n' +
+        'Escribe los datos en texto libre, por ejemplo:\n' +
+        '/savecard tarjeta debito FAN banco de chile terminada en 1234 a nombre mio (juan sanhueza)\n\n' +
+        'Para crédito puedes agregar el cupo y el día de pago: cupo 110 mil, paga el 24.\n' +
+        'Nunca envíes el número completo: solo los últimos 4 dígitos.'
+      );
+      return;
+    }
+
+    try {
+      let datos = parsearCuenta(texto);
+
+      // Si el mensaje traía un número de tarjeta completo, se borra del chat
+      if (datos.numeroCompletoRechazado) {
+        await borrarMensaje(chatId, msg.message_id);
+      }
+
+      // Respaldo: Gemini si las reglas no identifican el tipo
+      if (!datos.tipo) {
+        const ia = await interpretarCuenta(texto);
+        if (ia) datos = combinarCuenta(datos, ia);
+      }
+
+      const key = `${chatId}_${Date.now()}`;
+      pendingCuentas.set(key, { datos });
+      setTimeout(() => pendingCuentas.delete(key), 5 * 60 * 1000);
+
+      if (!datos.tipo) {
+        await enviar(chatId, 'No pude identificar el tipo de cuenta. Elige uno:', tecladoTiposCuenta(key));
+        return;
+      }
+
+      await mostrarConfirmacionCuenta(chatId, key);
+    } catch (error) {
+      // Sin el texto del mensaje: puede contener datos de la tarjeta
+      console.error('Error al interpretar la cuenta:', error.code ?? '', error.message);
+      await enviar(chatId, '❌ Error al procesar la cuenta.');
+    }
+  });
+
+  // /cuentas: cuentas activas numeradas
+  bot.onText(/^\/cuentas(?:@\w+)?\s*$/i, async (msg) => {
+    const chatId = msg.chat.id;
+
+    if (!esChatAutorizado(chatId)) {
+      await enviar(chatId, 'No estás autorizado para usar este bot.');
+      return;
+    }
+
+    try {
+      const cuentas = await listarCuentasActivas();
+      if (cuentas.length === 0) {
+        await enviar(chatId, 'No tienes cuentas activas. Crea una con /savecard.');
+        return;
+      }
+      await enviar(chatId, '<b>Tus cuentas:</b>\n\n' + cuentas.map((c, i) => lineaCuenta(c, `${i + 1}. `)).join('\n'));
+    } catch (error) {
+      console.error('Error al listar cuentas:', error.code ?? '', error.message);
+      await enviar(chatId, '❌ Error al obtener las cuentas.');
+    }
+  });
+
+  // /borrarcuenta [número]: desactiva (no borra) una cuenta, con confirmación
+  bot.onText(/^\/borrarcuenta(?:@\w+)?(?:\s+(\d+))?\s*$/i, async (msg, match) => {
+    const chatId = msg.chat.id;
+
+    if (!esChatAutorizado(chatId)) {
+      await enviar(chatId, 'No estás autorizado para usar este bot.');
+      return;
+    }
+
+    try {
+      const cuentas = await listarCuentasActivas();
+      if (cuentas.length === 0) {
+        await enviar(chatId, 'No tienes cuentas activas.');
+        return;
+      }
+
+      if (match[1]) {
+        const cuenta = cuentas[parseInt(match[1], 10) - 1];
+        if (!cuenta) {
+          await enviar(chatId, 'No existe una cuenta con ese número. Usa /cuentas para ver la lista.');
+          return;
+        }
+        await pedirConfirmacionBorrarCuenta(chatId, cuenta);
+        return;
+      }
+
+      // Sin número: elegir con botones
+      await enviar(chatId, 'Elige la cuenta que quieres desactivar:', {
+        reply_markup: {
+          inline_keyboard: [
+            ...cuentas.map((c, i) => [{ text: `${i + 1}. ${String(c.nombre).slice(0, 40)}`, callback_data: `bcs_${c.id}` }]),
+            [{ text: 'Cancelar', callback_data: 'bcn_x' }]
+          ]
+        }
+      });
+    } catch (error) {
+      console.error('Error en /borrarcuenta:', error.code ?? '', error.message);
+      await enviar(chatId, '❌ Error al obtener las cuentas.');
+    }
+  });
+}
+
+/**
+ * Si hay una cuenta pendiente esperando un nombre nuevo, usa este mensaje como nombre.
+ * Devuelve true si lo consumió.
+ */
+async function manejarNombreCuentaPendiente(msg) {
+  const chatId = msg.chat.id;
+  const key = esperandoNombreCuenta.get(chatId);
+  if (!key) return false;
+
+  const pendiente = pendingCuentas.get(key);
+  if (!pendiente) {
+    esperandoNombreCuenta.delete(chatId);
+    return false;
+  }
+
+  const nombre = msg.text.trim().slice(0, 100);
+  if (!nombre) return true;
+
+  // El nombre no puede ser un número de tarjeta
+  if (enmascararDigitos(nombre) !== nombre) {
+    await borrarMensaje(chatId, msg.message_id);
+    await enviar(chatId, 'El nombre no puede incluir números largos. Escribe otro nombre.');
+    return true;
+  }
+
+  esperandoNombreCuenta.delete(chatId);
+  pendiente.datos.nombre = nombre;
+  await mostrarConfirmacionCuenta(chatId, key);
+  return true;
+}
+
+/**
+ * Botones de cuentas. Devuelve true si el callback era de este módulo.
+ */
+async function manejarCallbackCuentas(cb, chatId, data) {
+  const messageId = cb.message.message_id;
+
+  // Guardar la cuenta
+  if (data.startsWith('ncs_')) {
+    const key = data.replace('ncs_', '');
+    const pendiente = pendingCuentas.get(key);
+    if (!pendiente) {
+      await responderCallback(cb.id, { text: 'Solicitud expirada' });
+      return true;
+    }
+
+    try {
+      const duplicada = await buscarCuentaDuplicada(pendiente.datos);
+      if (duplicada) {
+        pendingCuentas.delete(key);
+        await editar(
+          `Ya existe una cuenta activa con el mismo banco, tipo y últimos 4: <b>${esc(duplicada.nombre)}</b>. No se creó otra.`,
+          { chat_id: chatId, message_id: messageId }
+        );
+        await responderCallback(cb.id, { text: 'Cuenta duplicada' });
+        return true;
+      }
+
+      await guardarCuenta(pendiente.datos);
+      pendingCuentas.delete(key);
+      esperandoNombreCuenta.delete(chatId);
+
+      await editar(
+        `Cuenta guardada: <b>${esc(pendiente.datos.nombre)}</b> (${esc(ETIQUETAS_TIPO_CUENTA[pendiente.datos.tipo])}).`,
+        { chat_id: chatId, message_id: messageId }
+      );
+      await responderCallback(cb.id, { text: 'Guardada' });
+    } catch (error) {
+      console.error('Error al guardar cuenta:', error.code ?? '', error.message);
+      await responderCallback(cb.id, { text: 'Error al guardar' });
+    }
+    return true;
+  }
+
+  // Editar el nombre
+  if (data.startsWith('nce_')) {
+    const key = data.replace('nce_', '');
+    if (!pendingCuentas.has(key)) {
+      await responderCallback(cb.id, { text: 'Solicitud expirada' });
+      return true;
+    }
+    esperandoNombreCuenta.set(chatId, key);
+    await enviar(chatId, 'Escribe el nuevo nombre para la cuenta.');
+    await responderCallback(cb.id, {});
+    return true;
+  }
+
+  // Cancelar
+  if (data.startsWith('ncx_')) {
+    const key = data.replace('ncx_', '');
+    pendingCuentas.delete(key);
+    esperandoNombreCuenta.delete(chatId);
+    await editar('Cancelado', { chat_id: chatId, message_id: messageId });
+    await responderCallback(cb.id, { text: 'Cancelado' });
+    return true;
+  }
+
+  // Elegir el tipo cuando no se pudo identificar
+  if (data.startsWith('nct_')) {
+    const partes = data.match(/^nct_(.+)_([a-z]{2})$/);
+    const pendiente = partes && pendingCuentas.get(partes[1]);
+    const tipo = partes && TIPO_CUENTA_POR_CODIGO[partes[2]];
+    if (!pendiente || !tipo) {
+      await responderCallback(cb.id, { text: 'Solicitud expirada' });
+      return true;
+    }
+
+    const datos = pendiente.datos;
+    datos.tipo = tipo;
+    if (tipo !== 'credito') {
+      datos.cupo = null;
+      datos.diaPago = null;
+    }
+    if (!datos.nombre) datos.nombre = nombrePorDefecto(tipo, datos.banco);
+
+    await mostrarConfirmacionCuenta(chatId, partes[1], messageId);
+    await responderCallback(cb.id, {});
+    return true;
+  }
+
+  // /borrarcuenta: elegir una cuenta de la lista
+  if (data.startsWith('bcs_')) {
+    try {
+      const [filas] = await query(
+        'SELECT id, nombre, tipo, banco, ultimos4 FROM cuentas WHERE id = ? AND activa = 1',
+        [data.replace('bcs_', '')]
+      );
+      if (filas.length === 0) {
+        await responderCallback(cb.id, { text: 'La cuenta ya no está activa' });
+        return true;
+      }
+      await pedirConfirmacionBorrarCuenta(chatId, filas[0]);
+      await responderCallback(cb.id, {});
+    } catch (error) {
+      console.error('Error al elegir cuenta:', error.code ?? '', error.message);
+      await responderCallback(cb.id, { text: 'Error' });
+    }
+    return true;
+  }
+
+  // /borrarcuenta: confirmar (soft delete: activa = 0, no se borra la fila)
+  if (data.startsWith('bcy_')) {
+    try {
+      await query('UPDATE cuentas SET activa = 0 WHERE id = ?', [data.replace('bcy_', '')]);
+      await editar('Cuenta desactivada. Sus movimientos se conservan.', { chat_id: chatId, message_id: messageId });
+      await responderCallback(cb.id, { text: 'Desactivada' });
+    } catch (error) {
+      console.error('Error al desactivar cuenta:', error.code ?? '', error.message);
+      await responderCallback(cb.id, { text: 'Error' });
+    }
+    return true;
+  }
+
+  if (data === 'bcn_x') {
+    await editar('Cancelado', { chat_id: chatId, message_id: messageId });
+    await responderCallback(cb.id, { text: 'Cancelado' });
+    return true;
+  }
+
+  return false;
 }
 
 /**
