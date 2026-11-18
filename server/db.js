@@ -41,6 +41,50 @@ if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
   }
 
   /**
+   * Migración idempotente (MariaDB): compras_cuotas y, en movimientos, compra_cuota_id y
+   * numero_cuota para ligar cada pago a su compra.
+   */
+  async function migrarComprasCuotas(connection) {
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS compras_cuotas (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        alias VARCHAR(100) NOT NULL,
+        alias_cartola VARCHAR(100) NULL,
+        acreedor VARCHAR(100) NOT NULL,
+        monto_total DECIMAL(15,2) NULL,
+        monto_cuota DECIMAL(15,2) NOT NULL,
+        total_cuotas SMALLINT NOT NULL,
+        cuotas_pagadas SMALLINT NOT NULL DEFAULT 0,
+        fecha_inicio DATE NULL,
+        dia_pago TINYINT NULL,
+        terminada BOOLEAN NOT NULL DEFAULT FALSE,
+        activa BOOLEAN NOT NULL DEFAULT TRUE,
+        creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_activa_terminada (activa, terminada)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+
+    const [existentes] = await connection.query(
+      `SELECT COLUMN_NAME AS nombre FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movimientos'
+         AND COLUMN_NAME IN ('compra_cuota_id', 'numero_cuota')`
+    );
+    const columnas = existentes.map(c => c.nombre);
+    if (!columnas.includes('compra_cuota_id')) {
+      await connection.query(
+        `ALTER TABLE movimientos ADD COLUMN compra_cuota_id INT NULL,
+           ADD INDEX idx_movimientos_compra_cuota (compra_cuota_id),
+           ADD CONSTRAINT fk_movimientos_compra_cuota
+             FOREIGN KEY (compra_cuota_id) REFERENCES compras_cuotas(id) ON DELETE SET NULL`
+      );
+    }
+    if (!columnas.includes('numero_cuota')) {
+      await connection.query('ALTER TABLE movimientos ADD COLUMN numero_cuota SMALLINT NULL');
+    }
+  }
+
+  /**
    * Migración idempotente (MariaDB): plan_ahorro (una sola fila, id = 1) y gastos_fijos.
    */
   async function migrarPlanAhorro(connection) {
@@ -185,6 +229,7 @@ if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
         await migrarTipoEfectivo(connection);
         await migrarDatosTransferencia(connection);
         await migrarPlanAhorro(connection);
+        await migrarComprasCuotas(connection);
         
         const [usuarios] = await connection.query('SELECT * FROM usuario LIMIT 1');
         

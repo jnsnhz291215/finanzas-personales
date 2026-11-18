@@ -128,6 +128,9 @@ export async function inicializarDB() {
     // Migración: plan de ahorro y gastos fijos
     migrarPlanAhorro(database);
 
+    // Migración: compras en cuotas y su vínculo con movimientos
+    migrarComprasCuotas(database);
+
     // Insertar categorías por defecto
     const categorias = [
       ['Supermercado', '#10B981', 'fa-shopping-cart'],
@@ -254,6 +257,41 @@ function migrarTipoEfectivo(database) {
   } finally {
     database.pragma('foreign_keys = ON');
   }
+}
+
+/**
+ * Migración idempotente (SQLite): compras_cuotas (compras pagadas en cuotas a una persona o
+ * tarjeta ajena) y, en movimientos, compra_cuota_id y numero_cuota para ligar cada pago.
+ */
+function migrarComprasCuotas(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS compras_cuotas (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      alias TEXT NOT NULL,
+      alias_cartola TEXT,
+      acreedor TEXT NOT NULL,
+      monto_total REAL,
+      monto_cuota REAL NOT NULL,
+      total_cuotas INTEGER NOT NULL,
+      cuotas_pagadas INTEGER NOT NULL DEFAULT 0,
+      fecha_inicio DATE,
+      dia_pago INTEGER,
+      terminada INTEGER NOT NULL DEFAULT 0,
+      activa INTEGER NOT NULL DEFAULT 1,
+      creado_en DATETIME DEFAULT CURRENT_TIMESTAMP,
+      actualizado_en DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_compras_cuotas_activa ON compras_cuotas(activa, terminada);
+  `);
+
+  const columnas = database.prepare('PRAGMA table_info(movimientos)').all().map(c => c.name);
+  if (!columnas.includes('compra_cuota_id')) {
+    database.exec('ALTER TABLE movimientos ADD COLUMN compra_cuota_id INTEGER REFERENCES compras_cuotas(id) ON DELETE SET NULL');
+  }
+  if (!columnas.includes('numero_cuota')) {
+    database.exec('ALTER TABLE movimientos ADD COLUMN numero_cuota INTEGER');
+  }
+  database.exec('CREATE INDEX IF NOT EXISTS idx_movimientos_compra_cuota ON movimientos(compra_cuota_id)');
 }
 
 /**

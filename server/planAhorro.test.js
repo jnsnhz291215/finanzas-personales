@@ -249,6 +249,37 @@ describe('calcularPlan: gasto libre excedido', () => {
   });
 });
 
+describe('calcularPlan: compras en cuotas', () => {
+  const cuotas = [{ id: 1, alias: 'mac', monto_cuota: 85000 }];
+
+  test('las cuotas en curso cuentan como gasto fijo del mes', () => {
+    const r = calcularPlan({ plan: PLAN, gastosFijos: FIJOS, cuotas, ingresosReales: 1000000, gastos: [], hoy: '2026-11-18' });
+
+    expect(r.fijos.real).toBe(455000); // 350.000 + 20.000 + 85.000
+    expect(r.fijos.cuotas).toEqual({ cantidad: 1, monto: 85000 });
+    expect(r.libre.presupuesto).toBe(345000);
+  });
+
+  test('no se duplican si ya existe un gasto fijo con ese nombre', () => {
+    const fijos = [...FIJOS, { id: 9, nombre: 'Mac', monto: 85000, categoria_id: null, activo: true }];
+    const r = calcularPlan({ plan: PLAN, gastosFijos: fijos, cuotas, ingresosReales: 1000000, gastos: [], hoy: '2026-11-18' });
+
+    expect(r.fijos.real).toBe(455000);
+    expect(r.fijos.cuotas.cantidad).toBe(0);
+  });
+
+  test('el pago de una cuota (ligado a su compra) cuenta como fijo y no como gasto libre', () => {
+    const gastos = [
+      { descripcion: 'Cuota 7/12 mac (tía)', monto: 85000, categoria_id: null, compra_cuota_id: 1 },
+      { descripcion: 'Transferencia a Pedro', monto: 20000, categoria_id: null, compra_cuota_id: null }
+    ];
+    const r = calcularPlan({ plan: PLAN, gastosFijos: FIJOS, cuotas, ingresosReales: 1000000, gastos, hoy: '2026-11-18' });
+
+    expect(r.fijos.gastadoEsteMes).toBe(85000);
+    expect(r.libre.gastado).toBe(20000);
+  });
+});
+
 describe('validarGastoFijo', () => {
   test('acepta un gasto fijo válido', () => {
     const r = validarGastoFijo({ nombre: ' Arriendo ', monto: 350000, dia_pago: 5, categoria_id: null });

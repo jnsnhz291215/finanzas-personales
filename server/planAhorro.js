@@ -18,6 +18,7 @@
 import { analizarMonto } from './telegram/parser.js';
 import { fechaHoySantiago } from './telegram/fechas.js';
 import { sqlExcluirInternos } from './tiposMovimiento.js';
+import { comprasParaPlan } from './cuotas.js';
 
 // Gasto libre: compras, transferencias a terceros y "otro" con sentido cargo (igual que los dashboards)
 export const TIPOS_GASTO_LIBRE = ['compra', 'transferencia_terceros', 'otro'];
@@ -148,8 +149,13 @@ export function infoMes(hoy) {
  * cuente como fijo.
  */
 export function esGastoFijo(movimiento, gastosFijos) {
+  // El pago de una cuota (ligado a su compra) siempre es un gasto fijo
+  if (movimiento.compra_cuota_id !== null && movimiento.compra_cuota_id !== undefined) return true;
+
   const descripcion = normalizar(movimiento.descripcion);
   return gastosFijos.some(f => {
+    // Las cuotas se reconocen solo por el vínculo del movimiento, nunca por el texto
+    if (f.origen === 'cuota') return false;
     const mismaCategoria =
       f.categoria_id != null && movimiento.categoria_id != null &&
       Number(f.categoria_id) === Number(movimiento.categoria_id);
@@ -167,9 +173,17 @@ export function esGastoFijo(movimiento, gastosFijos) {
  * @param {Array} p.gastos movimientos del mes (compra y transferencia_terceros) con descripcion, monto, categoria_id
  * @param {string} p.hoy YYYY-MM-DD en America/Santiago
  */
-export function calcularPlan({ plan, gastosFijos = [], ingresosReales = 0, gastos = [], hoy }) {
+export function calcularPlan({ plan, gastosFijos = [], cuotas = [], ingresosReales = 0, gastos = [], hoy }) {
   const mes = infoMes(hoy);
-  const activos = gastosFijos.filter(f => f.activo === undefined || f.activo === true || Number(f.activo) === 1);
+  const fijosActivos = gastosFijos.filter(f => f.activo === undefined || f.activo === true || Number(f.activo) === 1);
+
+  // Las cuotas en curso cuentan como gasto fijo del mes, salvo que ya exista un gasto fijo con
+  // el mismo nombre (para no contarlas dos veces)
+  const nombresFijos = new Set(fijosActivos.map(f => normalizar(f.nombre).trim()));
+  const fijosDeCuotas = cuotas
+    .filter(c => !nombresFijos.has(normalizar(c.alias).trim()))
+    .map(c => ({ id: `cuota-${c.id}`, nombre: c.alias, monto: Number(c.monto_cuota), categoria_id: null, activo: true, origen: 'cuota' }));
+  const activos = [...fijosActivos, ...fijosDeCuotas];
 
   const base = plan.ingreso_base === null || plan.ingreso_base === undefined || plan.ingreso_base === ''
     ? null
@@ -248,7 +262,11 @@ export function calcularPlan({ plan, gastosFijos = [], ingresosReales = 0, gasto
       real: Math.round(fijosReales),
       diferencia: Math.round(presupuestoFijos - fijosReales),
       cantidad: activos.length,
-      gastadoEsteMes: Math.round(gastadoFijo)
+      gastadoEsteMes: Math.round(gastadoFijo),
+      cuotas: {
+        cantidad: fijosDeCuotas.length,
+        monto: Math.round(fijosDeCuotas.reduce((suma, f) => suma + f.monto, 0))
+      }
     },
     libre: {
       presupuesto: Math.round(presupuestoLibre),
@@ -367,8 +385,9 @@ export async function obtenerPlan(hoy = fechaHoySantiago()) {
      WHERE tipo = 'abono' AND ${sqlExcluirInternos()} AND fecha BETWEEN ? AND ?`,
     [inicio, fin]
   );
+  const cuotas = await comprasParaPlan(inicio, fin);
   const [gastos] = await query(
-    `SELECT descripcion, monto, categoria_id FROM movimientos
+    `SELECT descripcion, monto, categoria_id, compra_cuota_id FROM movimientos
      WHERE tipo = 'cargo'
        AND tipo_movimiento IN (${TIPOS_GASTO_LIBRE.map(t => `'${t}'`).join(', ')})
        AND fecha BETWEEN ? AND ?`,
@@ -378,6 +397,7 @@ export async function obtenerPlan(hoy = fechaHoySantiago()) {
   const resumen = calcularPlan({
     plan,
     gastosFijos,
+    cuotas,
     ingresosReales: Number(ingresos[0].total) || 0,
     gastos,
     hoy

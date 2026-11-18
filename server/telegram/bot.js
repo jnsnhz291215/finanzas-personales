@@ -27,6 +27,7 @@ import {
   TIPOS_GASTO_LIBRE
 } from '../planAhorro.js';
 import { crearAdmin } from './admin.js';
+import { crearCuotas } from './cuotasBot.js';
 import { categoriaPorReglas } from '../gestion.js';
 import { canonizarPersona } from '../deudas.js';
 import { detectarPrestamo } from './prestamo.js';
@@ -62,6 +63,8 @@ let allowedChatIds = [];
 let isRunning = false;
 // Administración desde el bot (movimientos, categorías, deudas, plan); se crea al iniciar el bot
 let admin = null;
+// Compras en cuotas (cuotasBot.js); se crea al iniciar el bot
+let cuotas = null;
 
 // Estado temporal para confirmaciones
 const pendingTransactions = new Map();
@@ -171,6 +174,21 @@ export async function iniciarBot() {
 
     admin = crearAdmin({ bot, enviar, editar, responderCallback, esc, esChatAutorizado, formatearMonto });
     admin.configurarComandos();
+
+    cuotas = crearCuotas({
+      bot,
+      enviar,
+      editar,
+      responderCallback,
+      esc,
+      esChatAutorizado,
+      formatearMonto,
+      resolverCuentaPago,
+      guardarRespaldo: guardarRespaldoCuota,
+      eliminarRespaldo: eliminarRespaldoCuota,
+      manejarFoto
+    });
+    cuotas.configurarComandos();
     configurarManejadores();
 
     // Menú "/" de Telegram; no bloquea el arranque y no lanza
@@ -242,6 +260,11 @@ function textoAyuda() {
     '/fijos - Ver, editar o desactivar tus gastos fijos\n' +
     'Ejemplo: /fijo celular 20 mil el 10 palabras movistar, entel\n' +
     'También puedes preguntar: cuánto puedo gastar\n\n' +
+    '<b>Compras en cuotas:</b>\n' +
+    '/cuotas - Ver tus compras en cuotas, lo que falta y la próxima cuota\n' +
+    '/cuotas nueva mac 12 cuotas de 85 mil tía, pagadas 6 - Crear una compra\n' +
+    'Para pagar una cuota escribe: pagué cuota tía mac 7/12 (también sirve una foto del comprobante con ese texto)\n' +
+    'También puedes preguntar: cuánto le debo a mi tía\n\n' +
     '<b>Movimientos:</b>\n' +
     '/ultimos - Últimos 10 movimientos, con botones para editarlos o borrarlos\n' +
     '/buscar - Buscar por texto o mes (por ejemplo /buscar uber noviembre)\n' +
@@ -276,6 +299,7 @@ const COMANDOS_MENU = [
   { command: 'misdatos', description: 'Ver mis alias de transferencia' },
   { command: 'datos', description: 'Pedir mis datos de transferencia' },
   { command: 'borrardatos', description: 'Eliminar datos de transferencia' },
+  { command: 'cuotas', description: 'Mis compras en cuotas' },
   { command: 'plan', description: 'Ver mi plan de ahorro del mes' },
   { command: 'fijo', description: 'Agregar un gasto fijo' },
   { command: 'fijos', description: 'Ver mis gastos fijos' },
@@ -488,6 +512,11 @@ function configurarManejadores() {
       return;
     }
 
+    // Foto o documento con un pago de cuota (caption) o foto sin caption con compras en cuotas
+    if ((msg.document || msg.photo) && cuotas && await cuotas.manejarEnvio(msg)) {
+      return;
+    }
+
     // Manejar archivos (cartolas)
     if (msg.document) {
       await manejarArchivo(msg);
@@ -506,6 +535,11 @@ function configurarManejadores() {
 
     // Nombre de la persona de un préstamo pendiente de confirmar
     if (msg.text && await manejarPersonaPrestamo(msg)) {
+      return;
+    }
+
+    // Respuesta a una pregunta del alta de una compra en cuotas
+    if (msg.text && cuotas && await cuotas.manejarTexto(msg)) {
       return;
     }
 
@@ -530,6 +564,11 @@ function configurarManejadores() {
       return;
     }
 
+    // Compras en cuotas: pago de cuota, alta o consulta (nunca se registra como gasto)
+    if (msg.text && cuotas && await cuotas.intentarMensaje(msg)) {
+      return;
+    }
+
     // Un número solo corrige el monto del movimiento pendiente
     if (msg.text && await actualizarMontoPendiente(msg)) {
       return;
@@ -548,6 +587,11 @@ function configurarManejadores() {
 
     if (!esChatAutorizado(chatId)) {
       await responderCallback(cb.id, { text: '❌ No autorizado' });
+      return;
+    }
+
+    // Botones de compras en cuotas
+    if (cuotas && await cuotas.manejarCallback(cb, chatId, data)) {
       return;
     }
 
@@ -591,7 +635,7 @@ function configurarManejadores() {
       }
 
       try {
-        await guardarMovimiento(tx);
+        const movimientoId = await guardarMovimiento(tx);
         pendingTransactions.delete(txId);
         const lineaPlan = await lineaDisponiblePlan(tx);
 
@@ -611,6 +655,11 @@ function configurarManejadores() {
         );
 
         await responderCallback(cb.id, { text: '✅ Guardado' });
+
+        // Si parece el pago de una cuota (alias de la cartola), se pregunta; nunca se asigna sola
+        if (tx.tipo_movimiento === 'transferencia_terceros' && cuotas) {
+          await cuotas.ofrecerPagoPorCartola(chatId, { id: movimientoId, descripcion: tx.descripcion });
+        }
       } catch (error) {
         // Mensaje de la BD para diagnosticar (p. ej. "NOT NULL constraint failed: movimientos.cuenta_id")
         console.error('Error al guardar movimiento:', error.code ?? '', error.message);
@@ -1178,7 +1227,7 @@ async function registrarTransaccion(msg) {
  * Guarda un movimiento en la base de datos
  */
 async function guardarMovimiento(tx) {
-  await query(
+  const [resultado] = await query(
     `INSERT INTO movimientos (cuenta_id, cuenta_destino_id, fecha, descripcion, monto, tipo, tipo_movimiento, categoria_id,
                               es_prestamo, persona_prestamo)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1196,6 +1245,41 @@ async function guardarMovimiento(tx) {
       tx.es_prestamo && tx.persona ? tx.persona : null
     ]
   );
+  return resultado.insertId;
+}
+
+/** Cuenta desde la que se paga una cuota: la del medio de pago mencionado o la por defecto */
+async function resolverCuentaPago(medioPago) {
+  const cuentas = await listarCuentas();
+  if (cuentas.length === 0) return null;
+  return elegirCuenta(cuentas, medioPago) || cuentaPorDefecto(cuentas);
+}
+
+/**
+ * Guarda el comprobante de un pago de cuota en la misma carpeta (configurable con
+ * CARTOLAS_PATH) y con el mismo criterio de nombre seguro que manejarArchivo. No se lee el
+ * contenido ni se envía a ningún servicio. Devuelve el nombre del archivo guardado.
+ */
+async function guardarRespaldoCuota(fileId, nombreSugerido) {
+  const fileLink = await bot.getFileLink(fileId);
+  const carpeta = process.env.CARTOLAS_PATH || path.join(__dirname, '../../uploads/cartolas');
+  await fs.mkdir(carpeta, { recursive: true });
+
+  const nombre = `respaldo_cuota_${Date.now()}_${path.basename(nombreSugerido)}`;
+  const respuesta = await fetch(fileLink);
+  if (!respuesta.ok) throw new Error('la descarga del archivo falló');
+  await fs.writeFile(path.join(carpeta, nombre), Buffer.from(await respuesta.arrayBuffer()));
+  return nombre;
+}
+
+/** Borra un respaldo guardado (si el pago se cancela); nunca lanza */
+async function eliminarRespaldoCuota(nombre) {
+  try {
+    const carpeta = process.env.CARTOLAS_PATH || path.join(__dirname, '../../uploads/cartolas');
+    await fs.unlink(path.join(carpeta, path.basename(nombre)));
+  } catch {
+    // si ya no existe no pasa nada
+  }
 }
 
 // ---------------------------------------------------------------------------

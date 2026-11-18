@@ -78,6 +78,8 @@ CREATE TABLE IF NOT EXISTS movimientos (
   tipo ENUM('cargo', 'abono') NOT NULL,
   tipo_movimiento ENUM('compra', 'pago_tarjeta', 'transferencia_propia', 'transferencia_terceros', 'ingreso', 'otro') NOT NULL DEFAULT 'compra',
   cuenta_destino_id INT NULL,
+  compra_cuota_id INT NULL,
+  numero_cuota SMALLINT NULL,
   categoria_id INT,
   persona_prestamo VARCHAR(100) DEFAULT NULL,
   es_prestamo BOOLEAN DEFAULT FALSE,
@@ -96,6 +98,31 @@ CREATE TABLE IF NOT EXISTS movimientos (
   INDEX idx_categoria (categoria_id),
   INDEX idx_prestamo (es_prestamo, persona_prestamo)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Compras en cuotas a una persona o tarjeta ajena (por ejemplo, un MacBook en 12 cuotas)
+CREATE TABLE IF NOT EXISTS compras_cuotas (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  alias VARCHAR(100) NOT NULL,
+  alias_cartola VARCHAR(100) NULL,
+  acreedor VARCHAR(100) NOT NULL,
+  monto_total DECIMAL(15,2) NULL,
+  monto_cuota DECIMAL(15,2) NOT NULL,
+  total_cuotas SMALLINT NOT NULL,
+  cuotas_pagadas SMALLINT NOT NULL DEFAULT 0,
+  fecha_inicio DATE NULL,
+  dia_pago TINYINT NULL,
+  terminada BOOLEAN NOT NULL DEFAULT FALSE,
+  activa BOOLEAN NOT NULL DEFAULT TRUE,
+  creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_activa_terminada (activa, terminada)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Cada pago de cuota es un movimiento ligado a su compra (movimientos se crea antes)
+ALTER TABLE movimientos
+  ADD INDEX idx_movimientos_compra_cuota (compra_cuota_id),
+  ADD CONSTRAINT fk_movimientos_compra_cuota
+    FOREIGN KEY (compra_cuota_id) REFERENCES compras_cuotas(id) ON DELETE SET NULL;
 
 -- Plan de ahorro mensual (una sola fila) y gastos fijos
 CREATE TABLE IF NOT EXISTS plan_ahorro (
