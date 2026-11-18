@@ -7,7 +7,7 @@
  *   presupuestoFijos   = ingreso * pct_fijos / 100        (solo se compara con los fijos reales)
  *   fijosReales        = suma de gastos_fijos activos
  *   presupuestoLibre   = ingreso - metaAhorro - fijosReales   (los fijos reales, no el porcentaje)
- *   gastadoLibre       = gastos del mes (compra y transferencia_terceros) que no son fijos
+ *   gastadoLibre       = gastos del mes (compra, transferencia_terceros y otro, siempre cargo) que no son fijos
  *   disponible         = presupuestoLibre - gastadoLibre
  *   disponiblePorDia   = disponible / diasRestantes (hoy incluido); 0 si el disponible es negativo
  *
@@ -19,7 +19,8 @@ import { analizarMonto } from './telegram/parser.js';
 import { fechaHoySantiago } from './telegram/fechas.js';
 import { sqlExcluirInternos } from './tiposMovimiento.js';
 
-export const TIPOS_GASTO_LIBRE = ['compra', 'transferencia_terceros'];
+// Gasto libre: compras, transferencias a terceros y "otro" con sentido cargo (igual que los dashboards)
+export const TIPOS_GASTO_LIBRE = ['compra', 'transferencia_terceros', 'otro'];
 
 const PORCENTAJES_POR_DEFECTO = { pct_fijos: 50, pct_libres: 30, pct_ahorro: 20 };
 
@@ -52,6 +53,24 @@ export function validarPorcentajes({ pct_fijos: fijos, pct_libres: libres, pct_a
   return { ok: true, valores: { pct_fijos: valores[0], pct_libres: valores[1], pct_ahorro: valores[2] } };
 }
 
+/**
+ * Palabras clave de un gasto fijo: texto separado por comas -> lista sin vacíos ni repetidos
+ * (comparando sin tildes ni mayúsculas).
+ */
+export function listaPalabrasClave(texto) {
+  const vistas = new Set();
+  const lista = [];
+  for (const parte of String(texto ?? '').split(',')) {
+    const palabra = parte.trim();
+    const clave = normalizar(palabra);
+    if (palabra && !vistas.has(clave)) {
+      vistas.add(clave);
+      lista.push(palabra);
+    }
+  }
+  return lista;
+}
+
 /** Valida los datos de un gasto fijo (API y bot) */
 export function validarGastoFijo(datos) {
   const nombre = String(datos?.nombre ?? '').trim();
@@ -79,9 +98,21 @@ export function validarGastoFijo(datos) {
     return { ok: false, error: 'Categoría o cuenta no válidas' };
   }
 
+  const palabrasClave = listaPalabrasClave(datos?.palabras_clave).join(', ');
+  if (palabrasClave.length > 255) {
+    return { ok: false, error: 'Las palabras clave son demasiado largas (máximo 255 caracteres)' };
+  }
+
   return {
     ok: true,
-    valores: { nombre, monto: Math.round(monto), dia_pago: diaPago, categoria_id: categoriaId, cuenta_id: cuentaId }
+    valores: {
+      nombre,
+      monto: Math.round(monto),
+      dia_pago: diaPago,
+      categoria_id: categoriaId,
+      cuenta_id: cuentaId,
+      palabras_clave: palabrasClave || null
+    }
   };
 }
 
@@ -111,7 +142,8 @@ export function infoMes(hoy) {
 
 /**
  * Un movimiento cuenta como gasto fijo si su categoría es la de un gasto fijo activo o si su
- * descripción contiene el nombre de uno (sin tildes ni mayúsculas, nombres de 3+ letras).
+ * descripción contiene el nombre de uno o alguna de sus palabras clave (sin tildes ni
+ * mayúsculas, textos de 3+ letras).
  * Limitación: una categoría compartida (p. ej. "Servicios") hace que todo lo de esa categoría
  * cuente como fijo.
  */
@@ -121,8 +153,8 @@ export function esGastoFijo(movimiento, gastosFijos) {
     const mismaCategoria =
       f.categoria_id != null && movimiento.categoria_id != null &&
       Number(f.categoria_id) === Number(movimiento.categoria_id);
-    const nombre = normalizar(f.nombre).trim();
-    return mismaCategoria || (nombre.length >= 3 && descripcion.includes(nombre));
+    const textos = [f.nombre, ...listaPalabrasClave(f.palabras_clave)].map(t => normalizar(t).trim());
+    return mismaCategoria || textos.some(t => t.length >= 3 && descripcion.includes(t));
   });
 }
 
@@ -171,7 +203,13 @@ export function calcularPlan({ plan, gastosFijos = [], ingresosReales = 0, gasto
   // Alertas
   const alertas = [];
   if (ingreso <= 0) {
-    alertas.push({ codigo: 'sin_ingresos', nivel: 'info', mensaje: 'No hay ingresos este mes: define un ingreso base en el plan.' });
+    alertas.push({
+      codigo: 'sin_ingresos',
+      nivel: 'info',
+      mensaje: base === null
+        ? 'Aún no hay ingresos este mes. Define un ingreso base en el plan para calcular tu meta de ahorro y lo que puedes gastar.'
+        : 'El ingreso base es 0: define uno mayor para calcular tu meta de ahorro.'
+    });
   }
   if (ingreso > 0 && fijosReales > presupuestoFijos) {
     alertas.push({
@@ -276,7 +314,7 @@ export async function guardarPlan({ ingreso_base: ingresoBase, pct_fijos, pct_li
 export async function listarGastosFijos({ incluirInactivos = false } = {}) {
   const query = await consulta();
   const [filas] = await query(
-    `SELECT f.id, f.nombre, f.monto, f.dia_pago, f.categoria_id, f.cuenta_id, f.activo,
+    `SELECT f.id, f.nombre, f.monto, f.dia_pago, f.categoria_id, f.cuenta_id, f.palabras_clave, f.activo,
             c.nombre AS categoria_nombre, cu.nombre AS cuenta_nombre
      FROM gastos_fijos f
      LEFT JOIN categorias c ON f.categoria_id = c.id
@@ -287,22 +325,23 @@ export async function listarGastosFijos({ incluirInactivos = false } = {}) {
   return filas.map(normalizarFijo);
 }
 
-export async function crearGastoFijo({ nombre, monto, dia_pago, categoria_id, cuenta_id }) {
+export async function crearGastoFijo({ nombre, monto, dia_pago, categoria_id, cuenta_id, palabras_clave }) {
   const query = await consulta();
   const [resultado] = await query(
-    'INSERT INTO gastos_fijos (nombre, monto, dia_pago, categoria_id, cuenta_id) VALUES (?, ?, ?, ?, ?)',
-    [nombre, monto, dia_pago, categoria_id, cuenta_id]
+    'INSERT INTO gastos_fijos (nombre, monto, dia_pago, categoria_id, cuenta_id, palabras_clave) VALUES (?, ?, ?, ?, ?, ?)',
+    [nombre, monto, dia_pago, categoria_id, cuenta_id, palabras_clave ?? null]
   );
   return resultado.insertId;
 }
 
-export async function actualizarGastoFijo(id, { nombre, monto, dia_pago, categoria_id, cuenta_id }, activo = true) {
+export async function actualizarGastoFijo(id, { nombre, monto, dia_pago, categoria_id, cuenta_id, palabras_clave }, activo = true) {
   const query = await consulta();
   await query(
     `UPDATE gastos_fijos
-     SET nombre = ?, monto = ?, dia_pago = ?, categoria_id = ?, cuenta_id = ?, activo = ?, actualizado_en = CURRENT_TIMESTAMP
+     SET nombre = ?, monto = ?, dia_pago = ?, categoria_id = ?, cuenta_id = ?, palabras_clave = ?, activo = ?,
+         actualizado_en = CURRENT_TIMESTAMP
      WHERE id = ?`,
-    [nombre, monto, dia_pago, categoria_id, cuenta_id, activo ? 1 : 0, id]
+    [nombre, monto, dia_pago, categoria_id, cuenta_id, palabras_clave ?? null, activo ? 1 : 0, id]
   );
 }
 

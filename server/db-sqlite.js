@@ -280,12 +280,19 @@ function migrarPlanAhorro(database) {
       dia_pago INTEGER,
       categoria_id INTEGER REFERENCES categorias(id) ON DELETE SET NULL,
       cuenta_id INTEGER REFERENCES cuentas(id) ON DELETE SET NULL,
+      palabras_clave TEXT,
       activo INTEGER NOT NULL DEFAULT 1,
       creado_en DATETIME DEFAULT CURRENT_TIMESTAMP,
       actualizado_en DATETIME DEFAULT CURRENT_TIMESTAMP
     );
     CREATE INDEX IF NOT EXISTS idx_gastos_fijos_activo ON gastos_fijos(activo);
   `);
+
+  // Bases que ya tenían gastos_fijos sin palabras_clave
+  const columnas = database.prepare('PRAGMA table_info(gastos_fijos)').all().map(c => c.name);
+  if (!columnas.includes('palabras_clave')) {
+    database.exec('ALTER TABLE gastos_fijos ADD COLUMN palabras_clave TEXT');
+  }
 }
 
 /**

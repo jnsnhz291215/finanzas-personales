@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import api from '../utils/api';
 import { formatCLP, nombreMes } from '../utils/format';
 
-const FORM_FIJO_VACIO = { nombre: '', monto: '', dia_pago: '', categoria_id: '', cuenta_id: '' };
+const FORM_FIJO_VACIO = { nombre: '', monto: '', dia_pago: '', categoria_id: '', cuenta_id: '', palabras_clave: '' };
 
 export default function PlanAhorro() {
   const [datos, setDatos] = useState(null);
@@ -84,7 +84,8 @@ export default function PlanAhorro() {
       monto: fijo.monto,
       dia_pago: fijo.dia_pago ?? '',
       categoria_id: fijo.categoria_id ?? '',
-      cuenta_id: fijo.cuenta_id ?? ''
+      cuenta_id: fijo.cuenta_id ?? '',
+      palabras_clave: fijo.palabras_clave ?? ''
     });
     setErrorFijo('');
   };
@@ -278,7 +279,14 @@ export default function PlanAhorro() {
               <tbody>
                 {gastosFijos.map(f => (
                   <tr key={f.id} className="border-b border-gray-100">
-                    <td className="py-2 px-3 font-medium text-gray-900">{f.nombre}</td>
+                    <td className="py-2 px-3">
+                      <div className="font-medium text-gray-900">{f.nombre}</div>
+                      {f.palabras_clave && (
+                        <div className="text-xs text-gray-500">
+                          <i className="fas fa-tag mr-1"></i>{f.palabras_clave}
+                        </div>
+                      )}
+                    </td>
                     <td className="py-2 px-3 text-right">{formatCLP(f.monto)}</td>
                     <td className="py-2 px-3 text-sm text-gray-600">{f.dia_pago ?? '-'}</td>
                     <td className="py-2 px-3 text-sm text-gray-600">{f.categoria_nombre ?? '-'}</td>
@@ -333,8 +341,13 @@ export default function PlanAhorro() {
               </select>
             </div>
           </div>
+          <div>
+            <label className="label">Palabras clave (opcional, separadas por coma)</label>
+            <input type="text" className="input" placeholder="movistar, entel, wom" value={formFijo.palabras_clave}
+              onChange={(e) => setFormFijo({ ...formFijo, palabras_clave: e.target.value })} />
+          </div>
           <p className="text-xs text-gray-500">
-            Un movimiento cuenta como este gasto fijo si tiene su categoría o si su descripción contiene su nombre.
+            Un movimiento cuenta como este gasto fijo si tiene su categoría o si su descripción contiene su nombre o alguna palabra clave.
           </p>
           {errorFijo && <p className="text-sm text-red-600">{errorFijo}</p>}
           <div className="flex space-x-3">

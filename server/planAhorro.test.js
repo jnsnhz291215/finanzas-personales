@@ -4,6 +4,8 @@ import {
   validarGastoFijo,
   infoMes,
   esGastoFijo,
+  listaPalabrasClave,
+  TIPOS_GASTO_LIBRE,
   parsearFijo,
   detectarConsultaPlan
 } from './planAhorro.js';
@@ -38,9 +40,31 @@ describe('esGastoFijo', () => {
     expect(esGastoFijo({ descripcion: 'Jumbo', categoria_id: 1 }, FIJOS)).toBe(false);
   });
 
+  test('también calza por palabras clave', () => {
+    const fijos = [{ nombre: 'Celular', monto: 20000, categoria_id: null, palabras_clave: 'Movistar, entel ,WOM', activo: true }];
+
+    expect(esGastoFijo({ descripcion: 'Pago MOVISTAR octubre' }, fijos)).toBe(true);
+    expect(esGastoFijo({ descripcion: 'recarga wom' }, fijos)).toBe(true);
+    expect(esGastoFijo({ descripcion: 'Jumbo' }, fijos)).toBe(false);
+  });
+
   test('ignora tildes y mayúsculas', () => {
     const fijos = [{ nombre: 'Educación', monto: 1000, categoria_id: null, activo: true }];
     expect(esGastoFijo({ descripcion: 'pago educacion marzo' }, fijos)).toBe(true);
+  });
+});
+
+describe('gasto libre', () => {
+  test('cuentan compra, transferencia a terceros y "otro" (con sentido cargo)', () => {
+    expect(TIPOS_GASTO_LIBRE).toEqual(['compra', 'transferencia_terceros', 'otro']);
+  });
+});
+
+describe('listaPalabrasClave', () => {
+  test('separa por comas, quita vacíos y repetidos', () => {
+    expect(listaPalabrasClave(' Movistar, entel ,, MOVISTAR , wom')).toEqual(['Movistar', 'entel', 'wom']);
+    expect(listaPalabrasClave('')).toEqual([]);
+    expect(listaPalabrasClave(null)).toEqual([]);
   });
 });
 
@@ -121,6 +145,26 @@ describe('calcularPlan: sin ingresos', () => {
     expect(r.metaAhorro).toBe(0);
     expect(r.disponible).toBe(-350000);
     expect(r.disponiblePorDia).toBe(0);
+  });
+
+  test('sugiere definir el ingreso base cuando no hay base ni ingresos reales', () => {
+    const alerta = r.alertas.find(a => a.codigo === 'sin_ingresos');
+
+    expect(alerta.mensaje).toContain('ingreso base');
+    expect(alerta.mensaje).toContain('Define');
+  });
+
+  test('con ingreso base definido no se sugiere definirlo de nuevo', () => {
+    const conBase = calcularPlan({
+      plan: { ...PLAN, ingreso_base: 800000 },
+      gastosFijos: [FIJOS[0]],
+      ingresosReales: 0,
+      gastos: [],
+      hoy: '2026-11-18'
+    });
+
+    expect(conBase.alertas.map(a => a.codigo)).not.toContain('sin_ingresos');
+    expect(conBase.ingreso).toBe(800000);
   });
 
   test('avisa que faltan ingresos y que el ahorro está en riesgo', () => {
@@ -210,7 +254,16 @@ describe('validarGastoFijo', () => {
     const r = validarGastoFijo({ nombre: ' Arriendo ', monto: 350000, dia_pago: 5, categoria_id: null });
 
     expect(r.ok).toBe(true);
-    expect(r.valores).toEqual({ nombre: 'Arriendo', monto: 350000, dia_pago: 5, categoria_id: null, cuenta_id: null });
+    expect(r.valores).toEqual({
+      nombre: 'Arriendo', monto: 350000, dia_pago: 5, categoria_id: null, cuenta_id: null, palabras_clave: null
+    });
+  });
+
+  test('normaliza las palabras clave', () => {
+    const r = validarGastoFijo({ nombre: 'Celular', monto: 20000, palabras_clave: ' movistar,, entel , Movistar' });
+
+    expect(r.ok).toBe(true);
+    expect(r.valores.palabras_clave).toBe('movistar, entel');
   });
 
   test('rechaza datos inválidos', () => {

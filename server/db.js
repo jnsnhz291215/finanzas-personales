@@ -64,6 +64,7 @@ if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
         dia_pago TINYINT NULL,
         categoria_id INT NULL,
         cuenta_id INT NULL,
+        palabras_clave VARCHAR(255) NULL,
         activo BOOLEAN NOT NULL DEFAULT TRUE,
         creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -72,6 +73,15 @@ if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
         INDEX idx_activo (activo)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
+
+    // Bases que ya tenían gastos_fijos sin palabras_clave
+    const [existe] = await connection.query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'gastos_fijos' AND COLUMN_NAME = 'palabras_clave'`
+    );
+    if (existe.length === 0) {
+      await connection.query('ALTER TABLE gastos_fijos ADD COLUMN palabras_clave VARCHAR(255) NULL AFTER cuenta_id');
+    }
   }
 
   /**
