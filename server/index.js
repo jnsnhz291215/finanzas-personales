@@ -58,8 +58,9 @@ app.use('/api/prestamos', prestamosRoutes);
 app.use('/api/plan-ahorro', planAhorroRouter);
 app.use('/api/gastos-fijos', gastosFijosRouter);
 
-// Servir frontend en producción
-if (process.env.NODE_ENV === 'production') {
+// Servir el frontend (client/dist) solo si SERVIR_FRONTEND=true. Por defecto no se sirve:
+// la app se usa desde el bot de Telegram y la API sigue disponible.
+if (process.env.SERVIR_FRONTEND === 'true') {
   app.use(express.static(path.join(__dirname, '../client/dist')));
   app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, '../client/dist/index.html'));

@@ -391,13 +391,25 @@ export async function obtenerPlan(hoy = fechaHoySantiago()) {
 // ---------------------------------------------------------------------------
 
 /**
- * Interpreta "arriendo 350 mil el 5" (con o sin /fijo delante): nombre, monto y día de pago.
- * Reutiliza el parser de montos. monto es null si no hay un monto reconocible.
+ * Interpreta "arriendo 350 mil el 5 palabras dividendo, banco" (con o sin /fijo delante):
+ * nombre, monto, día de pago y palabras clave opcionales (todo lo que sigue a "palabras" o
+ * "palabras clave", separado por comas). Reutiliza el parser de montos. monto es null si no
+ * hay un monto reconocible.
  */
 export function parsearFijo(texto) {
-  const limpio = String(texto ?? '').replace(/^\s*\/\w+(?:@\w+)?\s*/, '').trim();
+  const completo = String(texto ?? '').replace(/^\s*\/\w+(?:@\w+)?\s*/, '').trim();
+
+  // Las palabras clave se separan antes de buscar el monto (pueden traer números)
+  let limpio = completo;
+  let palabrasClave = null;
+  const claves = /\bpalabras(?:\s+clave)?\s*:?\s+(.+)$/i.exec(completo);
+  if (claves) {
+    limpio = completo.slice(0, claves.index).trim();
+    palabrasClave = listaPalabrasClave(claves[1]).join(', ') || null;
+  }
+
   const analisis = analizarMonto(limpio);
-  if (!analisis) return { nombre: null, monto: null, diaPago: null };
+  if (!analisis) return { nombre: null, monto: null, diaPago: null, palabrasClave };
 
   let resto = `${limpio.slice(0, analisis.inicio)} ${limpio.slice(analisis.fin)}`;
 
@@ -418,7 +430,8 @@ export function parsearFijo(texto) {
   return {
     nombre: nombre ? nombre[0].toUpperCase() + nombre.slice(1) : null,
     monto: analisis.monto,
-    diaPago
+    diaPago,
+    palabrasClave
   };
 }
 

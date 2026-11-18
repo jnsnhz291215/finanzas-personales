@@ -26,6 +26,8 @@ import {
   detectarConsultaPlan,
   TIPOS_GASTO_LIBRE
 } from '../planAhorro.js';
+import { crearAdmin } from './admin.js';
+import { categoriaPorReglas } from '../gestion.js';
 import {
   parsearCuenta,
   nombrePorDefecto,
@@ -56,6 +58,8 @@ const __dirname = path.dirname(__filename);
 let bot = null;
 let allowedChatIds = [];
 let isRunning = false;
+// Administración desde el bot (movimientos, categorías, deudas, plan); se crea al iniciar el bot
+let admin = null;
 
 // Estado temporal para confirmaciones
 const pendingTransactions = new Map();
@@ -159,6 +163,9 @@ export async function iniciarBot() {
     configurarComandosCuentas();
     configurarComandosDatos();
     configurarComandosPlan();
+
+    admin = crearAdmin({ bot, enviar, editar, responderCallback, esc, esChatAutorizado, formatearMonto });
+    admin.configurarComandos();
     configurarManejadores();
 
     // Menú "/" de Telegram; no bloquea el arranque y no lanza
@@ -225,14 +232,24 @@ function textoAyuda() {
     'Para pedirlos escribe: pásame los datos de transferencia de la mercado pago\n\n' +
     '<b>Plan de ahorro:</b>\n' +
     '/plan - Cuánto ahorrar, cuánto tienes fijo y cuánto te queda para gastar\n' +
+    '/plan config - Ver y editar porcentajes e ingreso base (o /plan 50 30 20, /plan ingreso 1.200.000)\n' +
     '/fijo - Agregar un gasto fijo\n' +
-    '/fijos - Ver tus gastos fijos\n' +
-    'Ejemplo: /fijo arriendo 350 mil el 5\n' +
+    '/fijos - Ver, editar o desactivar tus gastos fijos\n' +
+    'Ejemplo: /fijo celular 20 mil el 10 palabras movistar, entel\n' +
     'También puedes preguntar: cuánto puedo gastar\n\n' +
-    '<b>Consultas:</b>\n' +
-    '/resumen - Resumen del mes actual\n' +
-    '/ultimos - Últimos 10 movimientos\n' +
+    '<b>Movimientos:</b>\n' +
+    '/ultimos - Últimos 10 movimientos, con botones para editarlos o borrarlos\n' +
+    '/buscar - Buscar por texto o mes (por ejemplo /buscar uber noviembre)\n' +
     '/borrar_ultimo - Eliminar el último movimiento (con confirmación)\n\n' +
+    '<b>Categorías:</b>\n' +
+    '/categorias - Ver las categorías\n' +
+    '/categoria nueva Mascotas - Crear una categoría\n' +
+    '/regla uber transporte - Asignar una categoría automática por texto (sin argumentos lista las reglas)\n\n' +
+    '<b>Deudas:</b>\n' +
+    '/deudas - Quién te debe y cuánto\n' +
+    '/pago Pedro 20 mil - Registrar un pago\n\n' +
+    '<b>Consultas:</b>\n' +
+    '/resumen - Resumen del mes actual\n\n' +
     '<b>Otros:</b>\n' +
     '/help - Mostrar esta ayuda (también /ayuda)\n' +
     '/miid - Obtener tu chat ID\n\n' +
@@ -256,7 +273,13 @@ const COMANDOS_MENU = [
   { command: 'fijo', description: 'Agregar un gasto fijo' },
   { command: 'fijos', description: 'Ver mis gastos fijos' },
   { command: 'resumen', description: 'Resumen del mes actual' },
-  { command: 'ultimos', description: 'Ver los últimos 10 movimientos' },
+  { command: 'ultimos', description: 'Últimos movimientos (editar o borrar)' },
+  { command: 'buscar', description: 'Buscar movimientos por texto o mes' },
+  { command: 'categorias', description: 'Ver las categorías' },
+  { command: 'categoria', description: 'Crear una categoría' },
+  { command: 'regla', description: 'Regla de categoría automática' },
+  { command: 'deudas', description: 'Ver quién me debe' },
+  { command: 'pago', description: 'Registrar un pago de una deuda' },
   { command: 'borrar_ultimo', description: 'Eliminar el último movimiento' },
   { command: 'miid', description: 'Obtener mi chat ID' }
 ];
@@ -386,36 +409,8 @@ function configurarComandos() {
       return;
     }
 
-    try {
-      const [movimientos] = await query(
-        `SELECT m.*, c.nombre as cuenta_nombre, cat.nombre as categoria_nombre
-         FROM movimientos m
-         LEFT JOIN cuentas c ON m.cuenta_id = c.id
-         LEFT JOIN categorias cat ON m.categoria_id = cat.id
-         ORDER BY m.fecha DESC, m.creado_en DESC
-         LIMIT 10`
-      );
-
-      if (movimientos.length === 0) {
-        await enviar(chatId, 'No hay movimientos registrados.');
-        return;
-      }
-
-      let mensaje = '📝 <b>Últimos 10 movimientos:</b>\n\n';
-
-      movimientos.forEach((m, i) => {
-        const icono = m.tipo === 'cargo' ? '💸' : '💰';
-        const fecha = formatearFechaCL(m.fecha);
-        const categoria = esc(m.categoria_nombre || 'Sin categoría');
-        mensaje += `${i + 1}. ${icono} $${formatearMonto(m.monto)} - ${esc(m.descripcion)}\n`;
-        mensaje += `   📅 ${fecha} • ${categoria}\n\n`;
-      });
-
-      await enviar(chatId, mensaje);
-    } catch (error) {
-      console.error('Error al obtener últimos movimientos:', error);
-      await enviar(chatId, '❌ Error al obtener los movimientos.');
-    }
+    // Lista con botones por movimiento para editar o borrar (admin.js)
+    await admin.mostrarUltimos(chatId);
   });
 
   // Comando /borrar_ultimo
@@ -501,6 +496,11 @@ function configurarManejadores() {
       return;
     }
 
+    // Respuesta pendiente de administración (monto de un movimiento, plan, gastos fijos)
+    if (msg.text && admin && await admin.manejarTexto(msg)) {
+      return;
+    }
+
     // Respuesta a una pregunta de /savetrans (RUT, número, titular...)
     if (msg.text && await manejarRespuestaDato(msg)) {
       return;
@@ -535,6 +535,11 @@ function configurarManejadores() {
 
     if (!esChatAutorizado(chatId)) {
       await responderCallback(cb.id, { text: '❌ No autorizado' });
+      return;
+    }
+
+    // Botones de administración (movimientos, reglas, pagos, plan)
+    if (admin && await admin.manejarCallback(cb, chatId, data)) {
       return;
     }
 
@@ -1011,7 +1016,12 @@ async function registrarTransaccion(msg) {
     // Buscar categoría por nombre detectado
     let categoriaId = null;
     let categoriaNombre = null;
-    if (datos.categoriaDetectada) {
+    // Primero las reglas de autocategorización (las de la web y las de /regla)
+    const porRegla = await categoriaPorReglas(texto);
+    if (porRegla) {
+      categoriaId = porRegla.id;
+      categoriaNombre = porRegla.nombre;
+    } else if (datos.categoriaDetectada) {
       const [categorias] = await query(
         'SELECT id, nombre FROM categorias WHERE LOWER(nombre) = ? LIMIT 1',
         [datos.categoriaDetectada.toLowerCase()]
@@ -2250,18 +2260,23 @@ function textoConfirmacionFijo(datos) {
     '<b>Confirmar gasto fijo:</b>\n\n' +
     `Nombre: ${esc(datos.nombre)}\n` +
     `Monto: $${formatearMonto(datos.monto)}\n` +
-    `Día de pago: ${datos.diaPago ?? 'sin indicar'}`
+    `Día de pago: ${datos.diaPago ?? 'sin indicar'}` +
+    (datos.palabrasClave ? `\nPalabras clave: ${esc(datos.palabrasClave)}` : '')
   );
 }
 
 function configurarComandosPlan() {
   const rechazar = (chatId) => enviar(chatId, 'No estás autorizado para usar este bot.');
 
-  // /plan
-  bot.onText(/^\/plan(?:@\w+)?\s*$/i, async (msg) => {
+  // /plan (resumen), /plan config, /plan ingreso <monto>, /plan 50 30 20
+  bot.onText(/^\/plan(?:@\w+)?(?:\s+([\s\S]+))?$/i, async (msg, match) => {
     const chatId = msg.chat.id;
     if (!esChatAutorizado(chatId)) {
       await rechazar(chatId);
+      return;
+    }
+    if (match[1]) {
+      await admin.planConArgumentos(chatId, match[1]);
       return;
     }
     await responderPlan(chatId);
@@ -2281,7 +2296,8 @@ function configurarComandosPlan() {
         '<b>Agregar un gasto fijo</b>\n\n' +
         'Escribe el nombre, el monto y, si quieres, el día de pago:\n' +
         '/fijo arriendo 350 mil el 5\n' +
-        '/fijo internet 25.990 el 10'
+        '/fijo internet 25.990 el 10\n' +
+        '/fijo celular 20 mil el 10 palabras movistar, entel'
       );
       return;
     }
@@ -2314,34 +2330,6 @@ function configurarComandosPlan() {
       await enviar(chatId, 'Error al procesar el gasto fijo.');
     }
   });
-
-  // /fijos
-  bot.onText(/^\/fijos(?:@\w+)?\s*$/i, async (msg) => {
-    const chatId = msg.chat.id;
-    if (!esChatAutorizado(chatId)) {
-      await rechazar(chatId);
-      return;
-    }
-
-    try {
-      const fijos = await listarGastosFijos();
-      if (fijos.length === 0) {
-        await enviar(chatId, 'No tienes gastos fijos. Agrega uno con /fijo arriendo 350 mil el 5.');
-        return;
-      }
-      const total = fijos.reduce((suma, f) => suma + f.monto, 0);
-      await enviar(chatId,
-        '<b>Tus gastos fijos:</b>\n\n' +
-        fijos
-          .map((f, i) => `${i + 1}. <b>${esc(f.nombre)}</b> - $${formatearMonto(f.monto)}${f.dia_pago ? ` - día ${f.dia_pago}` : ''}`)
-          .join('\n') +
-        `\n\nTotal: $${formatearMonto(total)}`
-      );
-    } catch (error) {
-      console.error('Error al listar gastos fijos:', error.code ?? error.name);
-      await enviar(chatId, 'Error al obtener los gastos fijos.');
-    }
-  });
 }
 
 /** Botones de /fijo. Devuelve true si el callback era de este módulo. */
@@ -2360,7 +2348,8 @@ async function manejarCallbackFijos(cb, chatId, data) {
       const validado = validarGastoFijo({
         nombre: pendiente.datos.nombre,
         monto: pendiente.datos.monto,
-        dia_pago: pendiente.datos.diaPago
+        dia_pago: pendiente.datos.diaPago,
+        palabras_clave: pendiente.datos.palabrasClave
       });
       if (!validado.ok) {
         await responderCallback(cb.id, { text: validado.error });

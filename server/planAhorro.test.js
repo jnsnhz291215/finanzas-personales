@@ -275,11 +275,20 @@ describe('validarGastoFijo', () => {
 
 describe('parsearFijo', () => {
   test('"arriendo 350 mil el 5"', () => {
-    expect(parsearFijo('/fijo arriendo 350 mil el 5')).toEqual({ nombre: 'Arriendo', monto: 350000, diaPago: 5 });
+    expect(parsearFijo('/fijo arriendo 350 mil el 5')).toEqual({
+      nombre: 'Arriendo', monto: 350000, diaPago: 5, palabrasClave: null
+    });
   });
 
   test('montos con puntos y sin día de pago', () => {
-    expect(parsearFijo('internet 25.990')).toEqual({ nombre: 'Internet', monto: 25990, diaPago: null });
+    expect(parsearFijo('internet 25.990')).toEqual({ nombre: 'Internet', monto: 25990, diaPago: null, palabrasClave: null });
+  });
+
+  test('con palabras clave opcionales', () => {
+    expect(parsearFijo('/fijo celular 20 mil el 10 palabras movistar, entel')).toEqual({
+      nombre: 'Celular', monto: 20000, diaPago: 10, palabrasClave: 'movistar, entel'
+    });
+    expect(parsearFijo('celular 20 mil palabras clave: movistar')).toMatchObject({ nombre: 'Celular', palabrasClave: 'movistar' });
   });
 
   test('sin monto reconocible', () => {

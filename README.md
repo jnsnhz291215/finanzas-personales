@@ -156,11 +156,23 @@ npm install
 cd ..
 ```
 
-### 6. Compilar el Frontend
+### 6. Compilar el Frontend (opcional)
+
+La aplicación se puede usar solo desde el bot de Telegram. El servidor **no sirve la web por defecto**:
+la API y el bot funcionan igual y no hace falta compilar el frontend.
+
+Si quieres usar también la web, compílala y actívala en el `.env`:
 
 ```bash
 npm run build:client
 ```
+
+```env
+SERVIR_FRONTEND=true
+```
+
+Con `SERVIR_FRONTEND=false` (o sin la variable) el servidor no sirve `client/dist`. El código del frontend
+se conserva en `client/`.
 
 ### 7. Configurar PM2
 
