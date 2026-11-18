@@ -1,27 +1,7 @@
 import { useState, useEffect } from 'react';
 import api from '../utils/api';
 import { formatCLP, formatFecha, mesAnioActual } from '../utils/format';
-
-// Tipos de movimiento: icono Font Awesome y color de la paleta actual
-const TIPOS_MOVIMIENTO = [
-  { value: 'compra', label: 'Compra', icon: 'fa-cart-shopping', color: 'text-gray-600' },
-  { value: 'pago_tarjeta', label: 'Pago de tarjeta', icon: 'fa-credit-card', color: 'text-blue-600' },
-  { value: 'transferencia_propia', label: 'Transferencia entre mis cuentas', icon: 'fa-right-left', color: 'text-blue-600' },
-  { value: 'transferencia_terceros', label: 'Transferencia a terceros', icon: 'fa-paper-plane', color: 'text-purple-600' },
-  { value: 'ingreso', label: 'Ingreso', icon: 'fa-arrow-down', color: 'text-green-600' },
-  { value: 'otro', label: 'Otro', icon: 'fa-ellipsis', color: 'text-gray-600' }
-];
-
-// Solo mueven dinero entre cuentas propias: no son gasto ni ingreso
-const TIPOS_CON_DESTINO = ['pago_tarjeta', 'transferencia_propia'];
-
-// Movimientos antiguos o importados pueden venir sin tipo_movimiento (o abonos como "compra")
-const tipoEfectivo = (mov) => {
-  if (mov.tipo === 'abono' && (!mov.tipo_movimiento || mov.tipo_movimiento === 'compra')) return 'ingreso';
-  return mov.tipo_movimiento || 'compra';
-};
-
-const infoTipo = (valor) => TIPOS_MOVIMIENTO.find(t => t.value === valor) || TIPOS_MOVIMIENTO[0];
+import { TIPOS_MOVIMIENTO, TIPOS_CON_DESTINO, tipoEfectivo, infoTipo, estiloMonto } from '../utils/tiposMovimiento';
 
 export default function Movimientos() {
   const [movimientos, setMovimientos] = useState([]);
@@ -219,7 +199,7 @@ export default function Movimientos() {
               <tbody>
                 {movimientos.map(mov => {
                   const tipoMov = infoTipo(tipoEfectivo(mov));
-                  const esInterno = TIPOS_CON_DESTINO.includes(tipoMov.value);
+                  const monto = estiloMonto(mov);
                   return (
                   <tr key={mov.id} className="border-b border-gray-100 hover:bg-gray-50">
                     <td className="py-3 px-4 text-sm">{formatFecha(mov.fecha)}</td>
@@ -254,8 +234,8 @@ export default function Movimientos() {
                         <span className="text-xs text-gray-400">Sin categoría</span>
                       )}
                     </td>
-                    <td className={`py-3 px-4 text-right font-semibold ${esInterno ? 'text-blue-600' : (mov.tipo === 'cargo' ? 'text-red-600' : 'text-green-600')}`}>
-                      {esInterno ? '' : (mov.tipo === 'cargo' ? '-' : '+')}{formatCLP(mov.monto)}
+                    <td className={`py-3 px-4 text-right font-semibold ${monto.clase}`}>
+                      {monto.signo}{formatCLP(mov.monto)}
                     </td>
                     <td className="py-3 px-4 text-right">
                       <button onClick={() => abrirModal(mov)} className="text-blue-600 hover:text-blue-700 mr-3">
