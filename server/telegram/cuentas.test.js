@@ -1,4 +1,4 @@
-import { parsearCuenta, enmascararDigitos } from './cuentas.js';
+import { parsearCuenta, enmascararDigitos, TIPO_DB, ETIQUETAS_TIPO_DB } from './cuentas.js';
 
 describe('parsearCuenta', () => {
   test('debería interpretar una tarjeta de débito con alias, banco, últimos 4 y titular', () => {
@@ -92,6 +92,22 @@ describe('parsearCuenta', () => {
   test('debería usar tipo + banco como nombre cuando no queda alias', () => {
     const r = parsearCuenta('/savecard tarjeta debito banco de chile');
     expect(r.nombre).toBe('Tarjeta de débito Banco de Chile');
+  });
+});
+
+describe('tipo efectivo', () => {
+  test('efectivo se guarda como efectivo, no como cuenta_vista', () => {
+    expect(TIPO_DB.efectivo).toBe('efectivo');
+    expect(TIPO_DB.cuenta_vista).toBe('cuenta_vista');
+    expect(ETIQUETAS_TIPO_DB.efectivo).toBe('Efectivo');
+  });
+
+  test('"efectivo" con un alias usa el alias como nombre', () => {
+    const r = parsearCuenta('/savecard efectivo billetera');
+
+    expect(r.tipo).toBe('efectivo');
+    expect(r.nombre).toBe('billetera');
+    expect(r.banco).toBeNull();
   });
 });
 

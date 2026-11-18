@@ -25,6 +25,22 @@ if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
   let pool;
 
   /**
+   * Migración idempotente (MariaDB): agrega 'efectivo' al ENUM de cuentas.tipo.
+   */
+  async function migrarTipoEfectivo(connection) {
+    const [filas] = await connection.query(
+      `SELECT COLUMN_TYPE AS tipo FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'cuentas' AND COLUMN_NAME = 'tipo'`
+    );
+    if (filas.length === 0 || String(filas[0].tipo).includes("'efectivo'")) return;
+
+    await connection.query(
+      `ALTER TABLE cuentas MODIFY COLUMN tipo
+         ENUM('cuenta_corriente', 'cuenta_vista', 'cuenta_ahorro', 'tarjeta_credito', 'tarjeta_debito', 'efectivo') NOT NULL`
+    );
+  }
+
+  /**
    * Migración idempotente (MariaDB): tabla datos_transferencia, con mis propios datos para que
    * me depositen. Va aparte de cuentas porque cuenta_id es opcional y porque la API de cuentas
    * devuelve todas sus columnas.
@@ -122,6 +138,7 @@ if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
         
         await migrarTipoMovimiento(connection);
         await migrarDatosCuenta(connection);
+        await migrarTipoEfectivo(connection);
         await migrarDatosTransferencia(connection);
         
         const [usuarios] = await connection.query('SELECT * FROM usuario LIMIT 1');

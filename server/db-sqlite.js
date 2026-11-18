@@ -37,7 +37,7 @@ export async function inicializarDB() {
       CREATE TABLE IF NOT EXISTS cuentas (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         nombre TEXT NOT NULL,
-        tipo TEXT NOT NULL CHECK(tipo IN ('cuenta_corriente', 'cuenta_vista', 'cuenta_ahorro', 'tarjeta_credito', 'tarjeta_debito')),
+        tipo TEXT NOT NULL CHECK(tipo IN ('cuenta_corriente', 'cuenta_vista', 'cuenta_ahorro', 'tarjeta_credito', 'tarjeta_debito', 'efectivo')),
         banco TEXT,
         numero_cuenta TEXT,
         cupo_total REAL,
@@ -119,6 +119,9 @@ export async function inicializarDB() {
     // Migración: ultimos4 y titular en cuentas
     migrarDatosCuenta(database);
 
+    // Migración: tipo 'efectivo' en cuentas (reconstruye la tabla si el CHECK no lo incluye)
+    migrarTipoEfectivo(database);
+
     // Migración: tabla datos_transferencia
     migrarDatosTransferencia(database);
 
@@ -158,6 +161,95 @@ export async function inicializarDB() {
   } catch (error) {
     console.error('Error al inicializar base de datos:', error.message);
     throw error;
+  }
+}
+
+const TIPOS_CUENTA_SQL = "'cuenta_corriente', 'cuenta_vista', 'cuenta_ahorro', 'tarjeta_credito', 'tarjeta_debito', 'efectivo'";
+
+// Columnas conocidas de cuentas (en el orden de la tabla reconstruida)
+const COLUMNAS_CUENTAS = [
+  'id', 'nombre', 'tipo', 'banco', 'numero_cuenta', 'cupo_total', 'dia_facturacion',
+  'dia_vencimiento', 'activa', 'notas', 'creado_en', 'actualizado_en', 'ultimos4', 'titular'
+];
+
+/**
+ * Migración idempotente (SQLite): admite el tipo 'efectivo' en cuentas.
+ *
+ * SQLite no permite modificar un CHECK, así que se reconstruye la tabla con el procedimiento
+ * oficial: foreign_keys=OFF (fuera de la transacción), crear cuentas_nueva, copiar todo,
+ * borrar la vieja, renombrar, recrear índices y triggers, y foreign_key_check. Con las
+ * llaves foráneas apagadas el DROP no dispara el borrado en cascada de movimientos.
+ * Si algo falla: rollback, la tabla queda como estaba y se registra solo el código del error.
+ */
+function migrarTipoEfectivo(database) {
+  const fila = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cuentas'").get();
+  if (!fila || fila.sql.includes("'efectivo'")) return; // ya admite efectivo
+
+  const columnasActuales = database.prepare('PRAGMA table_info(cuentas)').all().map(c => c.name);
+  const desconocidas = columnasActuales.filter(c => !COLUMNAS_CUENTAS.includes(c));
+  if (desconocidas.length > 0) {
+    // No se reconstruye para no perder una columna que esta migración no conoce
+    console.error('Migración de cuentas omitida: la tabla tiene columnas no previstas');
+    return;
+  }
+
+  // Índices y triggers de cuentas (los índices automáticos no tienen sql y no se recrean)
+  const objetos = database
+    .prepare("SELECT sql FROM sqlite_master WHERE tbl_name = 'cuentas' AND type IN ('index', 'trigger') AND sql IS NOT NULL")
+    .all()
+    .map(o => o.sql);
+
+  const columnasCopia = COLUMNAS_CUENTAS.filter(c => columnasActuales.includes(c)).join(', ');
+
+  // PRAGMA foreign_keys no se puede cambiar dentro de una transacción
+  database.pragma('foreign_keys = OFF');
+  try {
+    if (database.pragma('foreign_keys', { simple: true }) !== 0) {
+      throw new Error('no se pudo desactivar foreign_keys');
+    }
+
+    const reconstruir = database.transaction(() => {
+      database.exec('DROP TABLE IF EXISTS cuentas_nueva');
+      database.exec(`
+        CREATE TABLE cuentas_nueva (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          nombre TEXT NOT NULL,
+          tipo TEXT NOT NULL CHECK(tipo IN (${TIPOS_CUENTA_SQL})),
+          banco TEXT,
+          numero_cuenta TEXT,
+          cupo_total REAL,
+          dia_facturacion INTEGER,
+          dia_vencimiento INTEGER,
+          activa INTEGER DEFAULT 1,
+          notas TEXT,
+          creado_en DATETIME DEFAULT CURRENT_TIMESTAMP,
+          actualizado_en DATETIME DEFAULT CURRENT_TIMESTAMP,
+          ultimos4 TEXT,
+          titular TEXT
+        )
+      `);
+      database.exec(`INSERT INTO cuentas_nueva (${columnasCopia}) SELECT ${columnasCopia} FROM cuentas`);
+
+      const antes = database.prepare('SELECT COUNT(*) AS n FROM cuentas').get().n;
+      const despues = database.prepare('SELECT COUNT(*) AS n FROM cuentas_nueva').get().n;
+      if (antes !== despues) throw new Error('la copia de cuentas quedó incompleta');
+
+      database.exec('DROP TABLE cuentas');
+      database.exec('ALTER TABLE cuentas_nueva RENAME TO cuentas');
+      for (const sql of objetos) database.exec(sql);
+
+      // Las llaves foráneas de movimientos, archivos_importados, etc. deben seguir válidas
+      if (database.prepare('PRAGMA foreign_key_check').all().length > 0) {
+        throw new Error('foreign_key_check encontró referencias rotas');
+      }
+    });
+    reconstruir();
+    console.log("✓ Tabla cuentas actualizada: admite el tipo 'efectivo'");
+  } catch (error) {
+    // Rollback automático; solo el código o el nombre del error, sin datos
+    console.error('Error al migrar cuentas (efectivo):', error.code ?? error.message);
+  } finally {
+    database.pragma('foreign_keys = ON');
   }
 }
 

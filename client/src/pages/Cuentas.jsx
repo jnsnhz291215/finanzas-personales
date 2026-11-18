@@ -107,7 +107,8 @@ export default function Cuentas() {
     { value: 'cuenta_vista', label: 'Cuenta Vista', icon: 'fa-eye' },
     { value: 'cuenta_ahorro', label: 'Cuenta de Ahorro', icon: 'fa-piggy-bank' },
     { value: 'tarjeta_credito', label: 'Tarjeta de Crédito', icon: 'fa-credit-card' },
-    { value: 'tarjeta_debito', label: 'Tarjeta de Débito', icon: 'fa-credit-card' }
+    { value: 'tarjeta_debito', label: 'Tarjeta de Débito', icon: 'fa-credit-card' },
+    { value: 'efectivo', label: 'Efectivo', icon: 'fa-money-bill' }
   ];
 
   const getIconoTipo = (tipo) => {

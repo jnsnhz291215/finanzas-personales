@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS usuario (
 CREATE TABLE IF NOT EXISTS cuentas (
   id INT PRIMARY KEY AUTO_INCREMENT,
   nombre VARCHAR(150) NOT NULL,
-  tipo ENUM('cuenta_corriente', 'cuenta_vista', 'cuenta_ahorro', 'tarjeta_credito', 'tarjeta_debito') NOT NULL,
+  tipo ENUM('cuenta_corriente', 'cuenta_vista', 'cuenta_ahorro', 'tarjeta_credito', 'tarjeta_debito', 'efectivo') NOT NULL,
   banco VARCHAR(100),
   numero_cuenta VARCHAR(50),
   ultimos4 VARCHAR(4) NULL,

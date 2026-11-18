@@ -4,7 +4,7 @@ const TelegramBot = require('node-telegram-bot-api');
 
 import { query } from '../db.js';
 import { parsearMensaje, parsearMontoExacto, MEDIOS_PAGO_NOMBRES } from './parser.js';
-import { interpretarMovimiento, interpretarCuenta, interpretarDatosTransferencia, geminiDisponible } from './gemini.js';
+import { interpretarMovimiento, interpretarCuenta, geminiDisponible } from './gemini.js';
 import {
   parsearDatos,
   camposFaltantes,
@@ -1014,12 +1014,17 @@ const CODIGOS_TIPO_CUENTA = {
 };
 const TIPO_CUENTA_POR_CODIGO = Object.fromEntries(Object.entries(CODIGOS_TIPO_CUENTA).map(([tipo, codigo]) => [codigo, tipo]));
 
-/** Borra un mensaje del usuario (por ejemplo si trae un número de tarjeta); nunca lanza */
+/**
+ * Borra un mensaje del usuario (por ejemplo si trae un número de tarjeta o mis datos de
+ * transferencia). Nunca lanza: si falla (p. ej. pasaron más de 48 horas) sigue sin error
+ * visible y registra solo el código.
+ */
 async function borrarMensaje(chatId, messageId) {
   try {
     await bot.deleteMessage(chatId, messageId);
   } catch (err) {
-    logErrorTelegram('deleteMessage', err);
+    const codigo = err?.response?.body?.error_code ?? err?.code ?? 'desconocido';
+    console.error(`[telegram] deleteMessage: error_code=${codigo}`);
   }
 }
 
@@ -1609,21 +1614,6 @@ async function avanzarDatos(chatId, key) {
   await enviar(chatId, textoConfirmacionDatos(d), tecladoConfirmacionDatos(key));
 }
 
-/** Completa lo que las reglas no encontraron con lo que devolvió Gemini (las reglas mandan) */
-function combinarDatos(reglas, ia) {
-  return {
-    ...reglas,
-    // Si el usuario escribió un RUT inválido no se reemplaza por otro
-    rut: reglas.rut || (reglas.rutInvalido ? null : ia.rut),
-    banco: reglas.banco || ia.banco,
-    tipoCuenta: reglas.tipoCuenta || ia.tipoCuenta,
-    numeroCuenta: reglas.numeroCuenta || ia.numeroCuenta,
-    titular: reglas.titular || ia.titular,
-    email: reglas.email || ia.email,
-    alias: reglas.alias && reglas.alias !== reglas.banco ? reglas.alias : (ia.alias || reglas.alias)
-  };
-}
-
 /** Si el chat está respondiendo a una pregunta de /savetrans, usa este mensaje como respuesta */
 async function manejarRespuestaDato(msg) {
   const chatId = msg.chat.id;
@@ -1795,14 +1785,12 @@ function configurarComandosDatos() {
     }
 
     try {
-      let datos = parsearDatos(texto);
-
-      // Respaldo: Gemini si las reglas no encuentran banco, tipo de cuenta o número
-      if (!datos.banco || !datos.tipoCuenta || !datos.numeroCuenta) {
-        const ia = await interpretarDatosTransferencia(texto);
-        if (ia) datos = combinarDatos(datos, ia);
-      }
+      // Sin Gemini: lo que las reglas no encuentran se pregunta después
+      const datos = parsearDatos(texto);
       if (!datos.alias && datos.banco) datos.alias = datos.banco;
+
+      // El mensaje trae RUT, número de cuenta y correo: ya está interpretado, se borra del chat
+      await borrarMensaje(chatId, msg.message_id);
 
       // Un RUT con dígito verificador inválido nunca se guarda
       if (datos.rutInvalido) {

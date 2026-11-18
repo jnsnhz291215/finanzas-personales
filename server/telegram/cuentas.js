@@ -26,14 +26,15 @@ export const ETIQUETAS_TIPO_DB = {
   tarjeta_credito: 'Tarjeta de crédito',
   cuenta_corriente: 'Cuenta corriente',
   cuenta_vista: 'Cuenta vista',
-  cuenta_ahorro: 'Cuenta de ahorro'
+  cuenta_ahorro: 'Cuenta de ahorro',
+  efectivo: 'Efectivo'
 };
 
-// La tabla cuentas no admite el tipo 'efectivo' (CHECK/ENUM): se guarda como cuenta_vista
+// Tipo con que se guarda cada uno en la tabla cuentas
 export const TIPO_DB = {
   debito: 'tarjeta_debito',
   credito: 'tarjeta_credito',
-  efectivo: 'cuenta_vista',
+  efectivo: 'efectivo',
   cuenta_corriente: 'cuenta_corriente',
   cuenta_vista: 'cuenta_vista',
   ahorro: 'cuenta_ahorro'
