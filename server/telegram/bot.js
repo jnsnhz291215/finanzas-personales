@@ -3,7 +3,7 @@ const require = createRequire(import.meta.url);
 const TelegramBot = require('node-telegram-bot-api');
 
 import { query } from '../db.js';
-import { parsearMensaje } from './parser.js';
+import { parsearMensaje, parsearMontoExacto } from './parser.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
@@ -363,6 +363,11 @@ function configurarManejadores() {
       return;
     }
 
+    // Un número solo corrige el monto del movimiento pendiente
+    if (msg.text && await actualizarMontoPendiente(msg)) {
+      return;
+    }
+
     // Parsear mensaje de texto como transacción
     if (msg.text) {
       await registrarTransaccion(msg);
@@ -471,6 +476,73 @@ function configurarManejadores() {
 }
 
 /**
+ * Arma el texto del mensaje de confirmación de un movimiento pendiente
+ */
+function textoConfirmacion(tx) {
+  const etiqueta = tx.tipo === 'cargo' ? '💸 Gasto' : '💰 Ingreso';
+  const lineaMonto = tx.aproximado
+    ? `${etiqueta}\n💵 Monto aproximado: $${formatearMonto(tx.monto)}\n`
+    : `${etiqueta}: $${formatearMonto(tx.monto)}\n`;
+
+  return (
+    `<b>Confirmar movimiento:</b>\n\n` +
+    lineaMonto +
+    `📝 ${esc(tx.descripcion)}\n` +
+    `📅 ${new Date(tx.fecha).toLocaleDateString('es-CL')}\n` +
+    `${tx.medioPago ? `💳 ${esc(tx.medioPago)}\n` : ''}` +
+    `${tx.categoria ? `🏷 ${esc(tx.categoria)}\n` : ''}` +
+    `${tx.aproximado ? '\n💡 Si sabes el monto exacto, respóndeme con el número antes de guardar.' : ''}`
+  );
+}
+
+function tecladoConfirmacion(txId) {
+  return {
+    reply_markup: {
+      inline_keyboard: [[
+        { text: '✅ Guardar', callback_data: `save_${txId}` },
+        { text: '❌ Cancelar', callback_data: `cancel_${txId}` }
+      ]]
+    }
+  };
+}
+
+/**
+ * Si el mensaje es solo un monto y hay un movimiento pendiente en ese chat,
+ * reemplaza el monto del pendiente. Devuelve true si lo consumió.
+ */
+async function actualizarMontoPendiente(msg) {
+  const chatId = msg.chat.id;
+  const monto = parsearMontoExacto(msg.text);
+  if (!monto) return false;
+
+  // Último pendiente de este chat (el Map conserva el orden de inserción)
+  let txId = null;
+  for (const id of pendingTransactions.keys()) {
+    if (id.startsWith(`${chatId}_`)) txId = id;
+  }
+  if (!txId) return false;
+
+  const tx = pendingTransactions.get(txId);
+  tx.monto = monto;
+  tx.aproximado = false;
+
+  const editado = tx.messageId
+    ? await editar(textoConfirmacion(tx), {
+        chat_id: chatId,
+        message_id: tx.messageId,
+        ...tecladoConfirmacion(txId)
+      })
+    : null;
+
+  // Si no se pudo editar la confirmación original, enviar una nueva
+  if (!editado) {
+    const enviado = await enviar(chatId, textoConfirmacion(tx), tecladoConfirmacion(txId));
+    tx.messageId = enviado?.message_id ?? tx.messageId;
+  }
+  return true;
+}
+
+/**
  * Registra una transacción desde un mensaje de texto
  */
 async function registrarTransaccion(msg) {
@@ -528,28 +600,17 @@ async function registrarTransaccion(msg) {
       monto: datos.monto,
       tipo: datos.tipo,
       categoria_id: categoriaId,
-      categoria: categoriaNombre
+      categoria: categoriaNombre,
+      medioPago: datos.medioPago,
+      aproximado: datos.aproximado,
+      messageId: null
     };
 
     pendingTransactions.set(txId, tx);
 
     // Mostrar confirmación
-    await enviar(chatId,
-      `<b>Confirmar movimiento:</b>\n\n` +
-      `${datos.tipo === 'cargo' ? '💸 Gasto' : '💰 Ingreso'}: $${formatearMonto(datos.monto)}\n` +
-      `📝 ${esc(datos.descripcion)}\n` +
-      `📅 ${new Date(datos.fecha).toLocaleDateString('es-CL')}\n` +
-      `${datos.medioPago ? `💳 ${esc(datos.medioPago)}\n` : ''}` +
-      `${categoriaNombre ? `🏷 ${esc(categoriaNombre)}\n` : ''}`,
-      {
-        reply_markup: {
-          inline_keyboard: [[
-            { text: '✅ Guardar', callback_data: `save_${txId}` },
-            { text: '❌ Cancelar', callback_data: `cancel_${txId}` }
-          ]]
-        }
-      }
-    );
+    const enviado = await enviar(chatId, textoConfirmacion(tx), tecladoConfirmacion(txId));
+    tx.messageId = enviado?.message_id ?? null;
 
     // Limpiar transacciones antiguas (más de 5 minutos)
     setTimeout(() => {

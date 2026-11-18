@@ -1,5 +1,7 @@
 import { 
-  extraerMonto, 
+  extraerMonto,
+  analizarMonto,
+  parsearMontoExacto,
   extraerFecha, 
   extraerMedioPago, 
   detectarTipo, 
@@ -32,6 +34,52 @@ describe('Parser de Mensajes de Telegram', () => {
       expect(extraerMonto('pagué 12k en comida')).toBe(12000);
     });
     
+    test('debería extraer "mil"', () => {
+      expect(extraerMonto('pagué 57 mil en ropa')).toBe(57000);
+      expect(extraerMonto('pagué 57mil en ropa')).toBe(57000);
+    });
+
+    test('debería extraer "mil" seguido de dígitos o centenas en palabras', () => {
+      expect(extraerMonto('pagué 57 mil 500 en ropa')).toBe(57500);
+      expect(extraerMonto('pagué 57 mil quinientos en ropa')).toBe(57500);
+    });
+
+    test('debería extraer "millón", "millones" y "palos"', () => {
+      expect(extraerMonto('pagué 1 millón de arriendo')).toBe(1000000);
+      expect(extraerMonto('pagué 1,5 millones de arriendo')).toBe(1500000);
+      expect(extraerMonto('gasté 2 palos en un notebook')).toBe(2000000);
+    });
+
+    test('debería extraer "k" y "lucas" con decimales', () => {
+      expect(extraerMonto('gasté 1.5k en uber')).toBe(1500);
+      expect(extraerMonto('gasté 57,5 lucas en ropa')).toBe(57500);
+    });
+
+    test('debería marcar el monto como aproximado', () => {
+      expect(analizarMonto('hoy pagué 57 mil y algo en ropa')).toMatchObject({ monto: 57000, aproximado: true });
+      expect(analizarMonto('pagué como 57 mil en ropa')).toMatchObject({ monto: 57000, aproximado: true });
+      expect(analizarMonto('pagué 57 mil y pico en ropa')).toMatchObject({ aproximado: true });
+      expect(analizarMonto('pagué 57 mil y tanto en ropa')).toMatchObject({ aproximado: true });
+      expect(analizarMonto('pagué más o menos 12.500 en el super')).toMatchObject({ monto: 12500, aproximado: true });
+      expect(analizarMonto('pagué aprox 5 lucas en uber')).toMatchObject({ monto: 5000, aproximado: true });
+      expect(analizarMonto('pagué cerca de 5 lucas en uber')).toMatchObject({ monto: 5000, aproximado: true });
+    });
+
+    test('no debería marcar como aproximado un monto exacto', () => {
+      expect(analizarMonto('pagué 57 mil en ropa').aproximado).toBe(false);
+      expect(analizarMonto('pagué 12.500 en el super').aproximado).toBe(false);
+      expect(analizarMonto('gasté 5 lucas como regalo').aproximado).toBe(false);
+    });
+
+    test('parsearMontoExacto debería aceptar solo un monto', () => {
+      expect(parsearMontoExacto('57500')).toBe(57500);
+      expect(parsearMontoExacto('$57.500')).toBe(57500);
+      expect(parsearMontoExacto('850')).toBe(850);
+      expect(parsearMontoExacto('57 mil 500')).toBe(57500);
+      expect(parsearMontoExacto('pagué 57500 en ropa')).toBeNull();
+      expect(parsearMontoExacto('57 mil y algo')).toBeNull();
+    });
+
     test('debería retornar null si no encuentra monto', () => {
       expect(extraerMonto('fui al super')).toBeNull();
     });
@@ -196,6 +244,15 @@ describe('Parser de Mensajes de Telegram', () => {
       expect(resultado.categoriaDetectada).toBe('Transporte');
     });
     
+    test('debería parsear "hoy pagué 57 mil y algo en ropa" como monto aproximado', () => {
+      const resultado = parsearMensaje('hoy pagué 57 mil y algo en ropa');
+
+      expect(resultado.monto).toBe(57000);
+      expect(resultado.aproximado).toBe(true);
+      expect(resultado.tipo).toBe('cargo');
+      expect(resultado.descripcion).toBe('pagué en ropa');
+    });
+
     test('debería parsear "el 15/11 compré en jumbo con crédito $45.000"', () => {
       const resultado = parsearMensaje('el 15/11 compré en jumbo con crédito $45.000');
       

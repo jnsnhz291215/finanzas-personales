@@ -33,41 +33,125 @@ const CATEGORIAS_KEYWORDS = {
   'Sueldo': ['sueldo', 'salario', 'pago', 'liquidacion', 'liquidación']
 };
 
+// Montos escritos con palabras: "57 mil", "57 mil 500", "57 mil quinientos", "1,5 millones", "2 palos"
+const NUMERO = '\\d+(?:[.,]\\d+)?';
+const CENTENAS = {
+  ciento: 100, cien: 100, doscientos: 200, trescientos: 300, cuatrocientos: 400,
+  quinientos: 500, seiscientos: 600, setecientos: 700, ochocientos: 800, novecientos: 900
+};
+const CENTENAS_ALT = Object.keys(CENTENAS).join('|');
+const MILLONES_REGEX = new RegExp(`(${NUMERO})\\s*(?:millones|mill[oó]n|palos?)\\b`, 'i');
+// Tras "mil" acepta exactamente 3 dígitos (no seguidos de otro número/fecha) o una centena en palabras
+const MIL_REGEX = new RegExp(
+  `(${NUMERO})\\s*mil\\b(?:\\s+(?:(\\d{3})(?![./,-]?\\d)|(${CENTENAS_ALT})\\b))?`,
+  'i'
+);
+
+// Palabras que marcan un monto aproximado (antes o después del monto)
+const APROX_FRASES = 'y algo|y tanto|y pico|m[aá]s o menos|aprox(?:imadamente)?\\.?|cerca de|como';
+const APROX_ANTES_REGEX = new RegExp(`(?:^|[\\s,(])(${APROX_FRASES})\\s*\\$?\\s*$`, 'i');
+// "como" después del monto solo cuenta si cierra la frase (evita "5 lucas como regalo")
+const APROX_DESPUES_REGEX = new RegExp(
+  `^\\s*(?:(?:y algo|y tanto|y pico|m[aá]s o menos|aprox(?:imadamente)?\\.?|cerca de)(?![\\wáéíóúñ])|como(?=\\s*(?:[,.;!?]|$)))`,
+  'i'
+);
+
+function aNumero(texto) {
+  return parseFloat(texto.replace(',', '.'));
+}
+
 /**
- * Extrae el monto de un mensaje
- * Soporta: 12500, 12.500, $12.500, 5 lucas, 5k
+ * Busca el monto y devuelve su posición en el texto, sin considerar palabras de aproximación
  */
-export function extraerMonto(mensaje) {
-  const textoLower = mensaje.toLowerCase();
-  
-  // Buscar primero "lucas" o "k"
-  const matchLucas = mensaje.match(LUCAS_REGEX);
-  if (matchLucas) {
-    const valor = parseFloat(matchLucas[1].replace(',', '.'));
-    return Math.round(valor * 1000);
+function buscarMonto(mensaje) {
+  let m = mensaje.match(MILLONES_REGEX);
+  if (m) {
+    return { monto: Math.round(aNumero(m[1]) * 1000000), inicio: m.index, fin: m.index + m[0].length };
   }
-  
-  // Buscar formato de pesos chilenos
+
+  m = mensaje.match(MIL_REGEX);
+  if (m) {
+    let monto = Math.round(aNumero(m[1]) * 1000);
+    if (m[2]) monto += parseInt(m[2], 10);
+    else if (m[3]) monto += CENTENAS[m[3].toLowerCase()];
+    return { monto, inicio: m.index, fin: m.index + m[0].length };
+  }
+
+  // "lucas" o "k" (admite decimales: 57,5 lucas, 1.5k)
+  m = mensaje.match(LUCAS_REGEX);
+  if (m) {
+    return { monto: Math.round(aNumero(m[1]) * 1000), inicio: m.index, fin: m.index + m[0].length };
+  }
+
+  // Formato de pesos chilenos: tomar el primer monto encontrado
   const matches = [...mensaje.matchAll(MONTO_REGEX)];
-  if (matches && matches.length > 0) {
-    // Tomar el primer monto encontrado
+  if (matches.length > 0) {
     const match = matches[0];
-    const montoCapturado = match[1];
-    
-    if (!montoCapturado) return null;
-    
-    const montoStr = montoCapturado
-      .replace('$', '')
-      .replace(/\s/g, '')
-      .replace(/\./g, ''); // Quitar separadores de miles (punto en Chile)
-    
-    const monto = parseFloat(montoStr);
+    if (!match[1]) return null;
+
+    // Quitar separadores de miles (punto en Chile)
+    const monto = parseFloat(match[1].replace(/\s/g, '').replace(/\./g, ''));
     if (!isNaN(monto) && monto > 0) {
-      return Math.round(monto);
+      return { monto: Math.round(monto), inicio: match.index, fin: match.index + match[0].length };
     }
   }
-  
+
   return null;
+}
+
+/**
+ * Analiza el monto de un mensaje.
+ * Devuelve { monto, aproximado, inicio, fin } o null. inicio/fin delimitan el monto
+ * junto con las palabras de aproximación adyacentes ("y algo", "como", "aprox"...).
+ */
+export function analizarMonto(mensaje) {
+  const encontrado = buscarMonto(mensaje);
+  if (!encontrado) return null;
+
+  let { inicio, fin } = encontrado;
+  let aproximado = false;
+
+  const antes = mensaje.slice(0, inicio).match(APROX_ANTES_REGEX);
+  if (antes) {
+    aproximado = true;
+    inicio = antes.index + antes[0].length - antes[0].trimStart().length;
+  }
+
+  const despues = mensaje.slice(fin).match(APROX_DESPUES_REGEX);
+  if (despues) {
+    aproximado = true;
+    fin += despues[0].length;
+  }
+
+  return { monto: encontrado.monto, aproximado, inicio, fin };
+}
+
+/**
+ * Extrae el monto de un mensaje
+ * Soporta: 12500, 12.500, $12.500, 5 lucas, 5k, 1.5k, 57,5 lucas,
+ * 57 mil, 57mil, 57 mil 500, 57 mil quinientos, 1 millón, 1,5 millones, 2 palos
+ */
+export function extraerMonto(mensaje) {
+  const analisis = analizarMonto(mensaje);
+  return analisis ? analisis.monto : null;
+}
+
+/**
+ * Si el mensaje es únicamente un monto (por ejemplo "57500", "$57.500", "57 mil 500"),
+ * devuelve ese monto; en otro caso null. Sirve para corregir un monto aproximado.
+ */
+export function parsearMontoExacto(mensaje) {
+  const texto = mensaje.trim();
+  const plano = texto.match(/^\$?\s*(\d{1,3}(?:\.\d{3})+|\d+)$/);
+  if (plano) {
+    const monto = parseInt(plano[1].replace(/\./g, ''), 10);
+    return monto > 0 ? monto : null;
+  }
+
+  const analisis = analizarMonto(texto);
+  if (!analisis || analisis.aproximado) return null;
+  const resto = (texto.slice(0, analisis.inicio) + texto.slice(analisis.fin)).replace(/[$\s]/g, '');
+  return resto === '' ? analisis.monto : null;
 }
 
 /**
@@ -202,8 +286,11 @@ export function detectarCategoria(mensaje) {
  */
 export function extraerDescripcion(mensaje) {
   // Eliminar el monto del mensaje para obtener una descripción más limpia
-  let descripcion = mensaje
-    .replace(LUCAS_REGEX, '')
+  const analisis = analizarMonto(mensaje);
+  const sinMonto = analisis
+    ? mensaje.slice(0, analisis.inicio) + ' ' + mensaje.slice(analisis.fin)
+    : mensaje;
+  let descripcion = sinMonto
     .replace(MONTO_REGEX, '')
     .replace(/\$+/g, '')
     .trim();
@@ -225,8 +312,10 @@ export function extraerDescripcion(mensaje) {
  * Parsea un mensaje completo y extrae toda la información
  */
 export function parsearMensaje(mensaje) {
+  const analisis = analizarMonto(mensaje);
   return {
-    monto: extraerMonto(mensaje),
+    monto: analisis ? analisis.monto : null,
+    aproximado: analisis ? analisis.aproximado : false,
     fecha: extraerFecha(mensaje),
     medioPago: extraerMedioPago(mensaje),
     tipo: detectarTipo(mensaje),
