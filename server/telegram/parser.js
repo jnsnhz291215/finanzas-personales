@@ -22,6 +22,9 @@ const MEDIOS_PAGO = {
   'transferencia': ['transferencia', 'transf', 'transfer']
 };
 
+// Nombres de medios de pago que el bot reconoce (también se los pasamos a Gemini)
+export const MEDIOS_PAGO_NOMBRES = Object.keys(MEDIOS_PAGO);
+
 // Categorías por palabras clave (estas se pueden ampliar según las categorías reales)
 const CATEGORIAS_KEYWORDS = {
   'Supermercado': ['super', 'supermercado', 'jumbo', 'lider', 'tottus', 'unimarc', 'santa isabel'],

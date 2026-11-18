@@ -3,7 +3,8 @@ const require = createRequire(import.meta.url);
 const TelegramBot = require('node-telegram-bot-api');
 
 import { query } from '../db.js';
-import { parsearMensaje, parsearMontoExacto } from './parser.js';
+import { parsearMensaje, parsearMontoExacto, MEDIOS_PAGO_NOMBRES } from './parser.js';
+import { interpretarMovimiento, geminiDisponible, fechaHoySantiago } from './gemini.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
@@ -543,6 +544,51 @@ async function actualizarMontoPendiente(msg) {
 }
 
 /**
+ * Consulta a Gemini con el contexto actual. Devuelve null si no está configurado
+ * o si algo falla; nunca lanza.
+ */
+async function interpretarConGemini(texto) {
+  if (!geminiDisponible()) return null;
+
+  try {
+    const [categorias] = await query('SELECT nombre FROM categorias');
+    return await interpretarMovimiento(texto, {
+      hoy: fechaHoySantiago(),
+      categorias: categorias.map(c => c.nombre),
+      mediosPago: MEDIOS_PAGO_NOMBRES
+    });
+  } catch (error) {
+    console.error('[gemini] no se pudo preparar el contexto:', error.message);
+    return null;
+  }
+}
+
+/**
+ * Mezcla el resultado de las reglas con el de Gemini.
+ * Si las reglas ya tenían monto, se conserva todo lo suyo y Gemini solo completa
+ * categoría y medio de pago. Si no, se usa la interpretación de Gemini.
+ */
+function combinarConGemini(reglas, ia) {
+  if (reglas.monto) {
+    return {
+      ...reglas,
+      categoriaDetectada: reglas.categoriaDetectada || ia.categoria,
+      medioPago: reglas.medioPago || ia.medioPago
+    };
+  }
+
+  return {
+    monto: ia.monto,
+    aproximado: ia.aproximado,
+    fecha: ia.fecha,
+    medioPago: ia.medioPago || reglas.medioPago,
+    tipo: ia.tipo,
+    categoriaDetectada: ia.categoria || reglas.categoriaDetectada,
+    descripcion: ia.descripcion || reglas.descripcion
+  };
+}
+
+/**
  * Registra una transacción desde un mensaje de texto
  */
 async function registrarTransaccion(msg) {
@@ -550,7 +596,13 @@ async function registrarTransaccion(msg) {
   const texto = msg.text;
 
   try {
-    const datos = parsearMensaje(texto);
+    let datos = parsearMensaje(texto);
+
+    // Respaldo: si las reglas no encontraron monto o categoría, consultar Gemini
+    if (!datos.monto || !datos.categoriaDetectada) {
+      const ia = await interpretarConGemini(texto);
+      if (ia) datos = combinarConGemini(datos, ia);
+    }
 
     if (!datos.monto) {
       await enviar(chatId, '❌ No pude detectar un monto válido en el mensaje.\n\nEjemplo: "ayer pagué 12.500 en el super"');

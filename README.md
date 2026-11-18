@@ -455,6 +455,25 @@ Envía directamente un archivo de cartola (CSV, Excel o PDF) al bot. El archivo 
 
 Envía fotos de boletas o comprobantes. Se guardarán en la carpeta de uploads del servidor.
 
+### Interpretación con Gemini (opcional)
+
+El bot primero lee tus mensajes con un parser de reglas. Si no encuentra el monto o la categoría, puede pedirle ayuda a Gemini para entender mensajes escritos de forma libre.
+
+1. Crea una API key en [Google AI Studio](https://aistudio.google.com/apikey).
+2. Agrega a tu `.env`:
+   ```env
+   GEMINI_API_KEY=tu_api_key
+   # Opcional; por defecto gemini-2.5-flash
+   GEMINI_MODEL=gemini-2.5-flash
+   ```
+3. Reinicia el servidor.
+
+- Sin `GEMINI_API_KEY` el bot funciona exactamente igual que antes.
+- Si Gemini tarda más de 8 segundos o falla, el bot sigue con el resultado de las reglas (o responde que no detectó un monto).
+- Al usarlo, **el texto del mensaje, la fecha de hoy, tus nombres de categorías y los medios de pago se envían a Google**. No se envían montos de la base de datos ni otros movimientos.
+- Los errores se registran solo con código y mensaje, nunca con la key.
+- Los montos aproximados ("57 mil y algo") se marcan en la confirmación; puedes responder con el número exacto antes de apretar Guardar.
+
 ### Seguridad
 
 - El bot **solo responde a los chat IDs autorizados** configurados en `.env`
