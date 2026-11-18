@@ -4,6 +4,8 @@
  * funcionando solo con el parser de reglas.
  */
 
+import { fechaHoySantiago } from './fechas.js';
+
 const MODELO_POR_DEFECTO = 'gemini-2.5-flash';
 const TIMEOUT_MS = 8000;
 const MAX_TEXTO = 500;
@@ -21,15 +23,8 @@ export function geminiDisponible() {
   return Boolean(process.env.GEMINI_API_KEY);
 }
 
-/** Fecha de hoy (YYYY-MM-DD) en America/Santiago */
-export function fechaHoySantiago() {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Santiago',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  }).format(new Date());
-}
+// Fecha de hoy (YYYY-MM-DD) en America/Santiago: vive en fechas.js y se reexporta aquí
+export { fechaHoySantiago };
 
 /**
  * Registra solo el código y el mensaje del error. Nunca el objeto completo

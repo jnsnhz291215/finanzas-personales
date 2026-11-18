@@ -3,9 +3,14 @@
  * Soporta formato chileno: montos, fechas relativas, medios de pago
  */
 
+import { fechaHoySantiago, sumarDias, diaSemana, construirFecha } from './fechas.js';
+
 // Palabras clave para montos en "lucas" o "k"
 const LUCAS_REGEX = /(\d+(?:[.,]\d+)?)\s*(?:lucas?|lks?|k)\b/i;
 const MONTO_REGEX = /\$?\s*(\d{1,3}(?:\.\d{3})+|\d{4,})/g;
+
+// Verbos de gasto/ingreso al inicio de la descripción (el "el" suelto viene de "el viernes", "el 15/11")
+const VERBO_INICIAL_REGEX = /^(?:(?:el|la)\s+)?(?:pagu[eé]|gast[eé]|compr[eé]|recib[ií]|me\s+pagaron|me\s+cobraron)(?=\s|$)\s*/i;
 
 // Fechas relativas
 const DIAS_SEMANA = {
@@ -163,72 +168,57 @@ export function parsearMontoExacto(mensaje) {
  */
 export function extraerFecha(mensaje) {
   const textoLower = mensaje.toLowerCase();
-  const hoy = new Date();
-  
+  // Todo se calcula sobre fechas YYYY-MM-DD en hora de Chile (America/Santiago)
+  const hoy = fechaHoySantiago();
+
   // Hoy
   if (textoLower.includes('hoy')) {
-    return formatearFecha(hoy);
+    return hoy;
   }
-  
+
   // Anteayer (debe ir antes de "ayer" porque contiene "ayer")
   if (textoLower.match(/\b(anteayer|antier)\b/)) {
-    const anteayer = new Date(hoy);
-    anteayer.setDate(anteayer.getDate() - 2);
-    return formatearFecha(anteayer);
+    return sumarDias(hoy, -2);
   }
-  
+
   // Ayer
   if (textoLower.includes('ayer')) {
-    const ayer = new Date(hoy);
-    ayer.setDate(ayer.getDate() - 1);
-    return formatearFecha(ayer);
+    return sumarDias(hoy, -1);
   }
-  
+
   // Días de la semana
   for (const [dia, numero] of Object.entries(DIAS_SEMANA)) {
     if (textoLower.includes(dia)) {
-      const diaActual = hoy.getDay();
-      let diferencia = numero - diaActual;
-      
+      let diferencia = numero - diaSemana(hoy);
+
       // Si el día ya pasó esta semana, ir a la semana pasada
       if (diferencia > 0) {
         diferencia -= 7;
       }
-      
-      const fecha = new Date(hoy);
-      fecha.setDate(fecha.getDate() + diferencia);
-      return formatearFecha(fecha);
+
+      return sumarDias(hoy, diferencia);
     }
   }
-  
+
   // Formato dd/mm o dd-mm (asume año actual)
   const matchFecha = mensaje.match(/(\d{1,2})[/-](\d{1,2})/);
   if (matchFecha) {
     const dia = parseInt(matchFecha[1]);
-    const mes = parseInt(matchFecha[2]) - 1; // JavaScript months are 0-indexed
-    
-    if (dia >= 1 && dia <= 31 && mes >= 0 && mes <= 11) {
-      const fecha = new Date(hoy.getFullYear(), mes, dia);
-      // Si la fecha está en el futuro, asumir que es del año pasado
-      if (fecha > hoy) {
-        fecha.setFullYear(fecha.getFullYear() - 1);
-      }
-      return formatearFecha(fecha);
+    const mes = parseInt(matchFecha[2]);
+    const anioActual = parseInt(hoy.slice(0, 4));
+
+    let fecha = construirFecha(anioActual, mes, dia);
+    // Si la fecha está en el futuro, asumir que es del año pasado
+    if (fecha && fecha > hoy) {
+      fecha = construirFecha(anioActual - 1, mes, dia);
+    }
+    if (fecha) {
+      return fecha;
     }
   }
-  
-  // Por defecto, hoy
-  return formatearFecha(hoy);
-}
 
-/**
- * Formatea fecha a YYYY-MM-DD
- */
-function formatearFecha(fecha) {
-  const anio = fecha.getFullYear();
-  const mes = String(fecha.getMonth() + 1).padStart(2, '0');
-  const dia = String(fecha.getDate()).padStart(2, '0');
-  return `${anio}-${mes}-${dia}`;
+  // Por defecto, hoy
+  return hoy;
 }
 
 /**
@@ -307,7 +297,14 @@ export function extraerDescripcion(mensaje) {
   
   // Limpiar espacios múltiples
   descripcion = descripcion.replace(/\s+/g, ' ').trim();
-  
+
+  // Quitar el verbo inicial de gasto/ingreso y las preposiciones sueltas que queden al inicio.
+  // Se usa (?=\s|$) y no \b porque \b no reconoce letras con tilde (pagué, gasté).
+  descripcion = descripcion
+    .replace(VERBO_INICIAL_REGEX, '')
+    .replace(/^(?:(?:en|de)(?=\s|$)\s*)+/i, '')
+    .trim();
+
   return descripcion || 'Gasto sin descripción';
 }
 

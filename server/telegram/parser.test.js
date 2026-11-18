@@ -9,6 +9,7 @@ import {
   extraerDescripcion,
   parsearMensaje 
 } from './parser.js';
+import { fechaHoySantiago, sumarDias, formatearFechaCL } from './fechas.js';
 
 describe('Parser de Mensajes de Telegram', () => {
   
@@ -86,23 +87,19 @@ describe('Parser de Mensajes de Telegram', () => {
   });
 
   describe('extraerFecha', () => {
-    const hoy = new Date();
-    const formatoHoy = formatearFechaTest(hoy);
+    // Todo en hora de Chile (America/Santiago), igual que el parser
+    const formatoHoy = fechaHoySantiago();
     
     test('debería detectar "hoy"', () => {
       expect(extraerFecha('hoy pagué 5000')).toBe(formatoHoy);
     });
     
     test('debería detectar "ayer"', () => {
-      const ayer = new Date(hoy);
-      ayer.setDate(ayer.getDate() - 1);
-      expect(extraerFecha('ayer gasté 12.500')).toBe(formatearFechaTest(ayer));
+      expect(extraerFecha('ayer gasté 12.500')).toBe(sumarDias(formatoHoy, -1));
     });
     
     test('debería detectar "anteayer"', () => {
-      const anteayer = new Date(hoy);
-      anteayer.setDate(anteayer.getDate() - 2);
-      expect(extraerFecha('anteayer fui al super')).toBe(formatearFechaTest(anteayer));
+      expect(extraerFecha('anteayer fui al super')).toBe(sumarDias(formatoHoy, -2));
     });
     
     test('debería detectar días de la semana', () => {
@@ -117,6 +114,25 @@ describe('Parser de Mensajes de Telegram', () => {
     
     test('debería usar hoy por defecto', () => {
       expect(extraerFecha('gasté plata')).toBe(formatoHoy);
+    });
+  });
+
+  describe('fechas en hora de Chile', () => {
+    test('formatearFechaCL no corre el día por la zona horaria', () => {
+      expect(formatearFechaCL('2026-11-18')).toBe('18-11-2026');
+      expect(formatearFechaCL('2026-01-01')).toBe('01-01-2026');
+    });
+
+    test('fechaHoySantiago usa America/Santiago, no UTC', () => {
+      // 18-11-2026 19:02 en Chile (UTC-3) es 22:02 UTC del mismo día
+      expect(fechaHoySantiago(new Date('2026-11-18T22:02:00Z'))).toBe('2026-11-18');
+      // 18-11-2026 22:30 en Chile ya es 19-11 en UTC: sigue siendo el 18 en Chile
+      expect(fechaHoySantiago(new Date('2026-11-19T01:30:00Z'))).toBe('2026-11-18');
+    });
+
+    test('sumarDias cruza meses y años', () => {
+      expect(sumarDias('2026-03-01', -1)).toBe('2026-02-28');
+      expect(sumarDias('2026-01-01', -1)).toBe('2025-12-31');
     });
   });
 
@@ -197,14 +213,21 @@ describe('Parser de Mensajes de Telegram', () => {
 
   describe('extraerDescripcion', () => {
     test('debería extraer descripción sin monto', () => {
-      expect(extraerDescripcion('ayer pagué 12.500 en el super')).toContain('en el super');
-      expect(extraerDescripcion('gasté 5 lucas en uber')).toContain('en uber');
+      expect(extraerDescripcion('ayer pagué 12.500 en el super')).toBe('el super');
+      expect(extraerDescripcion('gasté 5 lucas en uber')).toBe('uber');
     });
     
     test('debería limpiar fechas relativas', () => {
       const desc = extraerDescripcion('hoy pagué 5000 en comida');
       expect(desc).not.toContain('hoy');
-      expect(desc).toContain('en comida');
+      expect(desc).toBe('comida');
+    });
+
+    test('debería quitar el verbo inicial y las preposiciones sueltas', () => {
+      expect(extraerDescripcion('hoy pagué 57 mil en 2 pantalones y 2 poleras en fashions park'))
+        .toBe('2 pantalones y 2 poleras en fashions park');
+      expect(extraerDescripcion('me pagaron 300.000 de sueldo')).toBe('sueldo');
+      expect(extraerDescripcion('el viernes compré 3 lucas de pan')).toBe('pan');
     });
   });
 
@@ -264,11 +287,3 @@ describe('Parser de Mensajes de Telegram', () => {
     });
   });
 });
-
-// Helper para formatear fecha en tests
-function formatearFechaTest(fecha) {
-  const anio = fecha.getFullYear();
-  const mes = String(fecha.getMonth() + 1).padStart(2, '0');
-  const dia = String(fecha.getDate()).padStart(2, '0');
-  return `${anio}-${mes}-${dia}`;
-}

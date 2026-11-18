@@ -4,7 +4,8 @@ const TelegramBot = require('node-telegram-bot-api');
 
 import { query } from '../db.js';
 import { parsearMensaje, parsearMontoExacto, MEDIOS_PAGO_NOMBRES } from './parser.js';
-import { interpretarMovimiento, geminiDisponible, fechaHoySantiago } from './gemini.js';
+import { interpretarMovimiento, geminiDisponible } from './gemini.js';
+import { fechaHoySantiago, formatearFechaCL } from './fechas.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
@@ -209,9 +210,8 @@ function configurarComandos() {
     }
 
     try {
-      const hoy = new Date();
-      const mes = hoy.getMonth() + 1;
-      const anio = hoy.getFullYear();
+      // Mes y año actuales en hora de Chile
+      const [anio, mes] = fechaHoySantiago().split('-').map(Number);
 
       const [movimientos] = await query(
         `SELECT tipo, SUM(monto) as total
@@ -273,7 +273,7 @@ function configurarComandos() {
 
       movimientos.forEach((m, i) => {
         const icono = m.tipo === 'cargo' ? '💸' : '💰';
-        const fecha = new Date(m.fecha).toLocaleDateString('es-CL');
+        const fecha = formatearFechaCL(m.fecha);
         const categoria = esc(m.categoria_nombre || 'Sin categoría');
         mensaje += `${i + 1}. ${icono} $${formatearMonto(m.monto)} - ${esc(m.descripcion)}\n`;
         mensaje += `   📅 ${fecha} • ${categoria}\n\n`;
@@ -310,7 +310,7 @@ function configurarComandos() {
       }
 
       const mov = movimientos[0];
-      const fecha = new Date(mov.fecha).toLocaleDateString('es-CL');
+      const fecha = formatearFechaCL(mov.fecha);
 
       await enviar(chatId,
         `¿Eliminar este movimiento?\n\n` +
@@ -403,7 +403,7 @@ function configurarManejadores() {
           `✅ <b>Movimiento guardado</b>\n\n` +
           `${tx.tipo === 'cargo' ? '💸' : '💰'} $${formatearMonto(tx.monto)}\n` +
           `📝 ${esc(tx.descripcion)}\n` +
-          `📅 ${new Date(tx.fecha).toLocaleDateString('es-CL')}\n` +
+          `📅 ${formatearFechaCL(tx.fecha)}\n` +
           `🏷 ${esc(tx.categoria || 'Sin categoría')}`,
           {
             chat_id: chatId,
@@ -413,7 +413,8 @@ function configurarManejadores() {
 
         await responderCallback(cb.id, { text: '✅ Guardado' });
       } catch (error) {
-        console.error('Error al guardar movimiento:', error);
+        // Mensaje de la BD para diagnosticar (p. ej. "NOT NULL constraint failed: movimientos.cuenta_id")
+        console.error('Error al guardar movimiento:', error.code ?? '', error.message);
         await responderCallback(cb.id, { text: '❌ Error al guardar' });
       }
     }
@@ -489,9 +490,9 @@ function textoConfirmacion(tx) {
     `<b>Confirmar movimiento:</b>\n\n` +
     lineaMonto +
     `📝 ${esc(tx.descripcion)}\n` +
-    `📅 ${new Date(tx.fecha).toLocaleDateString('es-CL')}\n` +
-    `${tx.medioPago ? `💳 ${esc(tx.medioPago)}\n` : ''}` +
-    `${tx.categoria ? `🏷 ${esc(tx.categoria)}\n` : ''}` +
+    `📅 ${formatearFechaCL(tx.fecha)}\n` +
+    `💳 Medio de pago: ${tx.medioPago ? esc(tx.medioPago) : 'sin indicar'}\n` +
+    `🏷 Categoría: ${tx.categoria ? esc(tx.categoria) : 'sin categoría'}\n` +
     `${tx.aproximado ? '\n💡 Si sabes el monto exacto, respóndeme con el número antes de guardar.' : ''}`
   );
 }
@@ -609,24 +610,14 @@ async function registrarTransaccion(msg) {
       return;
     }
 
-    // Buscar cuenta por medio de pago
-    let cuentaId = null;
-    if (datos.medioPago) {
-      const [cuentas] = await query(
-        'SELECT id FROM cuentas WHERE LOWER(nombre) LIKE ? OR LOWER(tipo) LIKE ? LIMIT 1',
-        [`%${datos.medioPago.toLowerCase()}%`, `%${datos.medioPago.toLowerCase()}%`]
-      );
-      if (cuentas.length > 0) {
-        cuentaId = cuentas[0].id;
-      }
-    }
-
-    // Si no se encontró cuenta, usar la primera disponible
+    // Cuenta según el medio de pago, o la cuenta por defecto
+    const cuentaId = await resolverCuenta(datos.medioPago);
     if (!cuentaId) {
-      const [cuentas] = await query('SELECT id FROM cuentas ORDER BY creado_en ASC LIMIT 1');
-      if (cuentas.length > 0) {
-        cuentaId = cuentas[0].id;
-      }
+      await enviar(chatId,
+        '❌ No hay ninguna cuenta registrada, así que no puedo guardar el movimiento.\n\n' +
+        'Crea al menos una cuenta en la aplicación web y vuelve a enviar el mensaje.'
+      );
+      return;
     }
 
     // Buscar categoría por nombre detectado
@@ -682,8 +673,32 @@ async function guardarMovimiento(tx) {
   await query(
     `INSERT INTO movimientos (cuenta_id, fecha, descripcion, monto, tipo, categoria_id)
      VALUES (?, ?, ?, ?, ?, ?)`,
-    [tx.cuenta_id, tx.fecha, tx.descripcion, tx.monto, tx.tipo, tx.categoria_id]
+    // categoria_id puede ser null (sin categoría); undefined no es válido para el driver
+    [tx.cuenta_id, tx.fecha, tx.descripcion, tx.monto, tx.tipo, tx.categoria_id ?? null]
   );
+}
+
+/**
+ * Busca la cuenta asociada al medio de pago; si no hay, usa la cuenta por defecto
+ * (la activa más antigua). Devuelve null solo si no existe ninguna cuenta.
+ */
+async function resolverCuenta(medioPago) {
+  if (medioPago) {
+    const original = medioPago.toLowerCase();
+    // Sin tildes para calzar con el tipo de cuenta (tarjeta_debito, tarjeta_credito)
+    const sinTildes = original.normalize('NFD').replace(/[̀-ͯ]/g, '');
+    const [cuentas] = await query(
+      `SELECT id FROM cuentas
+       WHERE LOWER(nombre) LIKE ? OR LOWER(nombre) LIKE ? OR LOWER(tipo) LIKE ?
+       ORDER BY activa DESC, id ASC
+       LIMIT 1`,
+      [`%${original}%`, `%${sinTildes}%`, `%${sinTildes}%`]
+    );
+    if (cuentas.length > 0) return cuentas[0].id;
+  }
+
+  const [porDefecto] = await query('SELECT id FROM cuentas ORDER BY activa DESC, creado_en ASC, id ASC LIMIT 1');
+  return porDefecto.length > 0 ? porDefecto[0].id : null;
 }
 
 /**
