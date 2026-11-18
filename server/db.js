@@ -24,6 +24,42 @@ if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
 
   let pool;
 
+  /**
+   * Migración idempotente (MariaDB): agrega tipo_movimiento y cuenta_destino_id a movimientos.
+   * Registros existentes: abono -> ingreso, cargo -> compra.
+   */
+  async function migrarTipoMovimiento(connection) {
+    const [existentes] = await connection.query(
+      `SELECT COLUMN_NAME AS nombre FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movimientos'
+         AND COLUMN_NAME IN ('tipo_movimiento', 'cuenta_destino_id')`
+    );
+    const columnas = existentes.map(c => c.nombre);
+
+    if (!columnas.includes('tipo_movimiento')) {
+      await connection.query(
+        `ALTER TABLE movimientos ADD COLUMN tipo_movimiento
+           ENUM('compra', 'pago_tarjeta', 'transferencia_propia', 'transferencia_terceros', 'ingreso', 'otro')
+           NOT NULL DEFAULT 'compra' AFTER tipo,
+           ADD INDEX idx_tipo_movimiento (tipo_movimiento)`
+      );
+    }
+
+    if (!columnas.includes('cuenta_destino_id')) {
+      await connection.query(
+        `ALTER TABLE movimientos ADD COLUMN cuenta_destino_id INT NULL AFTER cuenta_id,
+           ADD INDEX idx_cuenta_destino (cuenta_destino_id),
+           ADD CONSTRAINT fk_movimientos_cuenta_destino
+             FOREIGN KEY (cuenta_destino_id) REFERENCES cuentas(id) ON DELETE SET NULL`
+      );
+    }
+
+    // Backfill y reparación (idempotente): un abono clasificado como compra pasa a ingreso
+    await connection.query(
+      "UPDATE movimientos SET tipo_movimiento = 'ingreso' WHERE tipo = 'abono' AND tipo_movimiento = 'compra'"
+    );
+  }
+
   dbModule = {
     getConnection: async function() {
       if (!pool) {
@@ -37,6 +73,8 @@ if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
         const connection = await this.getConnection();
         await connection.query('SELECT 1');
         console.log('✓ Conexión a MariaDB/MySQL establecida');
+        
+        await migrarTipoMovimiento(connection);
         
         const [usuarios] = await connection.query('SELECT * FROM usuario LIMIT 1');
         

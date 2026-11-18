@@ -5,6 +5,7 @@
  */
 
 import { fechaHoySantiago } from './fechas.js';
+import { TIPOS_MOVIMIENTO, requiereDestino, resolverTipos } from '../tiposMovimiento.js';
 
 const MODELO_POR_DEFECTO = 'gemini-2.5-flash';
 const TIMEOUT_MS = 8000;
@@ -42,14 +43,16 @@ const ESQUEMA_RESPUESTA = {
   type: 'OBJECT',
   properties: {
     tipo: { type: 'STRING', enum: ['cargo', 'abono'] },
+    tipo_movimiento: { type: 'STRING', enum: TIPOS_MOVIMIENTO },
     monto: { type: 'INTEGER', nullable: true },
     aproximado: { type: 'BOOLEAN' },
     fecha: { type: 'STRING', nullable: true },
     medio_pago: { type: 'STRING', nullable: true },
+    cuenta_destino: { type: 'STRING', nullable: true },
     categoria: { type: 'STRING', nullable: true },
     descripcion: { type: 'STRING' }
   },
-  required: ['tipo', 'monto', 'aproximado', 'fecha', 'medio_pago', 'categoria', 'descripcion']
+  required: ['tipo', 'tipo_movimiento', 'monto', 'aproximado', 'fecha', 'medio_pago', 'cuenta_destino', 'categoria', 'descripcion']
 };
 
 function construirInstrucciones(contexto) {
@@ -60,9 +63,13 @@ function construirInstrucciones(contexto) {
     `Fecha de hoy (America/Santiago): ${contexto.hoy}`,
     `Categorías existentes: ${JSON.stringify(contexto.categorias)}`,
     `Medios de pago existentes: ${JSON.stringify(contexto.mediosPago)}`,
+    `Cuentas existentes: ${JSON.stringify(contexto.cuentas)}`,
     '',
     'Reglas:',
     '- tipo: "cargo" para gastos; "abono" para ingresos (me pagaron, sueldo, me transfirieron, cobré).',
+    '- tipo_movimiento: "compra" (gasto normal), "pago_tarjeta" (pagar la tarjeta de crédito), "transferencia_propia" (mover plata entre mis cuentas, incluido sacar del cajero), "transferencia_terceros" (transferir a otra persona), "ingreso" (me pagaron, sueldo, me depositaron, me transfirieron) u "otro".',
+    '- tipo debe ser coherente: "abono" para ingreso; "cargo" para los demás.',
+    '- cuenta_destino: solo para pago_tarjeta y transferencia_propia; exactamente una de las cuentas existentes (la tarjeta pagada o la cuenta que recibe), o null si no se puede saber. Para el resto, null.',
     '- monto: entero en pesos chilenos (CLP). "5 lucas" o "5k" = 5000; "57 mil" = 57000; "57 mil 500" = 57500; "1 millón" o "1 palo" = 1000000; "1,5 millones" = 1500000.',
     '- Si no hay ningún monto en el mensaje, monto debe ser null.',
     '- aproximado: true si el monto es una estimación ("y algo", "y tanto", "y pico", "más o menos", "aprox", "cerca de", "como"); si no, false.',
@@ -98,8 +105,7 @@ function fechaValida(texto) {
 function validarRespuesta(datos, contexto) {
   if (!datos || typeof datos !== 'object' || Array.isArray(datos)) return null;
 
-  const tipo = datos.tipo;
-  if (tipo !== 'cargo' && tipo !== 'abono') return null;
+  if (datos.tipo !== 'cargo' && datos.tipo !== 'abono') return null;
 
   const monto = typeof datos.monto === 'number' ? Math.round(datos.monto) : NaN;
   if (!Number.isFinite(monto) || monto <= 0) return null;
@@ -108,8 +114,18 @@ function validarRespuesta(datos, contexto) {
     ? datos.descripcion.trim().slice(0, 100)
     : '';
 
+  // tipo_movimiento inválido o ausente: se deduce de tipo; luego tipo se hace coherente con él
+  const { tipo, tipo_movimiento: tipoMovimiento } = resolverTipos({
+    tipo: datos.tipo,
+    tipo_movimiento: datos.tipo_movimiento
+  });
+
   return {
     tipo,
+    tipoMovimiento,
+    cuentaDestino: requiereDestino(tipoMovimiento)
+      ? coincidenciaExacta(datos.cuenta_destino, contexto.cuentas)
+      : null,
     monto,
     aproximado: datos.aproximado === true,
     fecha: fechaValida(datos.fecha) ? datos.fecha : contexto.hoy,
@@ -122,8 +138,8 @@ function validarRespuesta(datos, contexto) {
 /**
  * Interpreta un mensaje libre con Gemini.
  * @param {string} texto Mensaje del usuario
- * @param {{hoy: string, categorias: string[], mediosPago: string[]}} contexto
- * @returns {Promise<{tipo, monto, aproximado, fecha, medioPago, categoria, descripcion}|null>}
+ * @param {{hoy: string, categorias: string[], mediosPago: string[], cuentas: string[]}} contexto
+ * @returns {Promise<{tipo, tipoMovimiento, cuentaDestino, monto, aproximado, fecha, medioPago, categoria, descripcion}|null>}
  *   null si Gemini no está configurado, falla, tarda más de 8 s, o la respuesta no es válida
  */
 export async function interpretarMovimiento(texto, contexto) {
@@ -134,7 +150,8 @@ export async function interpretarMovimiento(texto, contexto) {
   const ctx = {
     hoy: contexto?.hoy || fechaHoySantiago(),
     categorias: contexto?.categorias ?? [],
-    mediosPago: contexto?.mediosPago ?? []
+    mediosPago: contexto?.mediosPago ?? [],
+    cuentas: contexto?.cuentas ?? []
   };
 
   const generationConfig = {

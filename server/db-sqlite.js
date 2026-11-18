@@ -113,6 +113,9 @@ export async function inicializarDB() {
       CREATE INDEX IF NOT EXISTS idx_archivos_hash ON archivos_importados(hash_archivo);
     `);
 
+    // Migración: tipo_movimiento y cuenta_destino_id
+    migrarTipoMovimiento(database);
+
     // Insertar categorías por defecto
     const categorias = [
       ['Supermercado', '#10B981', 'fa-shopping-cart'],
@@ -150,6 +153,35 @@ export async function inicializarDB() {
     console.error('Error al inicializar base de datos:', error.message);
     throw error;
   }
+}
+
+/**
+ * Migración idempotente (SQLite): agrega tipo_movimiento y cuenta_destino_id a movimientos.
+ * Registros existentes: abono -> ingreso, cargo -> compra.
+ */
+function migrarTipoMovimiento(database) {
+  const migrar = database.transaction(() => {
+    const columnas = database.prepare('PRAGMA table_info(movimientos)').all().map(c => c.name);
+
+    if (!columnas.includes('tipo_movimiento')) {
+      database.exec(`
+        ALTER TABLE movimientos ADD COLUMN tipo_movimiento TEXT NOT NULL DEFAULT 'compra'
+          CHECK(tipo_movimiento IN ('compra', 'pago_tarjeta', 'transferencia_propia', 'transferencia_terceros', 'ingreso', 'otro'))
+      `);
+    }
+
+    if (!columnas.includes('cuenta_destino_id')) {
+      database.exec('ALTER TABLE movimientos ADD COLUMN cuenta_destino_id INTEGER REFERENCES cuentas(id) ON DELETE SET NULL');
+    }
+
+    // Backfill y reparación: un abono clasificado como compra (por ejemplo, importado
+    // por una ruta que aún no informa tipo_movimiento) pasa a ingreso
+    database.exec("UPDATE movimientos SET tipo_movimiento = 'ingreso' WHERE tipo = 'abono' AND tipo_movimiento = 'compra'");
+
+    database.exec('CREATE INDEX IF NOT EXISTS idx_movimientos_tipo_movimiento ON movimientos(tipo_movimiento)');
+    database.exec('CREATE INDEX IF NOT EXISTS idx_movimientos_destino ON movimientos(cuenta_destino_id)');
+  });
+  migrar();
 }
 
 export async function query(sql, params = []) {

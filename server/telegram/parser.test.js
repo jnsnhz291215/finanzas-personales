@@ -7,7 +7,9 @@ import {
   detectarTipo, 
   detectarCategoria,
   extraerDescripcion,
-  parsearMensaje 
+  parsearMensaje,
+  detectarTipoMovimiento,
+  extraerCuentasMovimiento
 } from './parser.js';
 import { fechaHoySantiago, sumarDias, formatearFechaCL } from './fechas.js';
 
@@ -180,6 +182,85 @@ describe('Parser de Mensajes de Telegram', () => {
       expect(detectarTipo('pagué 5 lucas')).toBe('cargo');
       expect(detectarTipo('gasté en el super')).toBe('cargo');
       expect(detectarTipo('compré comida')).toBe('cargo');
+    });
+  });
+
+  describe('tipo de movimiento', () => {
+    const cuentas = [
+      { nombre: 'FAN', tipo: 'cuenta_corriente' },
+      { nombre: 'Efectivo', tipo: 'cuenta_vista' },
+      { nombre: 'CMR Falabella', tipo: 'tarjeta_credito' }
+    ];
+
+    test('debería detectar pago_tarjeta', () => {
+      expect(detectarTipoMovimiento('pagué la tarjeta')).toBe('pago_tarjeta');
+      expect(detectarTipoMovimiento('pago CMR 30 mil')).toBe('pago_tarjeta');
+      expect(detectarTipoMovimiento('pagué la tarjeta de crédito')).toBe('pago_tarjeta');
+      expect(detectarTipoMovimiento('pagué 80 mil de la CMR Falabella', cuentas)).toBe('pago_tarjeta');
+    });
+
+    test('pagar algo con la tarjeta sigue siendo compra', () => {
+      expect(detectarTipoMovimiento('pagué 12.500 en el super con la tarjeta')).toBe('compra');
+      expect(detectarTipoMovimiento('gasté 5 lucas en uber con la CMR')).toBe('compra');
+    });
+
+    test('debería detectar transferencia_propia', () => {
+      expect(detectarTipoMovimiento('me transferí 50 mil')).toBe('transferencia_propia');
+      expect(detectarTipoMovimiento('pasé plata a mi cuenta')).toBe('transferencia_propia');
+      expect(detectarTipoMovimiento('pasé 20 mil de la FAN a efectivo', cuentas)).toBe('transferencia_propia');
+      expect(detectarTipoMovimiento('saqué 50 lucas del cajero')).toBe('transferencia_propia');
+    });
+
+    test('debería detectar transferencia_terceros', () => {
+      expect(detectarTipoMovimiento('le transferí 20 mil a Pedro')).toBe('transferencia_terceros');
+      expect(detectarTipoMovimiento('transferencia a Pedro 20 mil')).toBe('transferencia_terceros');
+    });
+
+    test('debería detectar ingreso', () => {
+      expect(detectarTipoMovimiento('me pagaron 300.000')).toBe('ingreso');
+      expect(detectarTipoMovimiento('me depositaron 50 mil')).toBe('ingreso');
+      expect(detectarTipoMovimiento('sueldo 800 mil')).toBe('ingreso');
+      expect(detectarTipoMovimiento('me transfirieron 20 mil')).toBe('ingreso');
+    });
+
+    test('el resto con monto es compra', () => {
+      expect(detectarTipoMovimiento('pagué 12.500 en el super')).toBe('compra');
+      expect(detectarTipoMovimiento('hoy pagué 57 mil y algo en ropa')).toBe('compra');
+    });
+
+    test('con dos cuentas, la primera es origen y la segunda destino', () => {
+      expect(extraerCuentasMovimiento('pasé 20 mil de la FAN a efectivo', 'transferencia_propia', cuentas))
+        .toEqual({ origen: 'FAN', destino: 'Efectivo' });
+    });
+
+    test('el retiro en cajero va de débito a efectivo', () => {
+      expect(extraerCuentasMovimiento('saqué 50 lucas del cajero', 'transferencia_propia'))
+        .toEqual({ origen: 'débito', destino: 'efectivo' });
+    });
+
+    test('en pago_tarjeta el destino es la tarjeta aunque se nombre primero', () => {
+      expect(extraerCuentasMovimiento('pago CMR 30 mil con la FAN', 'pago_tarjeta', [{ nombre: 'FAN', tipo: 'cuenta_corriente' }]))
+        .toEqual({ origen: 'FAN', destino: 'CMR' });
+      expect(extraerCuentasMovimiento('pagué la tarjeta de crédito', 'pago_tarjeta'))
+        .toEqual({ origen: null, destino: 'crédito' });
+    });
+
+    test('parsearMensaje incluye tipo de movimiento, cuentas y descripción', () => {
+      const pago = parsearMensaje('pagué la tarjeta de crédito 50 mil');
+      expect(pago.monto).toBe(50000);
+      expect(pago.tipo).toBe('cargo');
+      expect(pago.tipoMovimiento).toBe('pago_tarjeta');
+      expect(pago.cuentaDestino).toBe('crédito');
+      expect(pago.descripcion).toBe('Pago de tarjeta crédito');
+
+      const tercero = parsearMensaje('le transferí 20 mil a Pedro');
+      expect(tercero.tipoMovimiento).toBe('transferencia_terceros');
+      expect(tercero.tipo).toBe('cargo');
+      expect(tercero.descripcion).toBe('Transferencia a Pedro');
+
+      const ingreso = parsearMensaje('me pagaron 300.000 de sueldo');
+      expect(ingreso.tipoMovimiento).toBe('ingreso');
+      expect(ingreso.tipo).toBe('abono');
     });
   });
 

@@ -2,6 +2,27 @@ import { useState, useEffect } from 'react';
 import api from '../utils/api';
 import { formatCLP, formatFecha, mesAnioActual } from '../utils/format';
 
+// Tipos de movimiento: icono Font Awesome y color de la paleta actual
+const TIPOS_MOVIMIENTO = [
+  { value: 'compra', label: 'Compra', icon: 'fa-cart-shopping', color: 'text-gray-600' },
+  { value: 'pago_tarjeta', label: 'Pago de tarjeta', icon: 'fa-credit-card', color: 'text-blue-600' },
+  { value: 'transferencia_propia', label: 'Transferencia entre mis cuentas', icon: 'fa-right-left', color: 'text-blue-600' },
+  { value: 'transferencia_terceros', label: 'Transferencia a terceros', icon: 'fa-paper-plane', color: 'text-purple-600' },
+  { value: 'ingreso', label: 'Ingreso', icon: 'fa-arrow-down', color: 'text-green-600' },
+  { value: 'otro', label: 'Otro', icon: 'fa-ellipsis', color: 'text-gray-600' }
+];
+
+// Solo mueven dinero entre cuentas propias: no son gasto ni ingreso
+const TIPOS_CON_DESTINO = ['pago_tarjeta', 'transferencia_propia'];
+
+// Movimientos antiguos o importados pueden venir sin tipo_movimiento (o abonos como "compra")
+const tipoEfectivo = (mov) => {
+  if (mov.tipo === 'abono' && (!mov.tipo_movimiento || mov.tipo_movimiento === 'compra')) return 'ingreso';
+  return mov.tipo_movimiento || 'compra';
+};
+
+const infoTipo = (valor) => TIPOS_MOVIMIENTO.find(t => t.value === valor) || TIPOS_MOVIMIENTO[0];
+
 export default function Movimientos() {
   const [movimientos, setMovimientos] = useState([]);
   const [cuentas, setCuentas] = useState([]);
@@ -17,6 +38,8 @@ export default function Movimientos() {
     descripcion: '',
     monto: '',
     tipo: 'cargo',
+    tipo_movimiento: 'compra',
+    cuenta_destino_id: '',
     categoria_id: '',
     es_prestamo: false,
     persona_prestamo: '',
@@ -53,6 +76,8 @@ export default function Movimientos() {
         descripcion: movimiento.descripcion,
         monto: movimiento.monto,
         tipo: movimiento.tipo,
+        tipo_movimiento: tipoEfectivo(movimiento),
+        cuenta_destino_id: movimiento.cuenta_destino_id || '',
         categoria_id: movimiento.categoria_id || '',
         es_prestamo: movimiento.es_prestamo || false,
         persona_prestamo: movimiento.persona_prestamo || '',
@@ -66,6 +91,8 @@ export default function Movimientos() {
         descripcion: '',
         monto: '',
         tipo: 'cargo',
+        tipo_movimiento: 'compra',
+        cuenta_destino_id: '',
         categoria_id: '',
         es_prestamo: false,
         persona_prestamo: '',
@@ -75,8 +102,22 @@ export default function Movimientos() {
     setMostrarModal(true);
   };
 
+  // Al cambiar el tipo de movimiento se ajusta el sentido (cargo/abono) y la cuenta destino
+  const cambiarTipoMovimiento = (valor) => {
+    setFormData({
+      ...formData,
+      tipo_movimiento: valor,
+      tipo: valor === 'ingreso' ? 'abono' : (valor === 'otro' ? formData.tipo : 'cargo'),
+      cuenta_destino_id: TIPOS_CON_DESTINO.includes(valor) ? formData.cuenta_destino_id : ''
+    });
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (TIPOS_CON_DESTINO.includes(formData.tipo_movimiento) && !formData.cuenta_destino_id) {
+      alert('Selecciona la cuenta destino');
+      return;
+    }
     try {
       if (movimientoEditando) {
         await api.put(`/movimientos/${movimientoEditando.id}`, formData);
@@ -167,6 +208,7 @@ export default function Movimientos() {
               <thead>
                 <tr className="border-b border-gray-200">
                   <th className="text-left py-3 px-4 font-medium text-gray-700">Fecha</th>
+                  <th className="text-left py-3 px-4 font-medium text-gray-700">Tipo</th>
                   <th className="text-left py-3 px-4 font-medium text-gray-700">Descripción</th>
                   <th className="text-left py-3 px-4 font-medium text-gray-700">Cuenta</th>
                   <th className="text-left py-3 px-4 font-medium text-gray-700">Categoría</th>
@@ -175,11 +217,26 @@ export default function Movimientos() {
                 </tr>
               </thead>
               <tbody>
-                {movimientos.map(mov => (
+                {movimientos.map(mov => {
+                  const tipoMov = infoTipo(tipoEfectivo(mov));
+                  const esInterno = TIPOS_CON_DESTINO.includes(tipoMov.value);
+                  return (
                   <tr key={mov.id} className="border-b border-gray-100 hover:bg-gray-50">
                     <td className="py-3 px-4 text-sm">{formatFecha(mov.fecha)}</td>
+                    <td className="py-3 px-4 text-sm whitespace-nowrap">
+                      <span className={tipoMov.color} title={tipoMov.label}>
+                        <i className={`fas ${tipoMov.icon} mr-2`}></i>
+                        {tipoMov.label}
+                      </span>
+                    </td>
                     <td className="py-3 px-4">
                       <div className="font-medium text-gray-900">{mov.descripcion}</div>
+                      {mov.cuenta_destino_nombre && (
+                        <span className="text-xs text-blue-600">
+                          <i className="fas fa-arrow-right mr-1"></i>
+                          {mov.cuenta_destino_nombre}
+                        </span>
+                      )}
                       {mov.es_prestamo && (
                         <span className="text-xs text-purple-600">
                           <i className="fas fa-handshake mr-1"></i>
@@ -197,8 +254,8 @@ export default function Movimientos() {
                         <span className="text-xs text-gray-400">Sin categoría</span>
                       )}
                     </td>
-                    <td className={`py-3 px-4 text-right font-semibold ${mov.tipo === 'cargo' ? 'text-red-600' : 'text-green-600'}`}>
-                      {mov.tipo === 'cargo' ? '-' : '+'}{formatCLP(mov.monto)}
+                    <td className={`py-3 px-4 text-right font-semibold ${esInterno ? 'text-blue-600' : (mov.tipo === 'cargo' ? 'text-red-600' : 'text-green-600')}`}>
+                      {esInterno ? '' : (mov.tipo === 'cargo' ? '-' : '+')}{formatCLP(mov.monto)}
                     </td>
                     <td className="py-3 px-4 text-right">
                       <button onClick={() => abrirModal(mov)} className="text-blue-600 hover:text-blue-700 mr-3">
@@ -209,7 +266,8 @@ export default function Movimientos() {
                       </button>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -225,7 +283,7 @@ export default function Movimientos() {
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="label">Cuenta *</label>
+                    <label className="label">{TIPOS_CON_DESTINO.includes(formData.tipo_movimiento) ? 'Cuenta origen *' : 'Cuenta *'}</label>
                     <select value={formData.cuenta_id} onChange={(e) => setFormData({ ...formData, cuenta_id: e.target.value })} className="input" required>
                       <option value="">Seleccionar...</option>
                       {cuentas.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
@@ -246,13 +304,35 @@ export default function Movimientos() {
                     <input type="number" value={formData.monto} onChange={(e) => setFormData({ ...formData, monto: e.target.value })} className="input" required />
                   </div>
                   <div>
-                    <label className="label">Tipo *</label>
-                    <select value={formData.tipo} onChange={(e) => setFormData({ ...formData, tipo: e.target.value })} className="input">
-                      <option value="cargo">Cargo</option>
-                      <option value="abono">Abono</option>
+                    <label className="label">Tipo de movimiento *</label>
+                    <select value={formData.tipo_movimiento} onChange={(e) => cambiarTipoMovimiento(e.target.value)} className="input">
+                      {TIPOS_MOVIMIENTO.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                     </select>
                   </div>
                 </div>
+                {formData.tipo_movimiento === 'otro' && (
+                  <div>
+                    <label className="label">Sentido *</label>
+                    <select value={formData.tipo} onChange={(e) => setFormData({ ...formData, tipo: e.target.value })} className="input">
+                      <option value="cargo">Cargo (sale dinero)</option>
+                      <option value="abono">Abono (entra dinero)</option>
+                    </select>
+                  </div>
+                )}
+                {TIPOS_CON_DESTINO.includes(formData.tipo_movimiento) && (
+                  <div>
+                    <label className="label">Cuenta destino *</label>
+                    <select value={formData.cuenta_destino_id} onChange={(e) => setFormData({ ...formData, cuenta_destino_id: e.target.value })} className="input" required>
+                      <option value="">Seleccionar...</option>
+                      {cuentas
+                        .filter(c => String(c.id) !== String(formData.cuenta_id))
+                        .map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Este movimiento no cuenta como gasto ni ingreso: solo mueve dinero entre tus cuentas.
+                    </p>
+                  </div>
+                )}
                 <div>
                   <label className="label">Categoría</label>
                   <select value={formData.categoria_id} onChange={(e) => setFormData({ ...formData, categoria_id: e.target.value })} className="input">

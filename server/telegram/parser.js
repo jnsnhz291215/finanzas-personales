@@ -239,22 +239,176 @@ export function extraerMedioPago(mensaje) {
 }
 
 /**
- * Detecta si es un gasto o ingreso
+ * Quita tildes y pasa a minúsculas para comparar frases
  */
-export function detectarTipo(mensaje) {
-  const textoLower = mensaje.toLowerCase();
-  
-  // Palabras clave de ingresos
-  const palabrasIngreso = ['me pagaron', 'cobré', 'cobre', 'ingreso', 'sueldo', 'salario', 'recibí', 'recibi', 'depósito', 'deposito'];
-  
-  for (const palabra of palabrasIngreso) {
-    if (textoLower.includes(palabra)) {
-      return 'abono';
+function normalizar(texto) {
+  return texto.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+
+function escaparRegex(texto) {
+  return texto.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Cuentas que se reconocen por nombre genérico aunque no se pasen las cuentas reales
+const ALIAS_CUENTAS = {
+  'débito': ['debito'],
+  'crédito': ['credito'],
+  'CMR': ['cmr', 'falabella'],
+  'efectivo': ['efectivo', 'cash']
+};
+const ETIQUETAS_TARJETA = ['crédito', 'CMR'];
+
+/**
+ * Cuentas mencionadas en el mensaje, en orden de aparición.
+ * `cuentas` son las cuentas reales ({ nombre, tipo } o solo el nombre); además se
+ * reconocen débito, crédito, CMR y efectivo. Devuelve [{ inicio, fin, etiqueta, tarjeta }]
+ * con índices sobre el texto normalizado (sin tildes).
+ */
+export function extraerCuentasMencionadas(mensaje, cuentas = []) {
+  const texto = normalizar(mensaje);
+  const candidatos = [];
+
+  for (const cuenta of cuentas) {
+    const nombre = typeof cuenta === 'string' ? cuenta : cuenta?.nombre;
+    if (!nombre) continue;
+    candidatos.push({
+      termino: normalizar(nombre),
+      etiqueta: nombre,
+      tarjeta: typeof cuenta === 'object' && cuenta.tipo === 'tarjeta_credito'
+    });
+  }
+  for (const [etiqueta, terminos] of Object.entries(ALIAS_CUENTAS)) {
+    for (const termino of terminos) {
+      candidatos.push({ termino, etiqueta, tarjeta: ETIQUETAS_TARJETA.includes(etiqueta) });
     }
   }
-  
-  // Por defecto, es un gasto
-  return 'cargo';
+
+  // Los términos más largos primero; una cuenta real gana sobre un alias del mismo largo
+  candidatos.sort((a, b) => b.termino.length - a.termino.length);
+
+  const hallazgos = [];
+  for (const c of candidatos) {
+    const regex = new RegExp(`(?<![\\p{L}\\p{N}])${escaparRegex(c.termino)}(?![\\p{L}\\p{N}])`, 'gu');
+    for (const m of texto.matchAll(regex)) {
+      const inicio = m.index;
+      const fin = inicio + m[0].length;
+      if (hallazgos.some(h => inicio < h.fin && fin > h.inicio)) continue;
+      hallazgos.push({ inicio, fin, etiqueta: c.etiqueta, tarjeta: c.tarjeta });
+    }
+  }
+
+  return hallazgos.sort((a, b) => a.inicio - b.inicio);
+}
+
+// Texto sin el monto, normalizado, para buscar frases sin que los números estorben
+function textoSinMonto(mensaje) {
+  const analisis = analizarMonto(mensaje);
+  const sinMonto = analisis
+    ? mensaje.slice(0, analisis.inicio) + ' ' + mensaje.slice(analisis.fin)
+    : mensaje;
+  return normalizar(sinMonto).replace(/\s+/g, ' ').trim();
+}
+
+const RETIRO_CAJERO_REGEX = /\bcajero\b|\b(?:saque|retire)\s+(?:plata|efectivo|dinero)\b/;
+
+/**
+ * Detecta el tipo de movimiento por frases:
+ * compra | pago_tarjeta | transferencia_propia | transferencia_terceros | ingreso
+ * (el resto con monto es compra). `cuentas` son las cuentas reales, opcionales.
+ */
+export function detectarTipoMovimiento(mensaje, cuentas = []) {
+  const texto = textoSinMonto(mensaje);
+
+  // Ingresos explícitos ("me ...")
+  if (/\bme (?:pagaron|depositaron|transfirieron|abonaron)\b|\bcobre\b/.test(texto)) {
+    return 'ingreso';
+  }
+
+  // Pago de tarjeta: "pagué la tarjeta", "pago CMR", "pagué la tarjeta de crédito"
+  const tarjetas = ['tarjeta', 'cmr', 'visa', 'mastercard', 'falabella'];
+  for (const cuenta of cuentas) {
+    if (typeof cuenta === 'object' && cuenta?.tipo === 'tarjeta_credito' && cuenta.nombre) {
+      tarjetas.push(escaparRegex(normalizar(cuenta.nombre)));
+    }
+  }
+  const pagoTarjeta = new RegExp(
+    `\\b(?:pague|pago|pagar|abone)\\s+(?:de\\s+|a\\s+)?(?:(?:la|el|mi|mis)\\s+)?(?:${tarjetas.join('|')})\\b`
+  );
+  if (pagoTarjeta.test(texto)) {
+    return 'pago_tarjeta';
+  }
+
+  // Transferencia entre cuentas propias
+  const menciones = extraerCuentasMencionadas(mensaje, cuentas);
+  const dosCuentasConA = menciones.length >= 2 && /\b(?:a|hacia|para)\b/.test(texto.slice(menciones[0].fin, menciones[1].inicio));
+  if (
+    /\bme transferi\b/.test(texto) ||
+    /\bpase\b.*\ba mi\b/.test(texto) ||
+    /\ba mi cuenta\b/.test(texto) ||
+    RETIRO_CAJERO_REGEX.test(texto) ||
+    dosCuentasConA
+  ) {
+    return 'transferencia_propia';
+  }
+
+  // Transferencia a terceros
+  if (/\ble transferi\b|\btransferencia a\b|\btransferi a\b/.test(texto)) {
+    return 'transferencia_terceros';
+  }
+
+  // Ingresos por palabra clave
+  if (/sueldo|salario|ingreso|recibi|deposito/.test(texto)) {
+    return 'ingreso';
+  }
+
+  return 'compra';
+}
+
+/**
+ * Cuenta origen y destino mencionadas (etiqueta o nombre de la cuenta, o null).
+ * Con dos cuentas, la primera es origen y la segunda destino. Excepciones:
+ * - pago_tarjeta: el destino es la tarjeta aunque se nombre después ("pago CMR con la FAN")
+ * - retiro en cajero: origen débito (o la cuenta indicada), destino efectivo
+ */
+export function extraerCuentasMovimiento(mensaje, tipoMovimiento, cuentas = []) {
+  const menciones = extraerCuentasMencionadas(mensaje, cuentas);
+  const texto = textoSinMonto(mensaje);
+  let origen = null;
+  let destino = null;
+
+  if (tipoMovimiento === 'pago_tarjeta') {
+    const tarjetas = menciones.filter(m => m.tarjeta);
+    const otras = menciones.filter(m => !m.tarjeta);
+    if (tarjetas.length === 1 && menciones.length <= 2) {
+      destino = tarjetas[0].etiqueta;
+      origen = otras[0]?.etiqueta ?? null;
+    } else {
+      origen = menciones.length >= 2 ? menciones[0].etiqueta : null;
+      destino = menciones.length >= 2 ? menciones[1].etiqueta : (menciones[0]?.etiqueta ?? null);
+    }
+  } else if (tipoMovimiento === 'transferencia_propia') {
+    if (RETIRO_CAJERO_REGEX.test(texto)) {
+      destino = 'efectivo';
+      origen = menciones.find(m => m.etiqueta !== 'efectivo')?.etiqueta ?? 'débito';
+    } else if (menciones.length >= 2) {
+      origen = menciones[0].etiqueta;
+      destino = menciones[1].etiqueta;
+    } else if (menciones.length === 1) {
+      // "a la FAN" es destino; "de la FAN" u otra forma es origen
+      const antes = normalizar(mensaje).slice(0, menciones[0].inicio);
+      if (/\b(?:a|hacia)\s+(?:(?:mi|la|el)\s+)?$/.test(antes)) destino = menciones[0].etiqueta;
+      else origen = menciones[0].etiqueta;
+    }
+  }
+
+  return { origen, destino };
+}
+
+/**
+ * Detecta si es un gasto (cargo) o ingreso (abono)
+ */
+export function detectarTipo(mensaje) {
+  return detectarTipoMovimiento(mensaje) === 'ingreso' ? 'abono' : 'cargo';
 }
 
 /**
@@ -309,17 +463,43 @@ export function extraerDescripcion(mensaje) {
 }
 
 /**
- * Parsea un mensaje completo y extrae toda la información
+ * Descripción corta según el tipo, cuando el texto libre queda reducido a la frase del tipo
  */
-export function parsearMensaje(mensaje) {
+function descripcionPorTipo(tipoMovimiento, mensaje, descripcion, destino) {
+  if (tipoMovimiento === 'pago_tarjeta') {
+    return `Pago de tarjeta${destino ? ' ' + destino : ''}`;
+  }
+  if (tipoMovimiento === 'transferencia_propia') {
+    return RETIRO_CAJERO_REGEX.test(textoSinMonto(mensaje)) ? 'Retiro en cajero' : 'Transferencia entre cuentas';
+  }
+  if (tipoMovimiento === 'transferencia_terceros') {
+    const m = descripcion.match(/(?:transfer[ií]|transferencia)\s+a\s+(.+)$/i);
+    const nombre = m ? m[1].trim().slice(0, 60) : '';
+    return nombre ? `Transferencia a ${nombre}` : 'Transferencia a terceros';
+  }
+  return descripcion;
+}
+
+/**
+ * Parsea un mensaje completo y extrae toda la información.
+ * opciones.cuentas: cuentas reales ({ nombre, tipo }) para reconocer sus nombres en el mensaje.
+ */
+export function parsearMensaje(mensaje, opciones = {}) {
+  const cuentas = opciones.cuentas ?? [];
   const analisis = analizarMonto(mensaje);
+  const tipoMovimiento = detectarTipoMovimiento(mensaje, cuentas);
+  const { origen, destino } = extraerCuentasMovimiento(mensaje, tipoMovimiento, cuentas);
+
   return {
     monto: analisis ? analisis.monto : null,
     aproximado: analisis ? analisis.aproximado : false,
     fecha: extraerFecha(mensaje),
     medioPago: extraerMedioPago(mensaje),
-    tipo: detectarTipo(mensaje),
+    tipo: tipoMovimiento === 'ingreso' ? 'abono' : 'cargo',
+    tipoMovimiento,
+    cuentaOrigen: origen,
+    cuentaDestino: destino,
     categoriaDetectada: detectarCategoria(mensaje),
-    descripcion: extraerDescripcion(mensaje)
+    descripcion: descripcionPorTipo(tipoMovimiento, mensaje, extraerDescripcion(mensaje), destino)
   };
 }
