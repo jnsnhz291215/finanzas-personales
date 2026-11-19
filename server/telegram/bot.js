@@ -252,7 +252,7 @@ function textoAyuda() {
     'Escribe en lenguaje natural, por ejemplo:\n' +
     '• Gasto: "ayer pagué 12.500 en el super con débito"\n' +
     '• Pago de tarjeta: "pagué la tarjeta de crédito 50 mil"\n' +
-    'Para importar una cartola, envía el archivo CSV o Excel y elige la cuenta (los PDF se guardan y se revisan en la web).\n\n' +
+    'Para importar una cartola, envía el archivo CSV, Excel o PDF y elige la cuenta. Los PDF se muestran en una vista previa para que los confirmes antes de importar.\n\n' +
     '<b>Cuentas:</b>\n' +
     '/savecard - Crear una cuenta (también /nuevacuenta)\n' +
     '/cuentas - Ver tus cuentas activas\n' +
@@ -2605,25 +2605,22 @@ async function manejarArchivo(msg) {
 
     await enviar(chatId, 'Procesando archivo...');
 
-    // Descargar y guardar en <FINANZAS_STORAGE>/cartolas/{YYYY-MM}/ (ver storage.js)
     const fileLink = await bot.getFileLink(documento.file_id);
     const response = await fetch(fileLink);
     if (!response.ok) throw new Error('la descarga del archivo falló');
     const buffer = Buffer.from(await response.arrayBuffer());
-    const guardado = await guardarBuffer('cartolas', nombreArchivo, buffer, {
-      prefijo: `telegram_${Date.now()}_`
-    });
 
-    // CSV y Excel se pueden importar desde aquí; los PDF necesitan revisión manual
-    const resultado = ext !== '.pdf' && cartolas
-      ? await cartolas.ofrecerImportacion(chatId, { ruta: guardado.ruta, buffer, ext })
-      : 'sin_movimientos';
-    if (resultado !== 'sin_movimientos') return;
+    // CSV, Excel y PDF se importan desde aquí. El archivo queda pendiente en tmp/ y pasa a
+    // cartolas/{YYYY-MM}/ solo cuando se confirma la importación (ver cartolasBot.js)
+    const resultado = await cartolas.ofrecerImportacion(chatId, { nombre: nombreArchivo, buffer, ext });
+    if (resultado !== 'ilegible') return;
 
+    // No se pudieron leer movimientos de ninguna forma: se deja guardado en cartolas/{YYYY-MM}/
+    await guardarBuffer('cartolas', nombreArchivo, buffer, { prefijo: `telegram_${Date.now()}_` });
     await enviar(chatId,
       ext === '.pdf'
-        ? 'Archivo guardado. Los PDF no se importan automáticamente: necesitan revisión manual en la aplicación web.'
-        : 'Archivo guardado, pero no pude detectar los movimientos automáticamente. Puedes mapear las columnas en la aplicación web.'
+        ? 'No pude leer los movimientos de este PDF (puede ser una imagen escaneada o un formato que no reconozco). Dejé el archivo guardado.'
+        : 'No pude leer los movimientos de este archivo. Dejé el archivo guardado.'
     );
   } catch (error) {
     // No imprimir el objeto completo: puede incluir la URL con el token

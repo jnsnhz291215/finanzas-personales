@@ -470,7 +470,19 @@ El bot te mostrará un resumen y te pedirá confirmar antes de guardar.
 
 #### Importar Cartolas
 
-Envía directamente un archivo de cartola (CSV, Excel o PDF) al bot. El archivo se guardará en el servidor y podrás importarlo desde la aplicación web.
+Envía directamente un archivo de cartola (**CSV, Excel o PDF**) al bot y se importa completo desde Telegram:
+
+1. El bot lee los movimientos y muestra un resumen (cantidad, rango de fechas, cargos y abonos).
+2. **PDF:** la lectura es menos confiable, así que antes de elegir la cuenta muestra una **vista previa** de los primeros
+   movimientos y pide confirmar con los botones *Importar* o *Cancelar*. Primero intenta leerlo con reglas sobre el texto; si
+   no alcanzan, y hay `GEMINI_API_KEY`, usa Gemini **solo con el texto extraído**, con los números de cuenta y los RUT
+   enmascarados, y descarta cualquier movimiento cuyo monto no aparezca en el texto.
+3. Eliges la cuenta. Se aplican las reglas de autocategorización y se evitan duplicados (mismo archivo = mismo hash).
+4. Si una transferencia calza con el alias de cartola de una compra en cuotas, el bot pregunta con botones si es un pago de cuota.
+
+Mientras no confirmes, el archivo espera en `tmp/` y solo pasa a `cartolas/{YYYY-MM}/` al importar. Los archivos sin confirmar se
+borran solos a las 24 horas (se revisa al arrancar el servidor y cada hora). Si un archivo no se puede leer de ninguna forma, el
+bot lo dice y lo deja guardado en `cartolas/{YYYY-MM}/`.
 
 #### Enviar Respaldos
 

@@ -258,3 +258,127 @@ export async function ensureStorageDirs() {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Temporales: archivos sin confirmar (tmp/) y su limpieza
+// ---------------------------------------------------------------------------
+
+const EDAD_MAXIMA_TMP_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Guarda un archivo pendiente de confirmación en <raíz>/tmp. Devuelve { ruta, absoluta }, con la
+ * ruta relativa a la raíz (tmp/<archivo>).
+ */
+export async function guardarTemporal(nombreSugerido, buffer) {
+  const carpeta = carpetaTmp();
+  await fs.mkdir(carpeta, { recursive: true });
+
+  const nombre = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}-${nombreSeguro(nombreSugerido)}`;
+  const absoluta = path.join(carpeta, nombre);
+  if (!dentroDe(carpeta, absoluta)) throw new Error('la ruta queda fuera del almacenamiento');
+
+  await fs.writeFile(absoluta, buffer, { flag: 'wx' });
+  return { ruta: `tmp/${nombre}`, absoluta };
+}
+
+/** Ruta absoluta de un temporal (tmp/<archivo>) o null si no es válida o no existe */
+async function resolverTemporal(ruta) {
+  const m = /^tmp\/([^/]+)$/.exec(String(ruta ?? '').replace(/\\/g, '/'));
+  if (!m) return null;
+  const absoluta = path.join(carpetaTmp(), path.basename(m[1]));
+  return dentroDe(carpetaTmp(), absoluta) && await existe(absoluta) ? absoluta : null;
+}
+
+/**
+ * Confirma un temporal: lo mueve a <tipo>/<mes de hoy>/ (mes de recepción en hora de Chile) y
+ * devuelve la ruta relativa definitiva. Quita el prefijo de tiempo del nombre temporal.
+ */
+export async function confirmarTemporal(ruta, tipo = 'cartolas', { prefijo = '' } = {}) {
+  const origen = await resolverTemporal(ruta);
+  if (!origen) throw new Error('el archivo temporal ya no existe');
+
+  const base = carpetaBase(tipo);
+  const mes = mesRecepcion();
+  const carpeta = await carpetaDelMes(tipo, mes);
+  // tmp/<timestamp>-<aleatorio>-<nombre> -> <prefijo><nombre>
+  const limpio = path.basename(origen).replace(/^\d+-[0-9a-f]{8}-/, '');
+  let nombre = nombreSeguro(`${prefijo}${limpio}`);
+  let destino = path.join(carpeta, nombre);
+
+  for (let intento = 0; ; intento++) {
+    if (!dentroDe(base, destino)) throw new Error('la ruta queda fuera del almacenamiento');
+    if (!(await existe(destino))) break;
+    if (intento >= 5) throw new Error('no se pudo elegir un nombre libre');
+    const extension = path.extname(nombre);
+    nombre = `${nombre.slice(0, nombre.length - extension.length)}-${crypto.randomBytes(3).toString('hex')}${extension}`;
+    destino = path.join(carpeta, nombre);
+  }
+
+  try {
+    await fs.rename(origen, destino);
+  } catch (error) {
+    if (error.code !== 'EXDEV') throw error;
+    await fs.copyFile(origen, destino);
+    await fs.unlink(origen);
+  }
+  return rutaRelativa(tipo, mes, nombre);
+}
+
+/** Borra un temporal sin confirmar; nunca lanza */
+export async function borrarTemporal(ruta) {
+  try {
+    const absoluta = await resolverTemporal(ruta);
+    if (!absoluta) return false;
+    await fs.unlink(absoluta);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Borra de tmp/ los archivos con más de 24 horas (o `maxEdadMs`). Devuelve cuántos borró.
+ * No registra nombres; nunca lanza.
+ */
+export async function limpiarTemporales(maxEdadMs = EDAD_MAXIMA_TMP_MS) {
+  let borrados = 0;
+  try {
+    const carpeta = carpetaTmp();
+    const entradas = await fs.readdir(carpeta, { withFileTypes: true });
+    const limite = Date.now() - maxEdadMs;
+    for (const entrada of entradas) {
+      if (!entrada.isFile()) continue;
+      const absoluta = path.join(carpeta, entrada.name);
+      try {
+        if ((await fs.stat(absoluta)).mtimeMs < limite) {
+          await fs.unlink(absoluta);
+          borrados++;
+        }
+      } catch {
+        // si un archivo no se puede revisar o borrar, se sigue con el resto
+      }
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.error(`[storage] limpieza de tmp: error_code=${error.code ?? 'desconocido'}`);
+    }
+  }
+  return borrados;
+}
+
+let temporizadorLimpieza = null;
+
+/**
+ * Limpia tmp/ al arrancar y luego cada hora, sin dependencias nuevas. El temporizador no
+ * mantiene vivo el proceso.
+ */
+export function iniciarLimpiezaTemporales() {
+  if (temporizadorLimpieza) return;
+  const ejecutar = async () => {
+    const n = await limpiarTemporales();
+    if (n > 0) console.log(`[storage] se borraron ${n} archivos temporales sin confirmar`);
+  };
+  ejecutar();
+  temporizadorLimpieza = setInterval(ejecutar, 60 * 60 * 1000);
+  temporizadorLimpieza.unref?.();
+}

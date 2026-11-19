@@ -9,7 +9,11 @@ import {
   carpetaBase,
   guardarBuffer,
   resolverArchivo,
-  borrarArchivo
+  borrarArchivo,
+  guardarTemporal,
+  confirmarTemporal,
+  borrarTemporal,
+  limpiarTemporales
 } from './storage.js';
 
 describe('helpers puros', () => {
@@ -93,5 +97,58 @@ describe('guardar, resolver y borrar', () => {
     process.env.RESPALDOS_PATH = respaldos;
 
     expect(await resolverArchivo('/uploads/respaldos/antiguo.jpg')).toBe(path.join(respaldos, 'antiguo.jpg'));
+  });
+});
+
+describe('temporales sin confirmar', () => {
+  const guardado = process.env.FINANZAS_STORAGE;
+  let raiz;
+
+  beforeEach(async () => {
+    raiz = await fs.mkdtemp(path.join(os.tmpdir(), 'finanzas-tmp-'));
+    process.env.FINANZAS_STORAGE = raiz;
+    delete process.env.CARTOLAS_PATH;
+  });
+
+  afterAll(() => {
+    if (guardado === undefined) delete process.env.FINANZAS_STORAGE;
+    else process.env.FINANZAS_STORAGE = guardado;
+  });
+
+  test('un pendiente vive en tmp/ y al confirmarlo pasa a cartolas/{YYYY-MM}/', async () => {
+    const tmp = await guardarTemporal('../cartola.pdf', Buffer.from('x'));
+    expect(tmp.ruta).toMatch(/^tmp\/\d+-[0-9a-f]{8}-cartola\.pdf$/);
+    expect(tmp.absoluta.startsWith(path.join(raiz, 'tmp'))).toBe(true);
+
+    const definitiva = await confirmarTemporal(tmp.ruta, 'cartolas', { prefijo: 'telegram_' });
+    expect(definitiva).toMatch(/^cartolas\/\d{4}-\d{2}\/telegram_cartola\.pdf$/);
+    expect(await resolverArchivo(definitiva)).not.toBeNull();
+    await expect(fs.access(tmp.absoluta)).rejects.toThrow();
+  });
+
+  test('confirmar un temporal que ya no existe falla', async () => {
+    await expect(confirmarTemporal('tmp/inexistente.pdf')).rejects.toThrow();
+  });
+
+  test('cancelar borra el temporal', async () => {
+    const tmp = await guardarTemporal('a.csv', Buffer.from('x'));
+
+    expect(await borrarTemporal(tmp.ruta)).toBe(true);
+    expect(await borrarTemporal(tmp.ruta)).toBe(false);
+  });
+
+  test('no se acepta una ruta que se salga de tmp/', async () => {
+    expect(await borrarTemporal('tmp/../../etc/passwd')).toBe(false);
+  });
+
+  test('la limpieza borra solo lo que supera la edad máxima', async () => {
+    const viejo = await guardarTemporal('viejo.csv', Buffer.from('x'));
+    const nuevo = await guardarTemporal('nuevo.csv', Buffer.from('x'));
+    const hace25h = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    await fs.utimes(viejo.absoluta, hace25h, hace25h);
+
+    expect(await limpiarTemporales()).toBe(1);
+    await expect(fs.access(viejo.absoluta)).rejects.toThrow();
+    await expect(fs.access(nuevo.absoluta)).resolves.toBeUndefined();
   });
 });

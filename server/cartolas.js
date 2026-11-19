@@ -302,3 +302,136 @@ export async function registrarImportacion({ archivo, hash, cuentaId, movimiento
 
   return { importados: registrados.length, registrados };
 }
+
+// ---------------------------------------------------------------------------
+// PDF: reglas sobre el texto y, si no alcanzan, interpretación con Gemini
+// ---------------------------------------------------------------------------
+
+/** Texto completo de un PDF (vacío si no tiene texto, por ejemplo un escaneo) */
+export async function extraerTextoPDF(buffer) {
+  const data = await pdfParse(buffer);
+  return String(data.text ?? '');
+}
+
+const PALABRAS_ABONO = /\b(abono|dep[oó]sito|sueldo|remuneraci|devoluci|reembolso|transferencia\s+(?:de|desde|recibida)|pago\s+recibido)/i;
+const PALABRAS_CARGO = /\b(cargo|compra|pago|giro|comisi[oó]n|retiro|impuesto|transferencia\s+(?:a|hacia|enviada)|avance)/i;
+
+/**
+ * Movimientos a partir del texto de un PDF con reglas. Solo se aceptan líneas con una fecha y
+ * exactamente un monto (si hay dos, probablemente uno es el saldo y es ambiguo). El tipo sale
+ * del signo del monto o de palabras como "abono" o "compra".
+ * @returns {{ movimientos: Array, lineasCandidatas: number, sinTipo: number }}
+ */
+export function movimientosDesdeTextoPDF(texto) {
+  const movimientos = [];
+  let lineasCandidatas = 0;
+  let sinTipo = 0;
+
+  const patronFecha = /(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})/;
+  const patronMonto = /([-+(]?)\s*\$?\s*(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d{4,})\)?(\s*-)?/g;
+
+  for (const linea of String(texto).split('\n')) {
+    const matchFecha = linea.match(patronFecha);
+    if (!matchFecha) continue;
+
+    const resto = linea.replace(matchFecha[0], ' ');
+    const montos = [...resto.matchAll(patronMonto)];
+    if (montos.length === 0) continue;
+    lineasCandidatas++;
+    if (montos.length !== 1) continue; // ambiguo (monto y saldo)
+
+    const [textoMonto, signoPrevio, numero, signoFinal] = montos[0];
+    const monto = Math.abs(normalizarMonto(numero));
+    const fecha = normalizarFecha(matchFecha[1]);
+    const descripcion = resto.replace(textoMonto, ' ').replace(/\s+/g, ' ').trim();
+    if (!fecha || !(monto > 0) || !descripcion) continue;
+
+    let tipo = null;
+    if (signoPrevio === '-' || signoPrevio === '(' || signoFinal) tipo = 'cargo';
+    else if (signoPrevio === '+') tipo = 'abono';
+    else if (PALABRAS_ABONO.test(descripcion)) tipo = 'abono';
+    else if (PALABRAS_CARGO.test(descripcion)) tipo = 'cargo';
+
+    if (!tipo) {
+      sinTipo++;
+      continue;
+    }
+    movimientos.push({ fecha, descripcion, monto, tipo });
+  }
+
+  return { movimientos, lineasCandidatas, sinTipo };
+}
+
+/**
+ * Enmascara números de cuenta y RUT antes de mandar texto a un servicio externo. Los montos
+ * (con puntos de miles) y las fechas se conservan.
+ */
+export function enmascararTextoCartola(texto) {
+  return String(texto)
+    .replace(/\b\d{1,2}(?:\.\d{3}){2}-[\dkK]\b/g, '[rut]')
+    .replace(/\b\d{7,8}-[\dkK]\b/g, '[rut]')
+    .replace(/\b(rut|r\.u\.t\.?)\s*:?\s*[\d.\-kK]+/gi, '$1 [rut]')
+    .replace(/\b(cuenta|cta\.?|n[°ºo]\.?|n[uú]mero)(\s+(?:corriente|vista|rut|ahorro|de))?\s*:?\s*\d[\d\- ]{5,}\d/gi, '$1$2 [cuenta]')
+    .replace(/\d(?:[ -]?\d){12,18}/g, '[número]')
+    .replace(/\d{9,}/g, '[cuenta]');
+}
+
+function fechaISOValida(texto) {
+  if (typeof texto !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(texto)) return false;
+  const [a, m, d] = texto.split('-').map(Number);
+  const f = new Date(Date.UTC(a, m - 1, d));
+  return f.getUTCFullYear() === a && f.getUTCMonth() === m - 1 && f.getUTCDate() === d;
+}
+
+/**
+ * Valida movimientos devueltos por una IA contra el texto original: fecha real, monto entero
+ * positivo, tipo cargo/abono y, para evitar datos inventados, el monto debe aparecer en el texto.
+ * Descarta los que no cumplen; devuelve { movimientos, descartados }.
+ */
+export function validarMovimientosIA(lista, textoOriginal) {
+  const digitos = String(textoOriginal).replace(/[^\d]/g, '');
+  const movimientos = [];
+  let descartados = 0;
+
+  for (const m of Array.isArray(lista) ? lista : []) {
+    const monto = typeof m?.monto === 'number' ? Math.round(m.monto) : NaN;
+    const descripcion = typeof m?.descripcion === 'string' ? m.descripcion.replace(/\s+/g, ' ').trim().slice(0, 200) : '';
+    const valido =
+      fechaISOValida(m?.fecha) && Number.isFinite(monto) && monto > 0 && descripcion &&
+      (m.tipo === 'cargo' || m.tipo === 'abono') && digitos.includes(String(monto));
+    if (valido) movimientos.push({ fecha: m.fecha, descripcion, monto, tipo: m.tipo });
+    else descartados++;
+  }
+  return { movimientos, descartados };
+}
+
+const MIN_MOVIMIENTOS_REGLAS = 3;
+
+/**
+ * Analiza un PDF de cartola. Primero con reglas; si no alcanzan (menos de 3 movimientos o alguna
+ * línea sin tipo claro) y se entrega `interpretarConIA`, manda a esa función SOLO el texto ya
+ * enmascarado. Devuelve { movimientos, origen: 'reglas' | 'ia' | null, legible }.
+ * `legible` es false si el PDF no tiene texto extraíble.
+ */
+export async function analizarPDF(buffer, { interpretarConIA = null } = {}) {
+  let texto = '';
+  try {
+    texto = await extraerTextoPDF(buffer);
+  } catch {
+    return { movimientos: [], origen: null, legible: false };
+  }
+  if (texto.trim().length < 30) return { movimientos: [], origen: null, legible: false };
+
+  const reglas = movimientosDesdeTextoPDF(texto);
+  if (reglas.movimientos.length >= MIN_MOVIMIENTOS_REGLAS && reglas.sinTipo === 0) {
+    return { movimientos: reglas.movimientos, origen: 'reglas', legible: true };
+  }
+
+  if (interpretarConIA) {
+    const lista = await interpretarConIA(enmascararTextoCartola(texto));
+    const { movimientos } = validarMovimientosIA(lista, texto);
+    if (movimientos.length > 0) return { movimientos, origen: 'ia', legible: true };
+  }
+
+  return { movimientos: [], origen: null, legible: true };
+}

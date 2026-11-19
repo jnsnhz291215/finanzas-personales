@@ -1,82 +1,142 @@
 /**
- * Importación de cartolas (CSV y Excel) desde Telegram. El archivo ya se guardó con storage.js
- * en cartolas/{YYYY-MM}/; aquí se detectan los movimientos, se pregunta a qué cuenta importarlos
- * y, después, se avisa de las transferencias que parecen pagos de una compra en cuotas
- * (buscarCuotasPorCartola, vía ofrecerPagoPorCartola), siempre con botones: nunca se asigna sola.
+ * Importación de cartolas (CSV, Excel y PDF) desde Telegram.
  *
- * Los PDF requieren revisión manual y no se importan desde aquí. No se registran en consola ni
- * nombres de archivo ni contenido de cartolas.
+ * Flujo: el archivo se guarda como pendiente en tmp/ (no en cartolas/); se detectan los
+ * movimientos y, solo cuando se confirma la importación, se mueve a cartolas/{YYYY-MM}/.
+ * Los pendientes sin confirmar se borran solos a las 24 horas (storage.js).
+ *
+ *  - CSV y Excel: resumen y elegir la cuenta.
+ *  - PDF (menos confiable): lectura con reglas y, si no alcanzan, con Gemini usando solo el texto
+ *    extraído con números de cuenta y RUT enmascarados. Muestra una vista previa y pide
+ *    confirmación (Importar, Cancelar) antes de elegir la cuenta.
+ *
+ * Después se hace el chequeo de duplicados por hash, la autocategorización y las preguntas de
+ * cuotas (buscarCuotasPorCartola, siempre con botones). No se registran en consola ni nombres
+ * de archivo ni contenido de cartolas.
  */
 
-import { analizarCartola, calcularHashBuffer, cartolaYaImportada, registrarImportacion } from '../cartolas.js';
+import { analizarCartola, analizarPDF, calcularHashBuffer, cartolaYaImportada, registrarImportacion } from '../cartolas.js';
 import { listarCuentasActivas } from '../gestion.js';
 import { listarCompras } from '../cuotas.js';
 import { calzarConCartola } from './cuotas.js';
-import { borrarArchivo } from '../storage.js';
+import { guardarTemporal, confirmarTemporal, borrarTemporal } from '../storage.js';
+import { interpretarMovimientosCartola } from './gemini.js';
 import { formatearFechaCL } from './fechas.js';
 
-const ESPERA_MS = 15 * 60 * 1000;
+// Tiempo que se recuerda una importación pendiente en memoria (el archivo en tmp/ dura 24 horas)
+const ESPERA_MS = 2 * 60 * 60 * 1000;
 // Máximo de preguntas de cuotas seguidas tras una importación
 const MAX_PREGUNTAS_CUOTAS = 5;
+// Movimientos que se muestran en la vista previa de un PDF
+const FILAS_VISTA_PREVIA = 8;
 
 export function crearCartolas(ctx) {
   const { enviar, editar, responderCallback, esc, formatearMonto, ofrecerPagoPorCartola } = ctx;
 
-  // Importaciones pendientes de elegir cuenta: clave -> { ruta, hash, movimientos }
+  // Importaciones pendientes: clave -> { tmp, hash, movimientos, esPDF, origen }
   const pendientes = new Map();
 
   const dinero = (n) => `$${formatearMonto(n)}`;
 
-  /**
-   * Ofrece importar una cartola ya guardada. `ruta` es la ruta relativa a la raíz del
-   * almacenamiento. Devuelve 'ofrecida', 'duplicada' o 'sin_movimientos' (el archivo queda guardado
-   * para revisarlo en la web).
-   */
-  async function ofrecerImportacion(chatId, { ruta, buffer, ext }) {
-    let analisis;
-    try {
-      analisis = await analizarCartola(buffer, ext);
-    } catch {
-      return 'sin_movimientos';
-    }
-    if (analisis.esManual || analisis.movimientos.length === 0) return 'sin_movimientos';
-
-    const hash = calcularHashBuffer(buffer);
-    if (await cartolaYaImportada(hash)) {
-      await borrarArchivo(ruta);
-      await enviar(chatId, 'Esta cartola ya fue importada antes, así que no la importé de nuevo.');
-      return 'duplicada';
-    }
-
-    const cuentas = await listarCuentasActivas();
-    if (cuentas.length === 0) {
-      await enviar(chatId, 'No tienes cuentas activas. Crea una con /savecard y vuelve a enviar la cartola.');
-      return 'ofrecida';
-    }
-
-    const { movimientos } = analisis;
+  function resumenTexto(movimientos) {
     const cargos = movimientos.filter(m => m.tipo === 'cargo');
     const abonos = movimientos.filter(m => m.tipo === 'abono');
     const fechas = movimientos.map(m => m.fecha).sort();
     const suma = (lista) => lista.reduce((total, m) => total + m.monto, 0);
-
-    const key = `${chatId}_${Date.now()}`;
-    pendientes.set(key, { ruta, hash, movimientos });
-    setTimeout(() => pendientes.delete(key), ESPERA_MS);
-
-    await enviar(chatId,
-      '<b>Cartola recibida</b>\n\n' +
-      `Formato detectado: ${esc(analisis.formato?.banco ?? 'desconocido')}\n` +
+    return (
       `Movimientos: ${movimientos.length} (del ${formatearFechaCL(fechas[0])} al ${formatearFechaCL(fechas[fechas.length - 1])})\n` +
       `Cargos: ${cargos.length} por ${dinero(suma(cargos))}\n` +
-      `Abonos: ${abonos.length} por ${dinero(suma(abonos))}\n\n` +
-      '¿En qué cuenta los importo?',
+      `Abonos: ${abonos.length} por ${dinero(suma(abonos))}`
+    );
+  }
+
+  function vistaPrevia(movimientos) {
+    const filas = movimientos.slice(0, FILAS_VISTA_PREVIA).map(m => {
+      const descripcion = m.descripcion.length > 30 ? `${m.descripcion.slice(0, 29)}...` : m.descripcion;
+      return `${formatearFechaCL(m.fecha)} - ${esc(descripcion)} - ${m.tipo === 'cargo' ? '-' : '+'}${dinero(m.monto)}`;
+    });
+    const resto = movimientos.length - filas.length;
+    return filas.join('\n') + (resto > 0 ? `\n... y ${resto} más` : '');
+  }
+
+  /** Pregunta en qué cuenta importar (edita el mensaje dado o envía uno nuevo) */
+  async function pedirCuenta(chatId, key, encabezado, messageId = null) {
+    const cuentas = await listarCuentasActivas();
+    if (cuentas.length === 0) {
+      const pendiente = pendientes.get(key);
+      pendientes.delete(key);
+      if (pendiente) await borrarTemporal(pendiente.tmp);
+      await enviar(chatId, 'No tienes cuentas activas. Crea una con /savecard y vuelve a enviar la cartola.');
+      return;
+    }
+
+    const texto = `${encabezado}\n\n¿En qué cuenta los importo?`;
+    const opciones = {
+      reply_markup: {
+        inline_keyboard: [
+          ...cuentas.map(c => [{ text: `Importar en ${c.nombre}`.slice(0, 40), callback_data: `cai_${key}_${c.id}` }]),
+          [{ text: 'Cancelar', callback_data: `cax_${key}` }]
+        ]
+      }
+    };
+    const editado = messageId ? await editar(texto, { chat_id: chatId, message_id: messageId, ...opciones }) : null;
+    if (!editado) await enviar(chatId, texto, opciones);
+  }
+
+  /**
+   * Analiza una cartola recibida y ofrece importarla. El archivo se guarda en tmp/ solo si hay
+   * movimientos que importar. Devuelve 'ofrecida', 'duplicada' o 'ilegible' (no se pudieron leer
+   * movimientos: quien llama decide qué hacer con el archivo).
+   */
+  async function ofrecerImportacion(chatId, { nombre, buffer, ext }) {
+    const hash = calcularHashBuffer(buffer);
+    if (await cartolaYaImportada(hash)) {
+      await enviar(chatId, 'Esta cartola ya fue importada antes, así que no la importé de nuevo.');
+      return 'duplicada';
+    }
+
+    const esPDF = ext === '.pdf';
+    let movimientos = [];
+    let origen = null;
+    let formato = null;
+    try {
+      if (esPDF) {
+        const r = await analizarPDF(buffer, { interpretarConIA: interpretarMovimientosCartola });
+        movimientos = r.movimientos;
+        origen = r.origen;
+      } else {
+        const r = await analizarCartola(buffer, ext);
+        movimientos = r.esManual ? [] : r.movimientos;
+        formato = r.formato?.banco ?? null;
+      }
+    } catch {
+      return 'ilegible';
+    }
+    if (movimientos.length === 0) return 'ilegible';
+
+    const tmp = await guardarTemporal(nombre, buffer);
+    const key = `${chatId}_${Date.now()}`;
+    pendientes.set(key, { tmp: tmp.ruta, hash, movimientos, esPDF, origen });
+    setTimeout(async () => {
+      if (pendientes.delete(key)) await borrarTemporal(tmp.ruta);
+    }, ESPERA_MS);
+
+    if (!esPDF) {
+      await pedirCuenta(chatId, key, `<b>Cartola recibida</b>\n\nFormato detectado: ${esc(formato ?? 'desconocido')}\n${resumenTexto(movimientos)}`);
+      return 'ofrecida';
+    }
+
+    // PDF: lectura menos confiable, se muestra una vista previa y se pide confirmar antes de elegir cuenta
+    await enviar(chatId,
+      '<b>Cartola en PDF leída</b>\n\n' +
+      `Lectura automática ${origen === 'ia' ? 'con ayuda de IA' : 'por reglas'}: revisa que los datos sean correctos.\n\n` +
+      `${resumenTexto(movimientos)}\n\n<b>Primeros movimientos:</b>\n${vistaPrevia(movimientos)}`,
       {
         reply_markup: {
-          inline_keyboard: [
-            ...cuentas.map(c => [{ text: `Importar en ${c.nombre}`.slice(0, 40), callback_data: `cai_${key}_${c.id}` }]),
-            [{ text: 'Cancelar', callback_data: `cax_${key}` }]
-          ]
+          inline_keyboard: [[
+            { text: 'Importar', callback_data: `cap_${key}` },
+            { text: 'Cancelar', callback_data: `cax_${key}` }
+          ]]
         }
       }
     );
@@ -109,6 +169,19 @@ export function crearCartolas(ctx) {
     const messageId = cb.message.message_id;
     let m;
 
+    // PDF: confirmada la vista previa, se elige la cuenta
+    if (data.startsWith('cap_')) {
+      const key = data.replace('cap_', '');
+      const pendiente = pendientes.get(key);
+      if (!pendiente) {
+        await responderCallback(cb.id, { text: 'Solicitud expirada' });
+        return true;
+      }
+      await responderCallback(cb.id, {});
+      await pedirCuenta(chatId, key, `<b>Cartola en PDF</b>\n\n${resumenTexto(pendiente.movimientos)}`, messageId);
+      return true;
+    }
+
     if ((m = data.match(/^cai_(.+)_(\d+)$/))) {
       const pendiente = pendientes.get(m[1]);
       if (!pendiente) {
@@ -123,8 +196,18 @@ export function crearCartolas(ctx) {
         }
         pendientes.delete(m[1]);
 
+        // Recién ahora el archivo pasa de tmp/ a cartolas/{YYYY-MM}/
+        let ruta;
+        try {
+          ruta = await confirmarTemporal(pendiente.tmp, 'cartolas', { prefijo: 'telegram_' });
+        } catch {
+          await editar('El archivo venció antes de confirmar. Envíalo de nuevo.', { chat_id: chatId, message_id: messageId });
+          await responderCallback(cb.id, { text: 'Archivo vencido' });
+          return true;
+        }
+
         const { importados, registrados } = await registrarImportacion({
-          archivo: pendiente.ruta,
+          archivo: ruta,
           hash: pendiente.hash,
           cuentaId: cuenta.id,
           movimientos: pendiente.movimientos
@@ -144,7 +227,7 @@ export function crearCartolas(ctx) {
       const key = data.replace('cax_', '');
       const pendiente = pendientes.get(key);
       pendientes.delete(key);
-      if (pendiente) await borrarArchivo(pendiente.ruta);
+      if (pendiente) await borrarTemporal(pendiente.tmp);
       await editar('Importación cancelada. Descarté el archivo.', { chat_id: chatId, message_id: messageId });
       await responderCallback(cb.id, { text: 'Cancelada' });
       return true;
