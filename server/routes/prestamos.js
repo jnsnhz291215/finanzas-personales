@@ -1,6 +1,7 @@
 import express from 'express';
 import { query } from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
+import { resumenDeudas, registrarPagoDeuda } from '../deudas.js';
 
 const router = express.Router();
 
@@ -9,49 +10,7 @@ router.use(requireAuth);
 // Obtener resumen de préstamos por persona
 router.get('/resumen', async (req, res) => {
   try {
-    const [movimientos] = await query(`
-      SELECT 
-        persona_prestamo,
-        SUM(CASE WHEN tipo = 'cargo' THEN monto ELSE -monto END) as saldo_movimientos
-      FROM movimientos
-      WHERE es_prestamo = true AND persona_prestamo IS NOT NULL
-      GROUP BY persona_prestamo
-    `);
-    
-    const [pagos] = await query(`
-      SELECT 
-        persona,
-        SUM(monto) as total_pagos
-      FROM pagos_prestamos
-      GROUP BY persona
-    `);
-    
-    // Combinar saldos
-    const resumen = {};
-    
-    movimientos.forEach(m => {
-      resumen[m.persona_prestamo] = {
-        persona: m.persona_prestamo,
-        movimientos: parseFloat(m.saldo_movimientos),
-        pagos: 0,
-        saldo: parseFloat(m.saldo_movimientos)
-      };
-    });
-    
-    pagos.forEach(p => {
-      if (!resumen[p.persona]) {
-        resumen[p.persona] = {
-          persona: p.persona,
-          movimientos: 0,
-          pagos: 0,
-          saldo: 0
-        };
-      }
-      resumen[p.persona].pagos = parseFloat(p.total_pagos);
-      resumen[p.persona].saldo = resumen[p.persona].movimientos - resumen[p.persona].pagos;
-    });
-    
-    res.json(Object.values(resumen));
+    res.json(await resumenDeudas());
   } catch (error) {
     console.error('Error al obtener resumen de préstamos:', error);
     res.status(500).json({ error: 'Error al obtener resumen' });
@@ -85,13 +44,7 @@ router.post('/pagos', async (req, res) => {
       return res.status(400).json({ error: 'Persona, monto y fecha son requeridos' });
     }
     
-    const [result] = await query(
-      'INSERT INTO pagos_prestamos (persona, monto, fecha, notas) VALUES (?, ?, ?, ?)',
-      [persona, monto, fecha, notas || null]
-    );
-    
-    const [nuevoPago] = await query('SELECT * FROM pagos_prestamos WHERE id = ?', [result.insertId]);
-    res.status(201).json(nuevoPago[0]);
+    res.status(201).json(await registrarPagoDeuda({ persona, monto, fecha, notas }));
   } catch (error) {
     console.error('Error al registrar pago:', error);
     res.status(500).json({ error: 'Error al registrar pago' });

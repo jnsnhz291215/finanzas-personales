@@ -95,19 +95,30 @@ source database/crear_usuario.sql
 exit
 ```
 
-### 3. Configurar Rutas de Almacenamiento
+### 3. Configurar el Almacenamiento
+
+Todos los archivos (cartolas, comprobantes y lo que se manda al bot) viven bajo **una sola raíz**,
+`FINANZAS_STORAGE`, ordenados por tipo y por mes de recepción (hora de Chile):
+
+```
+<FINANZAS_STORAGE>/
+├── cartolas/{YYYY-MM}/       cartolas importadas (web y bot)
+├── comprobantes/{YYYY-MM}/   comprobantes de cuotas y respaldos de movimientos
+├── archivos/{YYYY-MM}/       otros archivos que se mandan al bot
+└── tmp/
+```
+
+- **Producción** (junto a las apps de Basalto): `FINANZAS_STORAGE=/home/basalto/apps/finanzas-juan/storage`
+- **Desarrollo**: si la variable está vacía se usa `storage/` en la raíz del repo (ignorada por git).
+- El servidor crea las carpetas al arrancar; la raíz debe poder escribirse.
+- En la base de datos se guarda la ruta relativa a la raíz, por ejemplo `comprobantes/2026-11/respaldo_cuota_123_foto.jpg`.
+- `CARTOLAS_PATH` y `RESPALDOS_PATH` están **obsoletas**: si siguen definidas mandan para su tipo y el servidor avisa al
+  arrancar. Los registros anteriores (`/uploads/respaldos/<archivo>`, rutas absolutas de cartolas) se siguen resolviendo y los
+  archivos existentes **no se mueven**.
 
 ```bash
-# Crear carpetas en el NAS o servidor (ajustar rutas según tu configuración)
-mkdir -p /ruta/al/nas/finanzas-juan/uploads
-mkdir -p /ruta/al/nas/finanzas-juan/cartolas
-mkdir -p /ruta/al/nas/finanzas-juan/respaldos
-
-# Dar permisos de escritura
-chmod 755 /ruta/al/nas/finanzas-juan
-chmod 755 /ruta/al/nas/finanzas-juan/uploads
-chmod 755 /ruta/al/nas/finanzas-juan/cartolas
-chmod 755 /ruta/al/nas/finanzas-juan/respaldos
+mkdir -p /home/basalto/apps/finanzas-juan/storage
+chmod 755 /home/basalto/apps/finanzas-juan/storage
 ```
 
 ### 4. Configurar Variables de Entorno
@@ -138,10 +149,8 @@ SESSION_SECRET=genera_uno_con_openssl_rand_base64_32
 # Contraseña inicial (cambiarla después del primer login)
 ADMIN_PASSWORD=cambiar123
 
-# Rutas de almacenamiento (AJUSTAR A TU SERVIDOR/NAS)
-UPLOADS_PATH=/ruta/al/nas/finanzas-juan/uploads
-CARTOLAS_PATH=/ruta/al/nas/finanzas-juan/cartolas
-RESPALDOS_PATH=/ruta/al/nas/finanzas-juan/respaldos
+# Raíz del almacenamiento (ver la sección Configurar el Almacenamiento)
+FINANZAS_STORAGE=/home/basalto/apps/finanzas-juan/storage
 ```
 
 ### 5. Instalar Dependencias
@@ -156,13 +165,29 @@ npm install
 cd ..
 ```
 
-### 6. Compilar el Frontend
+### 6. Compilar el Frontend (opcional)
+
+La aplicación se puede usar solo desde el bot de Telegram. El servidor **no sirve la web por defecto**:
+la API y el bot funcionan igual y no hace falta compilar el frontend.
+
+Si quieres usar también la web, compílala y actívala en el `.env`:
 
 ```bash
 npm run build:client
 ```
 
+```env
+SERVIR_FRONTEND=true
+```
+
+Con `SERVIR_FRONTEND=false` (o sin la variable) el servidor no sirve `client/dist`. El código del frontend
+se conserva en `client/`.
+
 ### 7. Configurar PM2
+
+> **La app debe correr bajo PM2 con `autorestart`.** `ecosystem.config.cjs` ya lo trae (`autorestart: true` y
+> `NODE_ENV=production`). Los comandos `/reboot` y `/update` del bot terminan el proceso con `process.exit(0)` y es PM2 quien
+> lo vuelve a levantar; sin PM2 (o sin autorestart) la app se quedaría apagada.
 
 ```bash
 # Iniciar con PM2
@@ -362,6 +387,176 @@ pm2 restart finanzas-personales
 3. Ingresar texto a buscar (ej: "uber")
 4. Seleccionar categoría (ej: "Transporte")
 5. Al importar, movimientos con "uber" se categorizarán automáticamente
+
+## 🤖 Bot de Telegram
+
+La aplicación incluye un bot de Telegram para registrar gastos/ingresos y consultar información desde tu móvil.
+
+### Configuración del Bot
+
+1. **Crear el bot en Telegram**:
+   - Habla con [@BotFather](https://t.me/botfather) en Telegram
+   - Envía `/newbot` y sigue las instrucciones
+   - Guarda el token que te entrega (parecido a `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`)
+
+2. **Obtener tu Chat ID**:
+   - Busca tu bot en Telegram y envíale `/miid`
+   - El bot te responderá con tu chat ID (un número como `123456789`)
+   - Copia este número
+
+3. **Configurar en el servidor**:
+   
+   Si aún no tienes un archivo `.env`, créalo desde el ejemplo:
+   ```bash
+   cp .env.example .env
+   ```
+   
+   Edita tu archivo `.env` y agrega:
+   ```env
+   # Token del bot (obtenido de @BotFather)
+   TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+   
+   # Tu chat ID (obtenido con /miid)
+   TELEGRAM_ALLOWED_CHAT_IDS=123456789
+   ```
+   
+   Si quieres autorizar varios chat IDs (por ejemplo, tu móvil y tu PC), sepáralos con comas:
+   ```env
+   TELEGRAM_ALLOWED_CHAT_IDS=123456789,987654321
+   ```
+
+4. **Reiniciar el servidor**:
+   ```bash
+   pm2 restart finanzas-personales
+   pm2 logs finanzas-personales
+   ```
+   
+   Deberías ver: `✓ Bot de Telegram iniciado (long polling)`
+
+### Uso del Bot
+
+#### Registrar Gastos e Ingresos
+
+Escribe en lenguaje natural. El bot entiende:
+
+**Montos**:
+- `12500`, `12.500`, `$12.500` (formato chileno)
+- `5 lucas`, `5k` (miles de pesos)
+
+**Fechas**:
+- `hoy`, `ayer`, `anteayer`
+- `lunes`, `martes`, etc. (asume la semana pasada)
+- `15/11`, `15-11` (día/mes del año actual)
+
+**Medios de pago**:
+- `con débito`, `con crédito`, `con la CMR`
+- `en efectivo`, `por transferencia`
+
+**Ejemplos**:
+```
+ayer pagué 12.500 en el super con débito
+gasté 5 lucas en uber con la CMR
+hoy pagué $2.500 en el metro
+me pagaron 300.000 de sueldo
+el 15/11 compré en jumbo con crédito $45.000
+```
+
+El bot te mostrará un resumen y te pedirá confirmar antes de guardar.
+
+#### Comandos Disponibles
+
+- `/start` - Iniciar el bot y ver instrucciones
+- `/ayuda` - Ver todos los comandos disponibles
+- `/resumen` - Resumen del mes actual (ingresos, gastos, saldo)
+- `/ultimos` - Ver los últimos 10 movimientos
+- `/borrar_ultimo` - Eliminar el último movimiento (con confirmación)
+- `/miid` - Obtener tu chat ID
+
+#### Importar Cartolas
+
+Envía directamente un archivo de cartola (**CSV, Excel o PDF**) al bot y se importa completo desde Telegram:
+
+1. El bot lee los movimientos y muestra un resumen (cantidad, rango de fechas, cargos y abonos).
+2. **PDF:** la lectura es menos confiable, así que antes de elegir la cuenta muestra una **vista previa** de los primeros
+   movimientos y pide confirmar con los botones *Importar* o *Cancelar*. Primero intenta leerlo con reglas sobre el texto; si
+   no alcanzan, y hay `GEMINI_API_KEY`, usa Gemini **solo con el texto extraído**, con los números de cuenta y los RUT
+   enmascarados, y descarta cualquier movimiento cuyo monto no aparezca en el texto.
+3. Eliges la cuenta. Se aplican las reglas de autocategorización y se evitan duplicados (mismo archivo = mismo hash).
+4. Si una transferencia calza con el alias de cartola de una compra en cuotas, el bot pregunta con botones si es un pago de cuota.
+
+Mientras no confirmes, el archivo espera en `tmp/` y solo pasa a `cartolas/{YYYY-MM}/` al importar. Los archivos sin confirmar se
+borran solos a las 24 horas (se revisa al arrancar el servidor y cada hora). Si un archivo no se puede leer de ninguna forma, el
+bot lo dice y lo deja guardado en `cartolas/{YYYY-MM}/`.
+
+#### Enviar Respaldos
+
+Envía fotos de boletas o comprobantes. Se guardarán en la carpeta de uploads del servidor.
+
+### Interpretación con Gemini (opcional)
+
+El bot primero lee tus mensajes con un parser de reglas. Si no encuentra el monto o la categoría, puede pedirle ayuda a Gemini para entender mensajes escritos de forma libre.
+
+1. Crea una API key en [Google AI Studio](https://aistudio.google.com/apikey).
+2. Agrega a tu `.env`:
+   ```env
+   GEMINI_API_KEY=tu_api_key
+   # Opcional; por defecto gemini-2.5-flash
+   GEMINI_MODEL=gemini-2.5-flash
+   ```
+3. Reinicia el servidor.
+
+- Sin `GEMINI_API_KEY` el bot funciona exactamente igual que antes.
+- Si Gemini tarda más de 8 segundos o falla, el bot sigue con el resultado de las reglas (o responde que no detectó un monto).
+- Al usarlo, **el texto del mensaje, la fecha de hoy, tus nombres de categorías y los medios de pago se envían a Google**. No se envían montos de la base de datos ni otros movimientos.
+- Los errores se registran solo con código y mensaje, nunca con la key.
+- Los montos aproximados ("57 mil y algo") se marcan en la confirmación; puedes responder con el número exacto antes de apretar Guardar.
+
+### Reiniciar y actualizar desde el bot
+
+Solo para los chats de `TELEGRAM_ALLOWED_CHAT_IDS` y solo con `NODE_ENV=production` (en desarrollo se bloquean para no cerrar
+`npm run dev`). Ambos piden confirmación con botones.
+
+- **`/reboot`**: responde "Reiniciando...", escribe `tmp/reinicio.json` (en la raíz de `FINANZAS_STORAGE`) y termina el proceso
+  1,5 segundos después; PM2 lo levanta de nuevo. Al arrancar, el bot avisa "Listo, volví a estar en línea" con la versión actual.
+- **`/update`**: ejecuta `git pull --ff-only` en la raíz del repositorio. Si falla o hay conflictos, no reinicia y manda las últimas
+  líneas del error (sin rutas del servidor ni nada de `.env`). Si no hubo cambios, avisa "Ya estaba al día" y no reinicia. Si
+  cambió `package.json` o `package-lock.json`, ejecuta `npm ci --omit=dev` (si falla, no reinicia). Si todo sale bien, muestra la
+  versión anterior y la nueva, los títulos de hasta 10 commits nuevos y reinicia como `/reboot`.
+
+Los comandos del sistema se ejecutan con `execFile` (sin shell) y con tiempo máximo, y ningún argumento viene de texto escrito por
+el usuario. El usuario que corre PM2 necesita permiso para `git pull` (con credenciales sin contraseña, por ejemplo una deploy key)
+y para escribir en el repositorio y en `node_modules`.
+
+### Seguridad
+
+- El bot **solo responde a los chat IDs autorizados** configurados en `.env`
+- Cualquier otro usuario que intente usar el bot recibirá un mensaje de "No autorizado"
+- El comando `/miid` es el único disponible para usuarios no autorizados (para que puedas obtener tu chat ID)
+- El bot usa **long polling** (no webhook), por lo que no necesitas exponer puertos ni configurar HTTPS
+
+### Solución de Problemas
+
+**El bot no responde**:
+```bash
+# Ver logs
+pm2 logs finanzas-personales
+
+# Verificar que el token esté configurado
+grep TELEGRAM_BOT_TOKEN .env
+
+# Reiniciar
+pm2 restart finanzas-personales
+```
+
+**"No estás autorizado"**:
+- Envía `/miid` al bot para obtener tu chat ID
+- Verifica que ese ID esté en `TELEGRAM_ALLOWED_CHAT_IDS` en `.env`
+- Reinicia el servidor después de modificar `.env`
+
+**El bot no detecta correctamente los montos o fechas**:
+- Revisa los ejemplos de formato en `/ayuda`
+- Asegúrate de incluir el monto en el mensaje
+- Las fechas son opcionales (por defecto usa "hoy")
 
 ## 🔄 Actualizaciones
 

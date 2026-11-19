@@ -8,7 +8,9 @@
     "dev": "node server/index.js",
     "start": "NODE_ENV=production node server/index.js",
     "build:client": "cd client && npm run build",
-    "install:all": "npm install && cd client && npm install"
+    "install:all": "npm install && cd client && npm install",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:telegram": "node --experimental-vm-modules node_modules/jest/bin/jest.js server/telegram/parser.test.js"
   },
   "keywords": [
     "finanzas",
@@ -27,10 +29,12 @@
     "express-session": "^1.17.3",
     "multer": "^1.4.5-lts.1",
     "mysql2": "^3.6.5",
+    "node-telegram-bot-api": "^0.66.0",
     "pdf-parse": "^1.1.1",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "jest": "^30.5.2",
     "puppeteer-core": "^25.17.0"
   }
 }

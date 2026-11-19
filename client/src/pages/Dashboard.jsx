@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../utils/api';
-import { formatCLP, nombreMes, mesAnioActual } from '../utils/format';
+import { formatCLP, formatFecha, nombreMes, mesAnioActual } from '../utils/format';
+import { tipoEfectivo, infoTipo, estiloMonto } from '../utils/tiposMovimiento';
 import { Chart as ChartJS, ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, Title } from 'chart.js';
 import { Pie, Bar } from 'react-chartjs-2';
 
@@ -11,6 +12,8 @@ export default function Dashboard() {
   const [resumen, setResumen] = useState(null);
   const [tarjetas, setTarjetas] = useState([]);
   const [prestamos, setPrestamos] = useState([]);
+  const [recientes, setRecientes] = useState([]);
+  const [plan, setPlan] = useState(null);
   const [cargando, setCargando] = useState(true);
   const { mes, anio } = mesAnioActual();
 
@@ -20,15 +23,20 @@ export default function Dashboard() {
 
   const cargarDatos = async () => {
     try {
-      const [resumenRes, tarjetasRes, prestamosRes] = await Promise.all([
+      const [resumenRes, tarjetasRes, prestamosRes, recientesRes] = await Promise.all([
         api.get(`/dashboard/resumen?mes=${mes}&anio=${anio}`),
         api.get('/dashboard/tarjetas'),
-        api.get('/dashboard/prestamos-pendientes')
+        api.get('/dashboard/prestamos-pendientes'),
+        api.get('/dashboard/recientes?limite=10')
       ]);
+
+      // El plan de ahorro es opcional: si falla, el panel se muestra igual
+      api.get('/plan-ahorro').then(res => setPlan(res.data.resumen)).catch(() => setPlan(null));
 
       setResumen(resumenRes.data);
       setTarjetas(tarjetasRes.data);
       setPrestamos(prestamosRes.data);
+      setRecientes(recientesRes.data);
     } catch (error) {
       console.error('Error al cargar dashboard:', error);
     } finally {
@@ -282,6 +290,73 @@ export default function Dashboard() {
                 </span>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Plan de ahorro */}
+      {plan && (
+        <Link to="/plan-ahorro" className="card hover:shadow-md transition-shadow cursor-pointer block">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center">
+              <div className="w-12 h-12 bg-green-200 rounded-full flex items-center justify-center mr-4">
+                <i className="fas fa-piggy-bank text-green-700 text-xl"></i>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-600">Plan de ahorro</p>
+                <p className={`text-xl font-bold ${plan.disponible >= 0 ? 'text-blue-900' : 'text-orange-900'}`}>
+                  {formatCLP(plan.disponible)} <span className="text-sm font-normal text-gray-600">para gastar</span>
+                </p>
+              </div>
+            </div>
+            <div className="text-right">
+              <p className="text-xs text-gray-500">Meta de ahorro</p>
+              <p className="font-semibold text-green-700">{formatCLP(plan.metaAhorro)}</p>
+              <p className="text-xs text-blue-600 mt-1">Ver plan <i className="fas fa-arrow-right ml-1"></i></p>
+            </div>
+          </div>
+        </Link>
+      )}
+
+      {/* Movimientos Recientes */}
+      {recientes.length > 0 && (
+        <div className="card">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-lg font-semibold text-gray-900">
+              <i className="fas fa-clock-rotate-left mr-2"></i>
+              Movimientos Recientes
+            </h2>
+            <Link to="/movimientos" className="text-sm text-blue-600 hover:text-blue-700">
+              Ver todos <i className="fas fa-arrow-right ml-1"></i>
+            </Link>
+          </div>
+          <div className="space-y-2">
+            {recientes.map(mov => {
+              const tipoMov = infoTipo(tipoEfectivo(mov));
+              const monto = estiloMonto(mov);
+              return (
+                <div key={mov.id} className="flex justify-between items-center py-2 border-b border-gray-100 last:border-0">
+                  <div className="flex items-center min-w-0">
+                    <i className={`fas ${tipoMov.icon} ${tipoMov.color} w-6 text-center mr-3`} title={tipoMov.label}></i>
+                    <div className="min-w-0">
+                      <div className="font-medium text-gray-900 truncate">{mov.descripcion}</div>
+                      <div className="text-xs text-gray-500">
+                        {formatFecha(mov.fecha)} · {mov.cuenta_nombre}
+                        {mov.cuenta_destino_nombre && (
+                          <span className="text-blue-600">
+                            <i className="fas fa-arrow-right mx-1"></i>
+                            {mov.cuenta_destino_nombre}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <span className={`font-semibold ml-4 whitespace-nowrap ${monto.clase}`}>
+                    {monto.signo}{formatCLP(mov.monto)}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

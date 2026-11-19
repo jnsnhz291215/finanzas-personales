@@ -11,7 +11,10 @@ import movimientosRoutes from './routes/movimientos.js';
 import importarRoutes from './routes/importar.js';
 import dashboardRoutes from './routes/dashboard.js';
 import prestamosRoutes from './routes/prestamos.js';
+import { planAhorroRouter, gastosFijosRouter } from './routes/planAhorro.js';
+import { ensureStorageDirs, iniciarLimpiezaTemporales } from './storage.js';
 import { inicializarDB } from './db.js';
+import { iniciarBot, detenerBot } from './telegram/bot.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -53,9 +56,12 @@ app.use('/api/movimientos', movimientosRoutes);
 app.use('/api/importar', importarRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/prestamos', prestamosRoutes);
+app.use('/api/plan-ahorro', planAhorroRouter);
+app.use('/api/gastos-fijos', gastosFijosRouter);
 
-// Servir frontend en producción
-if (process.env.NODE_ENV === 'production') {
+// Servir el frontend (client/dist) solo si SERVIR_FRONTEND=true. Por defecto no se sirve:
+// la app se usa desde el bot de Telegram y la API sigue disponible.
+if (process.env.SERVIR_FRONTEND === 'true') {
   app.use(express.static(path.join(__dirname, '../client/dist')));
   app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, '../client/dist/index.html'));
@@ -66,6 +72,8 @@ if (process.env.NODE_ENV === 'production') {
 async function iniciar() {
   try {
     await inicializarDB();
+    await ensureStorageDirs();
+    iniciarLimpiezaTemporales();
     app.listen(PORT, () => {
       console.log(`✓ Servidor corriendo en puerto ${PORT}`);
       console.log(`✓ Base de datos conectada`);
@@ -73,10 +81,26 @@ async function iniciar() {
         console.log(`✓ Modo desarrollo - Frontend en http://localhost:5173`);
       }
     });
+    
+    // Iniciar bot de Telegram (si está configurado)
+    await iniciarBot();
   } catch (error) {
     console.error('Error al iniciar servidor:', error);
     process.exit(1);
   }
 }
+
+// Manejar cierre graceful
+process.on('SIGINT', async () => {
+  console.log('\n⏹ Deteniendo servidor...');
+  await detenerBot();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('\n⏹ Deteniendo servidor...');
+  await detenerBot();
+  process.exit(0);
+});
 
 iniciar();
