@@ -185,6 +185,10 @@ se conserva en `client/`.
 
 ### 7. Configurar PM2
 
+> **La app debe correr bajo PM2 con `autorestart`.** `ecosystem.config.cjs` ya lo trae (`autorestart: true` y
+> `NODE_ENV=production`). Los comandos `/reboot` y `/update` del bot terminan el proceso con `process.exit(0)` y es PM2 quien
+> lo vuelve a levantar; sin PM2 (o sin autorestart) la app se quedaría apagada.
+
 ```bash
 # Iniciar con PM2
 pm2 start ecosystem.config.cjs
@@ -506,6 +510,22 @@ El bot primero lee tus mensajes con un parser de reglas. Si no encuentra el mont
 - Al usarlo, **el texto del mensaje, la fecha de hoy, tus nombres de categorías y los medios de pago se envían a Google**. No se envían montos de la base de datos ni otros movimientos.
 - Los errores se registran solo con código y mensaje, nunca con la key.
 - Los montos aproximados ("57 mil y algo") se marcan en la confirmación; puedes responder con el número exacto antes de apretar Guardar.
+
+### Reiniciar y actualizar desde el bot
+
+Solo para los chats de `TELEGRAM_ALLOWED_CHAT_IDS` y solo con `NODE_ENV=production` (en desarrollo se bloquean para no cerrar
+`npm run dev`). Ambos piden confirmación con botones.
+
+- **`/reboot`**: responde "Reiniciando...", escribe `tmp/reinicio.json` (en la raíz de `FINANZAS_STORAGE`) y termina el proceso
+  1,5 segundos después; PM2 lo levanta de nuevo. Al arrancar, el bot avisa "Listo, volví a estar en línea" con la versión actual.
+- **`/update`**: ejecuta `git pull --ff-only` en la raíz del repositorio. Si falla o hay conflictos, no reinicia y manda las últimas
+  líneas del error (sin rutas del servidor ni nada de `.env`). Si no hubo cambios, avisa "Ya estaba al día" y no reinicia. Si
+  cambió `package.json` o `package-lock.json`, ejecuta `npm ci --omit=dev` (si falla, no reinicia). Si todo sale bien, muestra la
+  versión anterior y la nueva, los títulos de hasta 10 commits nuevos y reinicia como `/reboot`.
+
+Los comandos del sistema se ejecutan con `execFile` (sin shell) y con tiempo máximo, y ningún argumento viene de texto escrito por
+el usuario. El usuario que corre PM2 necesita permiso para `git pull` (con credenciales sin contraseña, por ejemplo una deploy key)
+y para escribir en el repositorio y en `node_modules`.
 
 ### Seguridad
 

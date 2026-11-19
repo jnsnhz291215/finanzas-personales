@@ -29,6 +29,7 @@ import {
 import { crearAdmin } from './admin.js';
 import { crearCuotas } from './cuotasBot.js';
 import { crearCartolas } from './cartolasBot.js';
+import { crearSistema } from './sistemaBot.js';
 import { guardarBuffer, borrarArchivo } from '../storage.js';
 import { categoriaPorReglas } from '../gestion.js';
 import { canonizarPersona } from '../deudas.js';
@@ -69,6 +70,8 @@ let admin = null;
 let cuotas = null;
 // Importación de cartolas desde el bot (cartolasBot.js); se crea al iniciar el bot
 let cartolas = null;
+// Reinicio y actualización desde el bot (sistemaBot.js); se crea al iniciar el bot
+let sistema = null;
 
 // Estado temporal para confirmaciones
 const pendingTransactions = new Map();
@@ -202,10 +205,16 @@ export async function iniciarBot() {
       formatearMonto,
       ofrecerPagoPorCartola: (chatId, movimiento) => cuotas.ofrecerPagoPorCartola(chatId, movimiento)
     });
+
+    sistema = crearSistema({ bot, enviar, editar, responderCallback, esc, esChatAutorizado });
+    sistema.configurarComandos();
     configurarManejadores();
 
     // Menú "/" de Telegram; no bloquea el arranque y no lanza
     registrarComandosMenu();
+
+    // Si el servidor se reinició con /reboot o /update, avisa que ya volvió
+    sistema.notificarReinicioPendiente();
 
     console.log('✓ Bot de Telegram iniciado (long polling)');
     if (allowedChatIds.length > 0) {
@@ -293,6 +302,9 @@ function textoAyuda() {
     '<b>Consultas:</b>\n' +
     '/resumen - Resumen del mes actual\n' +
     '/gastos - Gastos del mes por categoría y uso de cupo de tus tarjetas\n\n' +
+    '<b>Sistema (solo en el servidor):</b>\n' +
+    '/update - Actualizar la app desde git y reiniciarla (con confirmación)\n' +
+    '/reboot - Reiniciar la app (con confirmación)\n\n' +
     '<b>Otros:</b>\n' +
     '/help - Mostrar esta ayuda (también /ayuda)\n' +
     '/miid - Obtener tu chat ID\n\n' +
@@ -326,6 +338,8 @@ const COMANDOS_MENU = [
   { command: 'deudas', description: 'Ver quién me debe' },
   { command: 'pago', description: 'Registrar un pago de una deuda' },
   { command: 'borrar_ultimo', description: 'Eliminar el último movimiento' },
+  { command: 'update', description: 'Actualizar y reiniciar la app' },
+  { command: 'reboot', description: 'Reiniciar la app' },
   { command: 'miid', description: 'Obtener mi chat ID' }
 ];
 
@@ -605,6 +619,11 @@ function configurarManejadores() {
 
     // Botones de compras en cuotas
     if (cuotas && await cuotas.manejarCallback(cb, chatId, data)) {
+      return;
+    }
+
+    // Botones de /reboot y /update
+    if (sistema && await sistema.manejarCallback(cb, chatId, data)) {
       return;
     }
 
