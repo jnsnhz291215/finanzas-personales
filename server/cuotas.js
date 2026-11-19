@@ -162,7 +162,13 @@ export async function vincularMovimientoACuota(movimientoId, compraId) {
   if (!compra || compra.terminada) return { ok: false, error: 'La compra ya no está en curso' };
 
   const numero = compra.cuotas_pagadas + 1;
-  await query('UPDATE movimientos SET compra_cuota_id = ?, numero_cuota = ? WHERE id = ?', [compraId, numero, movimientoId]);
+  await query(
+    `UPDATE movimientos
+     SET compra_cuota_id = ?, numero_cuota = ?,
+         tipo_movimiento = CASE WHEN tipo = 'cargo' THEN 'transferencia_terceros' ELSE tipo_movimiento END
+     WHERE id = ?`,
+    [compraId, numero, movimientoId]
+  );
   return { ok: true, numero, compra: await avanzarContador(compraId, numero) };
 }
 

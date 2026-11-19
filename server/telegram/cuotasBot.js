@@ -474,7 +474,8 @@ export function crearCuotas(ctx) {
   /**
    * Tras guardar una transferencia a terceros, si su texto calza con el alias de la cartola
    * de una compra en cuotas, pregunta (con botones) si es un pago de cuota y de cuál compra.
-   * Nunca la asigna sola. `movimiento` = { id, descripcion }.
+   * Nunca la asigna sola. `movimiento` = { id, descripcion, detalle? } (detalle, por ejemplo
+   * la fecha y el monto, se muestra cuando se preguntan varios movimientos seguidos).
    */
   async function ofrecerPagoPorCartola(chatId, movimiento) {
     try {
@@ -485,7 +486,8 @@ export function crearCuotas(ctx) {
         `- ${esc(compra.alias)} (${esc(compra.acreedor)}): siguiente cuota ${resumen.proximaCuota} de ${resumen.total}`
       );
       await enviar(chatId,
-        `Esta transferencia se parece a un pago de cuota. ¿Es la cuota de alguna de estas compras?\n\n${lineas.join('\n')}`,
+        `Esta transferencia${movimiento.detalle ? ` (${esc(movimiento.detalle)})` : ''} se parece a un pago de cuota. ` +
+        `¿Es la cuota de alguna de estas compras?\n\n${lineas.join('\n')}`,
         {
           reply_markup: {
             inline_keyboard: [

@@ -28,6 +28,7 @@ import {
 } from '../planAhorro.js';
 import { crearAdmin } from './admin.js';
 import { crearCuotas } from './cuotasBot.js';
+import { crearCartolas } from './cartolasBot.js';
 import { guardarBuffer, borrarArchivo } from '../storage.js';
 import { categoriaPorReglas } from '../gestion.js';
 import { canonizarPersona } from '../deudas.js';
@@ -66,6 +67,8 @@ let isRunning = false;
 let admin = null;
 // Compras en cuotas (cuotasBot.js); se crea al iniciar el bot
 let cuotas = null;
+// Importación de cartolas desde el bot (cartolasBot.js); se crea al iniciar el bot
+let cartolas = null;
 
 // Estado temporal para confirmaciones
 const pendingTransactions = new Map();
@@ -190,6 +193,15 @@ export async function iniciarBot() {
       manejarFoto
     });
     cuotas.configurarComandos();
+
+    cartolas = crearCartolas({
+      enviar,
+      editar,
+      responderCallback,
+      esc,
+      formatearMonto,
+      ofrecerPagoPorCartola: (chatId, movimiento) => cuotas.ofrecerPagoPorCartola(chatId, movimiento)
+    });
     configurarManejadores();
 
     // Menú "/" de Telegram; no bloquea el arranque y no lanza
@@ -240,7 +252,7 @@ function textoAyuda() {
     'Escribe en lenguaje natural, por ejemplo:\n' +
     '• Gasto: "ayer pagué 12.500 en el super con débito"\n' +
     '• Pago de tarjeta: "pagué la tarjeta de crédito 50 mil"\n' +
-    'También puedes enviar un archivo de cartola (CSV, Excel o PDF) para guardarlo.\n\n' +
+    'Para importar una cartola, envía el archivo CSV o Excel y elige la cuenta (los PDF se guardan y se revisan en la web).\n\n' +
     '<b>Cuentas:</b>\n' +
     '/savecard - Crear una cuenta (también /nuevacuenta)\n' +
     '/cuentas - Ver tus cuentas activas\n' +
@@ -593,6 +605,11 @@ function configurarManejadores() {
 
     // Botones de compras en cuotas
     if (cuotas && await cuotas.manejarCallback(cb, chatId, data)) {
+      return;
+    }
+
+    // Botones de importación de cartolas
+    if (cartolas && await cartolas.manejarCallback(cb, chatId, data)) {
       return;
     }
 
@@ -2586,20 +2603,27 @@ async function manejarArchivo(msg) {
       return;
     }
 
-    await enviar(chatId, '⏳ Procesando archivo...');
+    await enviar(chatId, 'Procesando archivo...');
 
     // Descargar y guardar en <FINANZAS_STORAGE>/cartolas/{YYYY-MM}/ (ver storage.js)
     const fileLink = await bot.getFileLink(documento.file_id);
     const response = await fetch(fileLink);
     if (!response.ok) throw new Error('la descarga del archivo falló');
-    await guardarBuffer('cartolas', nombreArchivo, Buffer.from(await response.arrayBuffer()), {
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const guardado = await guardarBuffer('cartolas', nombreArchivo, buffer, {
       prefijo: `telegram_${Date.now()}_`
     });
 
+    // CSV y Excel se pueden importar desde aquí; los PDF necesitan revisión manual
+    const resultado = ext !== '.pdf' && cartolas
+      ? await cartolas.ofrecerImportacion(chatId, { ruta: guardado.ruta, buffer, ext })
+      : 'sin_movimientos';
+    if (resultado !== 'sin_movimientos') return;
+
     await enviar(chatId,
-      '✅ Archivo recibido.\n\n' +
-      '⚠️ Para importar la cartola, ve a la aplicación web y usa el importador de cartolas.\n\n' +
-      `Archivo guardado: ${esc(nombreArchivo)}`
+      ext === '.pdf'
+        ? 'Archivo guardado. Los PDF no se importan automáticamente: necesitan revisión manual en la aplicación web.'
+        : 'Archivo guardado, pero no pude detectar los movimientos automáticamente. Puedes mapear las columnas en la aplicación web.'
     );
   } catch (error) {
     // No imprimir el objeto completo: puede incluir la URL con el token
