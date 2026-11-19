@@ -8,7 +8,8 @@ import {
   calcularHashBuffer,
   movimientosDesdeTextoPDF,
   enmascararTextoCartola,
-  validarMovimientosIA
+  validarMovimientosIA,
+  pdfSinTexto
 } from './cartolas.js';
 import { calzarConCartola } from './telegram/cuotas.js';
 
@@ -88,6 +89,23 @@ describe('PDF: reglas sobre el texto', () => {
 
     expect(r.movimientos).toEqual([]);
     expect(r.sinTipo).toBe(1);
+  });
+});
+
+describe('pdfSinTexto', () => {
+  test('un PDF escaneado casi no trae texto (menos de 50 caracteres sin espacios)', () => {
+    expect(pdfSinTexto('')).toBe(true);
+    expect(pdfSinTexto('   \n\n  \t ')).toBe(true);
+    expect(pdfSinTexto('Página 1 de 3')).toBe(true);
+    expect(pdfSinTexto(null)).toBe(true);
+  });
+
+  test('una cartola con texto no se considera escaneada', () => {
+    expect(pdfSinTexto('15/11/2026 Transferencia a Valeska 85.000\n16/11/2026 Abono sueldo 800.000')).toBe(false);
+  });
+
+  test('los espacios no cuentan para el mínimo', () => {
+    expect(pdfSinTexto('a '.repeat(40))).toBe(true);
   });
 });
 

@@ -406,21 +406,29 @@ export function validarMovimientosIA(lista, textoOriginal) {
 }
 
 const MIN_MOVIMIENTOS_REGLAS = 3;
+// Un PDF con menos de este largo de texto (sin contar espacios) se considera escaneado
+const MIN_CARACTERES_TEXTO_PDF = 50;
+
+/** ¿El texto extraído de un PDF es tan corto que probablemente es una imagen escaneada? */
+export function pdfSinTexto(texto) {
+  return String(texto ?? '').replace(/\s/g, '').length < MIN_CARACTERES_TEXTO_PDF;
+}
 
 /**
  * Analiza un PDF de cartola. Primero con reglas; si no alcanzan (menos de 3 movimientos o alguna
  * línea sin tipo claro) y se entrega `interpretarConIA`, manda a esa función SOLO el texto ya
  * enmascarado. Devuelve { movimientos, origen: 'reglas' | 'ia' | null, legible }.
- * `legible` es false si el PDF no tiene texto extraíble.
+ * `legible` es false si el PDF no tiene texto extraíble; en ese caso `escaneado` es true cuando
+ * el PDF se leyó pero casi no trae texto (una imagen escaneada).
  */
 export async function analizarPDF(buffer, { interpretarConIA = null } = {}) {
   let texto = '';
   try {
     texto = await extraerTextoPDF(buffer);
   } catch {
-    return { movimientos: [], origen: null, legible: false };
+    return { movimientos: [], origen: null, legible: false, escaneado: false };
   }
-  if (texto.trim().length < 30) return { movimientos: [], origen: null, legible: false };
+  if (pdfSinTexto(texto)) return { movimientos: [], origen: null, legible: false, escaneado: true };
 
   const reglas = movimientosDesdeTextoPDF(texto);
   if (reglas.movimientos.length >= MIN_MOVIMIENTOS_REGLAS && reglas.sinTipo === 0) {

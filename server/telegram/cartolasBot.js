@@ -85,8 +85,9 @@ export function crearCartolas(ctx) {
 
   /**
    * Analiza una cartola recibida y ofrece importarla. El archivo se guarda en tmp/ solo si hay
-   * movimientos que importar. Devuelve 'ofrecida', 'duplicada' o 'ilegible' (no se pudieron leer
-   * movimientos: quien llama decide qué hacer con el archivo).
+   * movimientos que importar. Devuelve 'ofrecida', 'duplicada', 'escaneado' (PDF sin texto) o
+   * 'ilegible' (no se pudieron leer movimientos): en los dos últimos casos quien llama decide qué
+   * hacer con el archivo.
    */
   async function ofrecerImportacion(chatId, { nombre, buffer, ext }) {
     const hash = calcularHashBuffer(buffer);
@@ -102,6 +103,7 @@ export function crearCartolas(ctx) {
     try {
       if (esPDF) {
         const r = await analizarPDF(buffer, { interpretarConIA: interpretarMovimientosCartola });
+        if (r.escaneado) return 'escaneado';
         movimientos = r.movimientos;
         origen = r.origen;
       } else {

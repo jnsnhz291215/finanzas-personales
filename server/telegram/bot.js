@@ -2632,14 +2632,16 @@ async function manejarArchivo(msg) {
     // CSV, Excel y PDF se importan desde aquí. El archivo queda pendiente en tmp/ y pasa a
     // cartolas/{YYYY-MM}/ solo cuando se confirma la importación (ver cartolasBot.js)
     const resultado = await cartolas.ofrecerImportacion(chatId, { nombre: nombreArchivo, buffer, ext });
-    if (resultado !== 'ilegible') return;
+    if (resultado !== 'ilegible' && resultado !== 'escaneado') return;
 
     // No se pudieron leer movimientos de ninguna forma: se deja guardado en cartolas/{YYYY-MM}/
     await guardarBuffer('cartolas', nombreArchivo, buffer, { prefijo: `telegram_${Date.now()}_` });
     await enviar(chatId,
-      ext === '.pdf'
-        ? 'No pude leer los movimientos de este PDF (puede ser una imagen escaneada o un formato que no reconozco). Dejé el archivo guardado.'
-        : 'No pude leer los movimientos de este archivo. Dejé el archivo guardado.'
+      resultado === 'escaneado'
+        ? 'Este PDF parece escaneado y no tiene texto, mándame la cartola descargada desde el banco. Dejé el archivo guardado.'
+        : ext === '.pdf'
+          ? 'No pude leer los movimientos de este PDF (no reconozco su formato). Dejé el archivo guardado.'
+          : 'No pude leer los movimientos de este archivo. Dejé el archivo guardado.'
     );
   } catch (error) {
     // No imprimir el objeto completo: puede incluir la URL con el token
