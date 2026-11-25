@@ -9,6 +9,7 @@ import { parse } from 'csv-parse/sync';
 import xlsx from 'xlsx';
 import pdfParse from 'pdf-parse';
 import { resolverTipos } from './tiposMovimiento.js';
+import { buscarBanco, normalizar } from './telegram/cuentas.js';
 
 // Parsear CSV
 export function parsearCSV(buffer, encoding = 'utf8') {
@@ -426,20 +427,23 @@ export async function analizarPDF(buffer, { interpretarConIA = null } = {}) {
   try {
     texto = await extraerTextoPDF(buffer);
   } catch {
-    return { movimientos: [], origen: null, legible: false, escaneado: false };
+    return { movimientos: [], origen: null, legible: false, escaneado: false, banco: null };
   }
-  if (pdfSinTexto(texto)) return { movimientos: [], origen: null, legible: false, escaneado: true };
+  if (pdfSinTexto(texto)) return { movimientos: [], origen: null, legible: false, escaneado: true, banco: null };
+
+  // Banco o institución que aparece primero en el texto (sirve para sugerir la cuenta)
+  const banco = buscarBanco(normalizar(texto))?.nombre ?? null;
 
   const reglas = movimientosDesdeTextoPDF(texto);
   if (reglas.movimientos.length >= MIN_MOVIMIENTOS_REGLAS && reglas.sinTipo === 0) {
-    return { movimientos: reglas.movimientos, origen: 'reglas', legible: true };
+    return { movimientos: reglas.movimientos, origen: 'reglas', legible: true, banco };
   }
 
   if (interpretarConIA) {
     const lista = await interpretarConIA(enmascararTextoCartola(texto));
     const { movimientos } = validarMovimientosIA(lista, texto);
-    if (movimientos.length > 0) return { movimientos, origen: 'ia', legible: true };
+    if (movimientos.length > 0) return { movimientos, origen: 'ia', legible: true, banco };
   }
 
-  return { movimientos: [], origen: null, legible: true };
+  return { movimientos: [], origen: null, legible: true, banco };
 }

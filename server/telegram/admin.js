@@ -799,6 +799,84 @@ export function crearAdmin(ctx) {
     return false;
   }
 
+  /**
+   * Busca movimientos por texto y/o mes ("uber", "noviembre", "uber octubre 2026") y los lista con
+   * botones. Sirve para /buscar y para las frases libres ("busca uber de octubre").
+   */
+  async function buscar(chatId, argumento) {
+    const criterio = interpretarBusqueda(argumento, fechaHoySantiago());
+    if (!criterio.texto && !criterio.desde) {
+      await enviar(chatId,
+        '<b>Buscar movimientos</b>\n\nEscribe un texto o un mes, por ejemplo:\nbusca uber\nbusca noviembre\nbusca uber octubre 2026'
+      );
+      return;
+    }
+    const filas = await buscarMovimientos(criterio, 15);
+    const titulo = `Resultados (${filas.length})${criterio.etiquetaMes ? ` - ${criterio.etiquetaMes}` : ''}`;
+    await enviarListaMovimientos(chatId, titulo, filas);
+  }
+
+  /** Gastos de un mes (fecha YYYY-MM-DD de cualquier día de ese mes) por categoría y uso de tarjetas */
+  async function enviarGastosDelMes(chatId, fecha) {
+    const r = await gastosDelMes(fecha);
+    const mesNombre = new Date(r.anio, r.mes - 1).toLocaleString('es-CL', { month: 'long' });
+
+    const lineas = [`<b>Gastos de ${esc(mesNombre)} ${r.anio}</b>`, '', `Total: ${dinero(r.total)}`];
+    if (r.categorias.length === 0) {
+      lineas.push('', 'Todavía no hay gastos este mes.');
+    } else {
+      lineas.push('', '<b>Por categoría:</b>');
+      for (const c of r.categorias) {
+        const pct = r.total > 0 ? Math.round(c.total / r.total * 100) : 0;
+        lineas.push(`${esc(c.categoria)}: ${dinero(c.total)} (${pct}%)`);
+      }
+    }
+
+    if (r.tarjetas.length > 0) {
+      lineas.push('', '<b>Tarjetas de crédito (uso del mes):</b>');
+      for (const t of r.tarjetas) {
+        lineas.push(
+          t.cupo === null
+            ? `${esc(t.nombre)}: usado ${dinero(t.usado)} (sin cupo definido)`
+            : `${esc(t.nombre)}: usado ${dinero(t.usado)} de ${dinero(t.cupo)} (${t.porcentaje}%), disponible ${dinero(t.disponible)}`
+        );
+      }
+    }
+
+    await enviar(chatId, lineas.join('\n'));
+  }
+
+  /**
+   * "cuánto gasté este mes", "cuánto llevo en comida", "cuánto gasté en octubre". Si el texto
+   * nombra una categoría, responde solo con ese total; si no, con el resumen del mes.
+   */
+  async function consultarGastos(chatId, texto) {
+    const hoy = fechaHoySantiago();
+    const criterio = interpretarBusqueda(texto, hoy);
+    const fechaMes = criterio.desde ?? hoy;
+
+    const norm = normalizar(texto);
+    const categorias = (await listarCategorias())
+      .filter(c => normalizar(c.nombre).length >= 3)
+      .sort((a, b) => b.nombre.length - a.nombre.length);
+    const categoria = categorias.find(c => new RegExp(`\\b${normalizar(c.nombre).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`).test(norm));
+
+    if (!categoria) {
+      await enviarGastosDelMes(chatId, fechaMes);
+      return;
+    }
+
+    const r = await gastosDelMes(fechaMes);
+    const fila = r.categorias.find(c => normalizar(c.categoria) === normalizar(categoria.nombre));
+    const mesNombre = new Date(r.anio, r.mes - 1).toLocaleString('es-CL', { month: 'long' });
+    const total = fila ? fila.total : 0;
+    const pct = r.total > 0 ? Math.round(total / r.total * 100) : 0;
+    await enviar(chatId,
+      `En <b>${esc(categoria.nombre)}</b> llevas ${dinero(total)} en ${esc(mesNombre)} ${r.anio}` +
+      (r.total > 0 ? ` (${pct}% de tus gastos del mes, ${dinero(r.total)} en total).` : '.')
+    );
+  }
+
   function configurarComandos() {
     // Ejecuta un comando solo para chats autorizados y sin dejar caer el servidor
     const comando = (regex, accion) => {
@@ -818,18 +896,7 @@ export function crearAdmin(ctx) {
     };
 
     // /buscar <texto o mes>
-    comando(/^\/buscar(?:@\w+)?(?:\s+([\s\S]+))?$/i, async (chatId, argumento) => {
-      const criterio = interpretarBusqueda(argumento, fechaHoySantiago());
-      if (!criterio.texto && !criterio.desde) {
-        await enviar(chatId,
-          '<b>Buscar movimientos</b>\n\nEscribe un texto o un mes, por ejemplo:\n/buscar uber\n/buscar noviembre\n/buscar uber noviembre 2026'
-        );
-        return;
-      }
-      const filas = await buscarMovimientos(criterio, 15);
-      const titulo = `Resultados (${filas.length})${criterio.etiquetaMes ? ` - ${criterio.etiquetaMes}` : ''}`;
-      await enviarListaMovimientos(chatId, titulo, filas);
-    });
+    comando(/^\/buscar(?:@\w+)?(?:\s+([\s\S]+))?$/i, buscar);
 
     // /categorias
     comando(/^\/categorias(?:@\w+)?\s*$/i, async (chatId) => {
@@ -878,34 +945,7 @@ export function crearAdmin(ctx) {
     });
 
     // /gastos: gastos del mes por categoría y uso de cupo de las tarjetas de crédito
-    comando(/^\/gastos(?:@\w+)?\s*$/i, async (chatId) => {
-      const r = await gastosDelMes(fechaHoySantiago());
-      const mesNombre = new Date(r.anio, r.mes - 1).toLocaleString('es-CL', { month: 'long' });
-
-      const lineas = [`<b>Gastos de ${esc(mesNombre)} ${r.anio}</b>`, '', `Total: ${dinero(r.total)}`];
-      if (r.categorias.length === 0) {
-        lineas.push('', 'Todavía no hay gastos este mes.');
-      } else {
-        lineas.push('', '<b>Por categoría:</b>');
-        for (const c of r.categorias) {
-          const pct = r.total > 0 ? Math.round(c.total / r.total * 100) : 0;
-          lineas.push(`${esc(c.categoria)}: ${dinero(c.total)} (${pct}%)`);
-        }
-      }
-
-      if (r.tarjetas.length > 0) {
-        lineas.push('', '<b>Tarjetas de crédito (uso del mes):</b>');
-        for (const t of r.tarjetas) {
-          lineas.push(
-            t.cupo === null
-              ? `${esc(t.nombre)}: usado ${dinero(t.usado)} (sin cupo definido)`
-              : `${esc(t.nombre)}: usado ${dinero(t.usado)} de ${dinero(t.cupo)} (${t.porcentaje}%), disponible ${dinero(t.disponible)}`
-          );
-        }
-      }
-
-      await enviar(chatId, lineas.join('\n'));
-    });
+    comando(/^\/gastos(?:@\w+)?\s*$/i, (chatId) => enviarGastosDelMes(chatId, fechaHoySantiago()));
 
     // /deudas
     comando(/^\/deudas(?:@\w+)?\s*$/i, async (chatId) => {
@@ -930,5 +970,5 @@ export function crearAdmin(ctx) {
     comando(/^\/fijos(?:@\w+)?\s*$/i, listarFijos);
   }
 
-  return { configurarComandos, manejarCallback, manejarTexto, mostrarUltimos, planConArgumentos };
+  return { configurarComandos, manejarCallback, manejarTexto, mostrarUltimos, planConArgumentos, buscar, consultarGastos };
 }

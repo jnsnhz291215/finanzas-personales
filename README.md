@@ -511,6 +511,35 @@ El bot primero lee tus mensajes con un parser de reglas. Si no encuentra el mont
 - Los errores se registran solo con código y mensaje, nunca con la key.
 - Los montos aproximados ("57 mil y algo") se marcan en la confirmación; puedes responder con el número exacto antes de apretar Guardar.
 
+### Uso en lenguaje natural
+
+El bot se usa casi sin comandos: escribe como hablas o manda un archivo. Un enrutador de intenciones
+(`server/telegram/intenciones.js`) prueba primero reglas rápidas (sin tildes ni mayúsculas) y, si no alcanzan y hay
+`GEMINI_API_KEY`, consulta a Gemini con un prompt corto. Los comandos siguen existiendo como respaldo.
+
+| Escribes | Qué hace |
+|---|---|
+| `almuerzo 5500 débito falabella`, `me pagaron 400 mil` | Registra un gasto o ingreso (con confirmación) |
+| `pagué cuota tía mac 7/12` (también con la foto del comprobante) | Paga una cuota |
+| `compré audífonos en 6 cuotas de 15 mil con la tarjeta de la tía` | Crea una compra en cuotas |
+| `cuánto gasté este mes`, `cuánto llevo en comida` | Gastos del mes o de una categoría |
+| `cuánto puedo gastar`, `cuánto debería ahorrar` | Plan de ahorro |
+| `pásame los datos de la mercado pago` | Datos de transferencia |
+| `qué cuentas tengo`, `cuánto le debo a la tía`, `busca uber de octubre`, `qué puedes hacer` | Cuentas, cuotas, búsqueda y ayuda |
+
+- **Si no está claro, pregunta con botones** (qué quisiste decir, el monto que falta, la cuenta). Todo lo que escribe en la base de
+  datos pide confirmación; cuando la intención la dedujo Gemini, la confirmación agrega el botón *Corregir*.
+- **Privacidad:** a Gemini nunca viaja nada de datos de transferencia, RUT, correos ni números de cuenta: si el mensaje parece
+  traer algo así, ni siquiera se consulta. Guardar cuentas y datos de transferencia sigue siendo solo con `/savecard` y `/savetrans`.
+- **Archivos:** un PDF, CSV o Excel va directo a importar la cartola. Una foto sin texto pregunta si es el comprobante de una
+  cuota, de otro gasto, o solo guardarla.
+- **Varias cartolas seguidas:** los archivos de un álbum de Telegram, o con menos de 10 segundos entre sí, se agrupan en una cola
+  por chat. Se analiza cada uno, se descartan los duplicados (mismo hash) y se muestra un solo resumen con una línea por archivo
+  (formato o banco, fechas, movimientos y totales). Con *Importar todo* se usa la cuenta sugerida según el contenido (por ejemplo
+  Falabella) y se pregunta solo por los que no tienen sugerencia; con *Revisar uno por uno* ves cada archivo (con vista previa si
+  es PDF). Las preguntas de cuotas se hacen al final, todas juntas.
+- El menú `/` de Telegram solo muestra `/help`, `/plan`, `/cuotas` y `/update`; el resto de los comandos funciona igual si los escribes.
+
 ### Reiniciar y actualizar desde el bot
 
 Solo para los chats de `TELEGRAM_ALLOWED_CHAT_IDS` y solo con `NODE_ENV=production` (en desarrollo se bloquean para no cerrar

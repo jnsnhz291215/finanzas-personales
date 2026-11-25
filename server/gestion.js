@@ -106,6 +106,13 @@ const SELECT_MOVIMIENTO = `
   LEFT JOIN cuentas cd ON m.cuenta_destino_id = cd.id
   LEFT JOIN categorias cat ON m.categoria_id = cat.id`;
 
+/** Cuentas activas con banco y tipo (para sugerir en qué cuenta importar una cartola) */
+export async function listarCuentasConBanco() {
+  const query = await consulta();
+  const [filas] = await query('SELECT id, nombre, banco, tipo FROM cuentas WHERE activa = 1 ORDER BY nombre');
+  return filas;
+}
+
 /** Cuentas activas (id y nombre) para elegir una en un botón */
 export async function listarCuentasActivas() {
   const query = await consulta();

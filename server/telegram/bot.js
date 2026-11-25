@@ -8,7 +8,6 @@ import { interpretarMovimiento, interpretarCuenta, geminiDisponible } from './ge
 import {
   parsearDatos,
   camposFaltantes,
-  detectarConsultaDatos,
   terminoDesdeTexto,
   buscarRegistros,
   textoPlanoDatos,
@@ -23,13 +22,13 @@ import {
   crearGastoFijo,
   validarGastoFijo,
   parsearFijo,
-  detectarConsultaPlan,
   TIPOS_GASTO_LIBRE
 } from '../planAhorro.js';
 import { crearAdmin } from './admin.js';
 import { crearCuotas } from './cuotasBot.js';
 import { crearCartolas } from './cartolasBot.js';
 import { crearSistema } from './sistemaBot.js';
+import { crearIntenciones } from './intenciones.js';
 import { guardarBuffer, borrarArchivo } from '../storage.js';
 import { categoriaPorReglas } from '../gestion.js';
 import { canonizarPersona } from '../deudas.js';
@@ -72,6 +71,10 @@ let cuotas = null;
 let cartolas = null;
 // Reinicio y actualización desde el bot (sistemaBot.js); se crea al iniciar el bot
 let sistema = null;
+// Enrutador de intenciones para mensajes libres (intenciones.js); se crea al iniciar el bot
+let intenciones = null;
+// Foto que espera el texto de un gasto para quedar como su respaldo: chatId -> { fileId, nombre, hasta }
+const esperandoComprobante = new Map();
 
 // Estado temporal para confirmaciones
 const pendingTransactions = new Map();
@@ -193,7 +196,8 @@ export async function iniciarBot() {
       resolverCuentaPago,
       guardarRespaldo: guardarRespaldoCuota,
       eliminarRespaldo: eliminarRespaldoCuota,
-      manejarFoto
+      manejarFoto,
+      iniciarComprobanteGasto
     });
     cuotas.configurarComandos();
 
@@ -203,7 +207,25 @@ export async function iniciarBot() {
       responderCallback,
       esc,
       formatearMonto,
-      ofrecerPagoPorCartola: (chatId, movimiento) => cuotas.ofrecerPagoPorCartola(chatId, movimiento)
+      ofrecerPagoPorCartola: (chatId, movimiento) => cuotas.ofrecerPagoPorCartola(chatId, movimiento),
+      guardarNoLeido: (nombre, buffer) =>
+        guardarBuffer('cartolas', nombre, buffer, { prefijo: `telegram_${Date.now()}_` })
+    });
+
+    intenciones = crearIntenciones({
+      enviar,
+      editar,
+      responderCallback,
+      esc,
+      registrar: (msg, opciones) => registrarTransaccion(msg, opciones),
+      cuotasMensaje: (msg) => cuotas.intentarMensaje(msg),
+      cuotasLista: (chatId) => cuotas.enviarLista(chatId),
+      consultarGastos: (chatId, texto) => admin.consultarGastos(chatId, texto),
+      plan: (chatId) => responderPlan(chatId),
+      datos: (chatId, termino) => responderConsultaDatos(chatId, termino),
+      cuentas: (chatId) => enviarCuentas(chatId),
+      buscar: (chatId, texto) => admin.buscar(chatId, texto),
+      ayuda: (chatId) => enviar(chatId, textoAyuda())
     });
 
     sistema = crearSistema({ bot, enviar, editar, responderCallback, esc, esChatAutorizado });
@@ -251,100 +273,53 @@ function esChatAutorizado(chatId) {
 }
 
 /**
- * Texto de ayuda (HTML), compartido por /start, /ayuda y /help.
- * Los comandos listados son los que existen en este archivo.
+ * Texto de ayuda (HTML), compartido por /start, /ayuda y /help. Casi todo se hace escribiendo
+ * como hablas o mandando un archivo; los comandos quedan de respaldo.
  */
 function textoAyuda() {
   return (
-    '📋 <b>Comandos disponibles:</b>\n\n' +
-    '<b>Registrar movimientos:</b>\n' +
-    'Escribe en lenguaje natural, por ejemplo:\n' +
-    '• Gasto: "ayer pagué 12.500 en el super con débito"\n' +
-    '• Pago de tarjeta: "pagué la tarjeta de crédito 50 mil"\n' +
-    'Para importar una cartola, envía el archivo CSV, Excel o PDF y elige la cuenta. Los PDF se muestran en una vista previa para que los confirmes antes de importar.\n\n' +
-    '<b>Cuentas:</b>\n' +
-    '/savecard - Crear una cuenta (también /nuevacuenta)\n' +
-    '/cuentas - Ver tus cuentas activas\n' +
-    '/borrarcuenta - Desactivar una cuenta\n' +
-    'Ejemplo: /savecard tarjeta debito FAN banco de chile terminada en 1234 a nombre mio (juan sanhueza)\n' +
-    'Nunca envíes el número completo: solo los últimos 4 dígitos.\n\n' +
-    '<b>Mis datos de transferencia:</b>\n' +
-    '/savetrans - Guardar mis datos para que me depositen\n' +
-    '/misdatos - Ver los alias guardados\n' +
-    '/datos - Pedir los datos de un alias o banco\n' +
-    '/borrardatos - Eliminar un registro\n' +
-    'Ejemplo: /savetrans mercado pago cuenta vista 1234567890 juan sanhueza rut 12.345.678-5 correo juan@mail.com\n' +
-    'Para pedirlos escribe: pásame los datos de transferencia de la mercado pago\n\n' +
-    '<b>Plan de ahorro:</b>\n' +
-    '/plan - Cuánto ahorrar, cuánto tienes fijo y cuánto te queda para gastar\n' +
-    '/plan config - Ver y editar porcentajes e ingreso base (o /plan 50 30 20, /plan ingreso 1.200.000)\n' +
-    '/fijo - Agregar un gasto fijo\n' +
-    '/fijos - Ver, editar o desactivar tus gastos fijos\n' +
-    'Ejemplo: /fijo celular 20 mil el 10 palabras movistar, entel\n' +
-    'También puedes preguntar: cuánto puedo gastar\n\n' +
-    '<b>Compras en cuotas:</b>\n' +
-    '/cuotas - Ver tus compras en cuotas, lo que falta y la próxima cuota\n' +
-    '/cuotas nueva mac 12 cuotas de 85 mil tía, pagadas 6 - Crear una compra\n' +
-    'Para pagar una cuota escribe: pagué cuota tía mac 7/12 (también sirve una foto del comprobante con ese texto)\n' +
-    'También puedes preguntar: cuánto le debo a mi tía\n\n' +
-    '<b>Movimientos:</b>\n' +
-    '/ultimos - Últimos 10 movimientos, con botones para editarlos o borrarlos\n' +
-    '/buscar - Buscar por texto o mes (por ejemplo /buscar uber noviembre)\n' +
-    '/borrar_ultimo - Eliminar el último movimiento (con confirmación)\n\n' +
-    '<b>Categorías:</b>\n' +
-    '/categorias - Ver las categorías\n' +
-    '/categoria nueva Mascotas - Crear una categoría\n' +
-    '/regla uber transporte - Asignar una categoría automática por texto (sin argumentos lista las reglas)\n\n' +
-    '<b>Deudas:</b>\n' +
-    '/deudas - Quién te debe y cuánto\n' +
-    '/pago Pedro 20 mil - Registrar un pago\n' +
-    'Para marcar un gasto como préstamo escribe, por ejemplo: le pagué 15 mil a Christian con la CMR, me lo devuelve\n\n' +
-    '<b>Consultas:</b>\n' +
-    '/resumen - Resumen del mes actual\n' +
-    '/gastos - Gastos del mes por categoría y uso de cupo de tus tarjetas\n\n' +
-    '<b>Sistema (solo en el servidor):</b>\n' +
-    '/update - Actualizar la app desde git y reiniciarla (con confirmación)\n' +
-    '/reboot - Reiniciar la app (con confirmación)\n\n' +
-    '<b>Otros:</b>\n' +
-    '/help - Mostrar esta ayuda (también /ayuda)\n' +
-    '/miid - Obtener tu chat ID\n\n' +
-    'Para empezar, crea una cuenta con /savecard (por ejemplo: /savecard efectivo).'
+    '<b>Escríbeme como hablas</b>\n\n' +
+    '<b>Anotar gastos e ingresos</b>\n' +
+    '• almuerzo 5500 débito falabella\n' +
+    '• me pagaron 400 mil\n' +
+    '• pagué la tarjeta de crédito 50 mil\n' +
+    '• le pagué 15 mil a Christian con la CMR, me lo devuelve\n\n' +
+    '<b>Cuotas</b>\n' +
+    '• compré audífonos en 6 cuotas de 15 mil con la tarjeta de la tía\n' +
+    '• pagué cuota tía mac 7/12 (también con la foto del comprobante y ese texto)\n' +
+    '• cuánto le debo a la tía\n\n' +
+    '<b>Consultas</b>\n' +
+    '• cuánto gasté este mes\n' +
+    '• cuánto llevo en comida\n' +
+    '• cuánto puedo gastar\n' +
+    '• cuánto debería ahorrar\n' +
+    '• busca uber de octubre\n' +
+    '• qué cuentas tengo\n' +
+    '• pásame los datos de la mercado pago\n\n' +
+    '<b>Archivos</b>\n' +
+    '• Manda la cartola (PDF, CSV o Excel) y elige la cuenta. Si mandas varias seguidas, te hago un solo resumen.\n' +
+    '• Manda la foto de un comprobante y te pregunto si es de una cuota o de otro gasto.\n\n' +
+    '<b>Comandos</b>\n' +
+    '/help - Esta ayuda\n' +
+    '/plan - Tu plan de ahorro del mes\n' +
+    '/cuotas - Tus compras en cuotas\n' +
+    '/update - Actualizar y reiniciar la app (solo en el servidor)\n\n' +
+    'Por seguridad, las cuentas y tus datos de transferencia se guardan solo con comandos: ' +
+    '/savecard (por ejemplo: /savecard efectivo) y /savetrans. ' +
+    'Los demás comandos (/ultimos, /buscar, /gastos, /fijo, /regla, /deudas...) siguen funcionando si los escribes.'
   );
 }
 
-// Lista del menú "/" de Telegram (setMyCommands): nombre en minúsculas y descripción corta
+// Menú "/" de Telegram (setMyCommands): solo lo esencial; lo demás funciona escribiéndolo o en lenguaje natural
 const COMANDOS_MENU = [
-  { command: 'start', description: 'Comenzar y ver la ayuda' },
-  { command: 'help', description: 'Ver todos los comandos' },
-  { command: 'ayuda', description: 'Ver todos los comandos (igual que /help)' },
-  { command: 'savecard', description: 'Crear una cuenta o tarjeta' },
-  { command: 'cuentas', description: 'Ver mis cuentas activas' },
-  { command: 'borrarcuenta', description: 'Desactivar una cuenta' },
-  { command: 'savetrans', description: 'Guardar mis datos de transferencia' },
-  { command: 'misdatos', description: 'Ver mis alias de transferencia' },
-  { command: 'datos', description: 'Pedir mis datos de transferencia' },
-  { command: 'borrardatos', description: 'Eliminar datos de transferencia' },
+  { command: 'help', description: 'Qué puedo hacer y ejemplos' },
+  { command: 'plan', description: 'Mi plan de ahorro del mes' },
   { command: 'cuotas', description: 'Mis compras en cuotas' },
-  { command: 'plan', description: 'Ver mi plan de ahorro del mes' },
-  { command: 'fijo', description: 'Agregar un gasto fijo' },
-  { command: 'fijos', description: 'Ver mis gastos fijos' },
-  { command: 'resumen', description: 'Resumen del mes actual' },
-  { command: 'gastos', description: 'Gastos del mes por categoría y tarjetas' },
-  { command: 'ultimos', description: 'Últimos movimientos (editar o borrar)' },
-  { command: 'buscar', description: 'Buscar movimientos por texto o mes' },
-  { command: 'categorias', description: 'Ver las categorías' },
-  { command: 'categoria', description: 'Crear una categoría' },
-  { command: 'regla', description: 'Regla de categoría automática' },
-  { command: 'deudas', description: 'Ver quién me debe' },
-  { command: 'pago', description: 'Registrar un pago de una deuda' },
-  { command: 'borrar_ultimo', description: 'Eliminar el último movimiento' },
-  { command: 'update', description: 'Actualizar y reiniciar la app' },
-  { command: 'reboot', description: 'Reiniciar la app' },
-  { command: 'miid', description: 'Obtener mi chat ID' }
+  { command: 'update', description: 'Actualizar y reiniciar la app' }
 ];
 
 // Menú para quien no está autorizado: solo /miid (para obtener su chat ID)
-const COMANDOS_PUBLICOS = COMANDOS_MENU.filter(c => c.command === 'miid');
+const COMANDOS_PUBLICOS = [{ command: 'miid', description: 'Obtener mi chat ID' }];
 
 function codigoErrorTelegram(err) {
   return err?.response?.body?.error_code ?? err?.code ?? 'desconocido';
@@ -580,30 +555,20 @@ function configurarManejadores() {
       return;
     }
 
-    // Pedido de mis datos de transferencia ("pásame los datos de la mercado pago");
-    // nunca se trata como gasto
-    if (msg.text && await manejarConsultaDatos(msg)) {
-      return;
-    }
-
-    // "cuánto puedo gastar", "cuánto me queda"... (sin monto): resumen del plan de ahorro
-    if (msg.text && await manejarConsultaPlan(msg)) {
-      return;
-    }
-
-    // Compras en cuotas: pago de cuota, alta o consulta (nunca se registra como gasto)
-    if (msg.text && cuotas && await cuotas.intentarMensaje(msg)) {
-      return;
-    }
-
     // Un número solo corrige el monto del movimiento pendiente
     if (msg.text && await actualizarMontoPendiente(msg)) {
       return;
     }
 
-    // Parsear mensaje de texto como transacción
+    // Mensaje libre sin comando: el enrutador de intenciones lo entiende (reglas y, si no alcanzan,
+    // Gemini) y lo manda a la función que corresponde, o pregunta con botones
     if (msg.text) {
-      await registrarTransaccion(msg);
+      try {
+        await intenciones.manejarTexto(msg);
+      } catch (error) {
+        console.error('Error al interpretar el mensaje:', error.code ?? error.name);
+        await enviar(chatId, 'No pude procesar ese mensaje. Inténtalo de nuevo.');
+      }
     }
   });
 
@@ -619,6 +584,11 @@ function configurarManejadores() {
 
     // Botones de compras en cuotas
     if (cuotas && await cuotas.manejarCallback(cb, chatId, data)) {
+      return;
+    }
+
+    // Botones del enrutador de intenciones (qué quisiste decir, monto faltante)
+    if (intenciones && await intenciones.manejarCallback(cb, chatId, data)) {
       return;
     }
 
@@ -707,7 +677,9 @@ function configurarManejadores() {
     // Cancelar transacción
     if (data.startsWith('cancel_')) {
       const txId = data.replace('cancel_', '');
+      const cancelada = pendingTransactions.get(txId);
       pendingTransactions.delete(txId);
+      if (cancelada?.archivo_respaldo) await eliminarRespaldoCuota(cancelada.archivo_respaldo);
 
       await editar(
         '❌ Cancelado',
@@ -809,6 +781,77 @@ function configurarManejadores() {
       return;
     }
 
+    // Cambiar la cuenta del movimiento pendiente: lista de cuentas activas
+    if (data.startsWith('tcm_')) {
+      const txId = data.replace('tcm_', '');
+      const tx = pendingTransactions.get(txId);
+      if (!tx) {
+        await responderCallback(cb.id, { text: '❌ Transacción expirada' });
+        return;
+      }
+      const cuentasActivas = await listarCuentas();
+      const filas = [];
+      for (let i = 0; i < cuentasActivas.length; i += 2) {
+        filas.push(cuentasActivas.slice(i, i + 2).map(c => ({
+          text: String(c.nombre).slice(0, 30),
+          callback_data: `tcs_${txId}_${c.id}`
+        })));
+      }
+      filas.push([{ text: 'Volver', callback_data: `tback_${txId}` }]);
+      await editar(textoConfirmacion(tx), {
+        chat_id: chatId,
+        message_id: cb.message.message_id,
+        reply_markup: { inline_keyboard: filas }
+      });
+      await responderCallback(cb.id, { text: 'Elige la cuenta' });
+      return;
+    }
+
+    if (data.startsWith('tcs_')) {
+      const partes = data.match(/^tcs_(.+)_(\d+)$/);
+      const tx = partes && pendingTransactions.get(partes[1]);
+      if (!tx) {
+        await responderCallback(cb.id, { text: '❌ Transacción expirada' });
+        return;
+      }
+      const cuenta = (await listarCuentas()).find(c => String(c.id) === partes[2]);
+      if (cuenta && cuenta.id !== tx.cuenta_destino_id) {
+        tx.cuenta_id = cuenta.id;
+        tx.cuentaNombre = cuenta.nombre;
+      }
+      await refrescarConfirmacion(chatId, cb.message.message_id, partes[1], tx);
+      await responderCallback(cb.id, { text: cuenta ? 'Cuenta cambiada' : 'Cuenta no válida' });
+      return;
+    }
+
+    // Corregir: se descarta este borrador y se espera el movimiento escrito de nuevo
+    if (data.startsWith('tco_')) {
+      const txId = data.replace('tco_', '');
+      const tx = pendingTransactions.get(txId);
+      pendingTransactions.delete(txId);
+      if (tx?.archivo_respaldo) {
+        // La foto sigue esperando el texto corregido
+        await eliminarRespaldoCuota(tx.archivo_respaldo);
+        if (tx.comprobanteInfo) {
+          esperandoComprobante.set(chatId, { ...tx.comprobanteInfo, hasta: Date.now() + 10 * 60 * 1000 });
+        }
+      }
+      await editar('Escribe de nuevo el movimiento, por ejemplo: almuerzo 5500 débito.', {
+        chat_id: chatId,
+        message_id: cb.message.message_id
+      });
+      await responderCallback(cb.id, {});
+      return;
+    }
+
+    // Cancelar la espera de un comprobante de gasto
+    if (data === 'trc_x') {
+      esperandoComprobante.delete(chatId);
+      await editar('Cancelado', { chat_id: chatId, message_id: cb.message.message_id });
+      await responderCallback(cb.id, { text: 'Cancelado' });
+      return;
+    }
+
     // Abrir el menú para cambiar el tipo
     if (data.startsWith('tmenu_')) {
       const txId = data.replace('tmenu_', '');
@@ -903,9 +946,11 @@ function textoConfirmacion(tx) {
     (conDestino
       ? `Cuenta origen: ${esc(tx.cuentaNombre ?? 'sin indicar')}\n` +
         `Cuenta destino: ${tx.cuentaDestinoNombre ? esc(tx.cuentaDestinoNombre) : 'sin indicar'}\n`
-      : '') +
+      : `Cuenta: ${esc(tx.cuentaNombre ?? 'sin indicar')}\n`) +
     `💳 Medio de pago: ${tx.medioPago ? esc(tx.medioPago) : 'sin indicar'}\n` +
     `🏷 Categoría: ${tx.categoria ? esc(tx.categoria) : 'sin categoría'}\n` +
+    (tx.archivo_respaldo ? 'Respaldo adjunto\n' : '') +
+    `${tx.confianzaBaja ? '\nNo estoy del todo seguro de haberte entendido: revisa los datos o toca Corregir.' : ''}` +
     `${faltaDestino ? '\nElige la cuenta destino:' : ''}` +
     `${tx.aproximado ? '\n💡 Si sabes el monto exacto, respóndeme con el número antes de guardar.' : ''}`
   );
@@ -954,6 +999,10 @@ async function armarTeclado(txId, tx) {
       tx.es_prestamo
         ? { text: 'Quitar préstamo', callback_data: `prq_${txId}` }
         : { text: 'Marcar como préstamo', callback_data: `prm_${txId}` }
+    ]);
+    filas.push([
+      { text: 'Cambiar cuenta', callback_data: `tcm_${txId}` },
+      ...(tx.confianzaBaja ? [{ text: 'Corregir', callback_data: `tco_${txId}` }] : [])
     ]);
   }
 
@@ -1143,7 +1192,7 @@ function combinarConGemini(reglas, ia) {
 /**
  * Registra una transacción desde un mensaje de texto
  */
-async function registrarTransaccion(msg) {
+async function registrarTransaccion(msg, { confianzaBaja = false } = {}) {
   const chatId = msg.chat.id;
   const texto = msg.text;
 
@@ -1165,7 +1214,7 @@ async function registrarTransaccion(msg) {
     if (cuentas.length === 0) {
       await enviar(chatId,
         '❌ No hay ninguna cuenta registrada, así que no puedo guardar el movimiento.\n\n' +
-        'Crea al menos una cuenta en la aplicación web y vuelve a enviar el mensaje.'
+        'Crea una con /savecard (por ejemplo: /savecard efectivo) y vuelve a enviar el mensaje.'
       );
       return;
     }
@@ -1240,8 +1289,23 @@ async function registrarTransaccion(msg) {
       categoria: categoriaNombre,
       medioPago: datos.medioPago,
       aproximado: datos.aproximado,
+      confianzaBaja,
+      archivo_respaldo: null,
       messageId: null
     };
+
+    // Foto sin texto que esperaba este gasto: queda como su respaldo (se borra si se cancela)
+    const comprobante = esperandoComprobante.get(chatId);
+    if (comprobante && Date.now() <= comprobante.hasta) {
+      try {
+        tx.archivo_respaldo = await guardarRespaldoCuota(comprobante.fileId, comprobante.nombre, 'respaldo_');
+        tx.comprobanteInfo = { fileId: comprobante.fileId, nombre: comprobante.nombre };
+        esperandoComprobante.delete(chatId);
+      } catch (error) {
+        logErrorTelegram('guardar comprobante', error);
+        await enviar(chatId, 'No pude guardar la foto, así que sigo sin respaldo.');
+      }
+    }
 
     pendingTransactions.set(txId, tx);
 
@@ -1249,9 +1313,11 @@ async function registrarTransaccion(msg) {
     const enviado = await enviar(chatId, textoConfirmacion(tx), await armarTeclado(txId, tx));
     tx.messageId = enviado?.message_id ?? null;
 
-    // Limpiar transacciones antiguas (más de 5 minutos)
-    setTimeout(() => {
+    // Limpiar transacciones antiguas (más de 5 minutos) y su respaldo si nunca se guardó
+    setTimeout(async () => {
+      const pendiente = pendingTransactions.get(txId);
       pendingTransactions.delete(txId);
+      if (pendiente?.archivo_respaldo) await eliminarRespaldoCuota(pendiente.archivo_respaldo);
     }, 5 * 60 * 1000);
 
   } catch (error) {
@@ -1266,8 +1332,8 @@ async function registrarTransaccion(msg) {
 async function guardarMovimiento(tx) {
   const [resultado] = await query(
     `INSERT INTO movimientos (cuenta_id, cuenta_destino_id, fecha, descripcion, monto, tipo, tipo_movimiento, categoria_id,
-                              es_prestamo, persona_prestamo)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                              es_prestamo, persona_prestamo, archivo_respaldo)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     // categoria_id y cuenta_destino_id pueden ser null; undefined no es válido para el driver
     [
       tx.cuenta_id,
@@ -1279,7 +1345,8 @@ async function guardarMovimiento(tx) {
       tx.tipo_movimiento ?? 'compra',
       tx.categoria_id ?? null,
       tx.es_prestamo && tx.persona ? 1 : 0,
-      tx.es_prestamo && tx.persona ? tx.persona : null
+      tx.es_prestamo && tx.persona ? tx.persona : null,
+      tx.archivo_respaldo ?? null
     ]
   );
   return resultado.insertId;
@@ -1297,15 +1364,27 @@ async function resolverCuentaPago(medioPago) {
  * (ver storage.js). No se lee el contenido ni se envía a ningún servicio. Devuelve la ruta
  * relativa a la raíz, que es lo que se guarda en archivo_respaldo.
  */
-async function guardarRespaldoCuota(fileId, nombreSugerido) {
+async function guardarRespaldoCuota(fileId, nombreSugerido, prefijo = 'respaldo_cuota_') {
   const fileLink = await bot.getFileLink(fileId);
   const respuesta = await fetch(fileLink);
   if (!respuesta.ok) throw new Error('la descarga del archivo falló');
 
   const guardado = await guardarBuffer('comprobantes', nombreSugerido, Buffer.from(await respuesta.arrayBuffer()), {
-    prefijo: `respaldo_cuota_${Date.now()}_`
+    prefijo: `${prefijo}${Date.now()}_`
   });
   return guardado.ruta;
+}
+
+/**
+ * Una foto sin texto que es el comprobante de un gasto: espera el texto del gasto (por ejemplo
+ * "almuerzo 5500 débito") y entonces queda como su respaldo.
+ */
+async function iniciarComprobanteGasto(chatId, info) {
+  esperandoComprobante.set(chatId, { ...info, hasta: Date.now() + 10 * 60 * 1000 });
+  await enviar(chatId,
+    'Escribe el gasto de ese comprobante, por ejemplo: almuerzo 5500 débito. Guardo la foto como respaldo.',
+    { reply_markup: { inline_keyboard: [[{ text: 'Cancelar', callback_data: 'trc_x' }]] } }
+  );
 }
 
 /** Borra un respaldo guardado (si el pago se cancela); nunca lanza */
@@ -1491,6 +1570,21 @@ function pedirConfirmacionBorrarCuenta(chatId, cuenta) {
   );
 }
 
+/** Lista de cuentas activas numeradas (/cuentas y "qué cuentas tengo") */
+async function enviarCuentas(chatId) {
+  try {
+    const cuentas = await listarCuentasActivas();
+    if (cuentas.length === 0) {
+      await enviar(chatId, 'No tienes cuentas activas. Crea una con /savecard.');
+      return;
+    }
+    await enviar(chatId, '<b>Tus cuentas:</b>\n\n' + cuentas.map((c, i) => lineaCuenta(c, `${i + 1}. `)).join('\n'));
+  } catch (error) {
+    console.error('Error al listar cuentas:', error.code ?? '', error.message);
+    await enviar(chatId, '❌ Error al obtener las cuentas.');
+  }
+}
+
 function configurarComandosCuentas() {
   // /savecard o /nuevacuenta <texto libre>
   bot.onText(/^\/(?:savecard|nuevacuenta)(?:@\w+)?(?:\s+([\s\S]+))?$/i, async (msg, match) => {
@@ -1553,17 +1647,7 @@ function configurarComandosCuentas() {
       return;
     }
 
-    try {
-      const cuentas = await listarCuentasActivas();
-      if (cuentas.length === 0) {
-        await enviar(chatId, 'No tienes cuentas activas. Crea una con /savecard.');
-        return;
-      }
-      await enviar(chatId, '<b>Tus cuentas:</b>\n\n' + cuentas.map((c, i) => lineaCuenta(c, `${i + 1}. `)).join('\n'));
-    } catch (error) {
-      console.error('Error al listar cuentas:', error.code ?? '', error.message);
-      await enviar(chatId, '❌ Error al obtener las cuentas.');
-    }
+    await enviarCuentas(chatId);
   });
 
   // /borrarcuenta [número]: desactiva (no borra) una cuenta, con confirmación
@@ -2087,14 +2171,6 @@ async function responderConsultaDatos(chatId, termino) {
   }
 }
 
-/** Detecta un pedido de datos en un mensaje libre. Devuelve true si lo atendió. */
-async function manejarConsultaDatos(msg) {
-  const consulta = detectarConsultaDatos(msg.text);
-  if (!consulta) return false;
-  await responderConsultaDatos(msg.chat.id, consulta.termino);
-  return true;
-}
-
 function pedirConfirmacionBorrarDatos(chatId, registro) {
   return enviar(chatId,
     `¿Eliminar estos datos de transferencia?\n\n${lineaDatos(registro)}`,
@@ -2456,13 +2532,6 @@ async function responderPlan(chatId) {
   }
 }
 
-/** "cuánto puedo gastar", "cuánto me queda"... sin comando y sin monto. true si lo atendió */
-async function manejarConsultaPlan(msg) {
-  if (!detectarConsultaPlan(msg.text)) return false;
-  await responderPlan(msg.chat.id);
-  return true;
-}
-
 /**
  * Línea corta con lo que queda del mes, para agregar después de guardar un gasto.
  * Vacía si no aplica (no es un gasto libre) o si el plan no tiene ingresos; nunca lanza.
@@ -2622,27 +2691,15 @@ async function manejarArchivo(msg) {
       return;
     }
 
-    await enviar(chatId, 'Procesando archivo...');
-
     const fileLink = await bot.getFileLink(documento.file_id);
     const response = await fetch(fileLink);
     if (!response.ok) throw new Error('la descarga del archivo falló');
     const buffer = Buffer.from(await response.arrayBuffer());
 
-    // CSV, Excel y PDF se importan desde aquí. El archivo queda pendiente en tmp/ y pasa a
-    // cartolas/{YYYY-MM}/ solo cuando se confirma la importación (ver cartolasBot.js)
-    const resultado = await cartolas.ofrecerImportacion(chatId, { nombre: nombreArchivo, buffer, ext });
-    if (resultado !== 'ilegible' && resultado !== 'escaneado') return;
-
-    // No se pudieron leer movimientos de ninguna forma: se deja guardado en cartolas/{YYYY-MM}/
-    await guardarBuffer('cartolas', nombreArchivo, buffer, { prefijo: `telegram_${Date.now()}_` });
-    await enviar(chatId,
-      resultado === 'escaneado'
-        ? 'Este PDF parece escaneado y no tiene texto, mándame la cartola descargada desde el banco. Dejé el archivo guardado.'
-        : ext === '.pdf'
-          ? 'No pude leer los movimientos de este PDF (no reconozco su formato). Dejé el archivo guardado.'
-          : 'No pude leer los movimientos de este archivo. Dejé el archivo guardado.'
-    );
+    // CSV, Excel y PDF se agrupan en una cola por chat (álbum o archivos seguidos), se analizan y se
+    // importan desde aquí. Los archivos esperan en tmp/ y pasan a cartolas/{YYYY-MM}/ al confirmar
+    // (ver cartolasBot.js)
+    await cartolas.recibirArchivo(chatId, { nombre: nombreArchivo, buffer, ext, mediaGroupId: msg.media_group_id ?? null });
   } catch (error) {
     // No imprimir el objeto completo: puede incluir la URL con el token
     logErrorTelegram('procesar archivo', error);

@@ -45,7 +45,7 @@ const PREGUNTAS_ALTA = {
 export function crearCuotas(ctx) {
   const {
     bot, enviar, editar, responderCallback, esc, esChatAutorizado, formatearMonto,
-    resolverCuentaPago, guardarRespaldo, eliminarRespaldo, manejarFoto
+    resolverCuentaPago, guardarRespaldo, eliminarRespaldo, manejarFoto, iniciarComprobanteGasto
   } = ctx;
 
   const dinero = (n) => `$${formatearMonto(n)}`;
@@ -393,20 +393,18 @@ export function crearCuotas(ctx) {
 
     // Sin caption solo se pregunta por fotos (un documento sin caption sigue el flujo de cartolas)
     if (!msg.photo) return false;
-    const compras = await listarCompras();
-    if (compras.length === 0) return false;
 
     const key = `${chatId}_${Date.now()}`;
     fotosPendientes.set(key, { info, msg });
     caducar(fotosPendientes, key);
-    await enviar(chatId, 'Recibí una foto. ¿Es el comprobante de una cuota? Elige la compra:', {
+    await enviar(chatId, 'Recibí una foto. ¿Qué es?', {
       reply_markup: {
         inline_keyboard: [
-          ...compras.map(c => [{
-            text: `${c.alias} (${c.acreedor}) - cuota ${c.cuotas_pagadas + 1}/${c.total_cuotas}`.slice(0, 50),
-            callback_data: `cqf_${key}_${c.id}`
-          }]),
-          [{ text: 'No, solo guardar la foto', callback_data: `cqo_${key}` }]
+          [
+            { text: 'Comprobante de una cuota', callback_data: `cqk_${key}` },
+            { text: 'Comprobante de otro gasto', callback_data: `cqm_${key}` }
+          ],
+          [{ text: 'Solo guardar la foto', callback_data: `cqo_${key}` }]
         ]
       }
     });
@@ -569,6 +567,51 @@ export function crearCuotas(ctx) {
         return true;
       }
 
+      // Foto sin caption: comprobante de cuota (se elige la compra)
+      if (data.startsWith('cqk_')) {
+        const key = data.replace('cqk_', '');
+        if (!fotosPendientes.has(key)) {
+          await responderCallback(cb.id, { text: 'Solicitud expirada' });
+          return true;
+        }
+        const compras = await listarCompras();
+        if (compras.length === 0) {
+          await editar('No tienes compras en cuotas en curso. Crea una escribiendo, por ejemplo: compré el mac en 12 cuotas de 85 mil con la tarjeta de la tía.', { chat_id: chatId, message_id: messageId });
+          await responderCallback(cb.id, {});
+          return true;
+        }
+        await editar('¿De cuál compra es la cuota?', {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: [
+              ...compras.map(c => [{
+                text: `${c.alias} (${c.acreedor}) - cuota ${c.cuotas_pagadas + 1}/${c.total_cuotas}`.slice(0, 50),
+                callback_data: `cqf_${key}_${c.id}`
+              }]),
+              [{ text: 'Solo guardar la foto', callback_data: `cqo_${key}` }]
+            ]
+          }
+        });
+        await responderCallback(cb.id, {});
+        return true;
+      }
+
+      // Foto sin caption: comprobante de otro gasto (espera el texto del gasto)
+      if (data.startsWith('cqm_')) {
+        const key = data.replace('cqm_', '');
+        const foto = fotosPendientes.get(key);
+        if (!foto) {
+          await responderCallback(cb.id, { text: 'Solicitud expirada' });
+          return true;
+        }
+        fotosPendientes.delete(key);
+        await editar('Comprobante de otro gasto.', { chat_id: chatId, message_id: messageId });
+        await responderCallback(cb.id, {});
+        await iniciarComprobanteGasto(chatId, foto.info);
+        return true;
+      }
+
       // Foto sin caption: elegir la compra o solo guardarla
       if ((m = data.match(/^cqf_(.+)_(\d+)$/))) {
         const foto = fotosPendientes.get(m[1]);
@@ -722,5 +765,5 @@ export function crearCuotas(ctx) {
     });
   }
 
-  return { configurarComandos, manejarCallback, manejarTexto, intentarMensaje, manejarEnvio, ofrecerPagoPorCartola };
+  return { configurarComandos, manejarCallback, manejarTexto, intentarMensaje, manejarEnvio, ofrecerPagoPorCartola, enviarLista };
 }
