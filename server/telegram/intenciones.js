@@ -4,7 +4,7 @@
  * prompt corto. Los comandos siguen funcionando como respaldo.
  *
  * Intenciones: registrar, pagar_cuota, nueva_compra_cuotas, consultar_gastos, plan,
- * datos_transferencia, cuentas, cuotas_pendientes, buscar, ayuda y eliminar_ultimo.
+ * datos_transferencia, cuentas, cuotas_pendientes, buscar, ayuda, eliminar_ultimo y asignar_digitos.
  *
  * También entiende las respuestas (reply de Telegram) a un mensaje que creó un registro: eliminar,
  * corregir o deshacer (clasificarReply; la ejecución está en registrosBot.js).
@@ -78,6 +78,20 @@ export function limpiarBusqueda(texto) {
 
 const VERBO_ELIMINAR = /\b(?:elimin\w*|borr\w*|sac(?:a|alo|ala|ar)|quit(?:a|alo|ala|ar)|anul\w*)\b/;
 const VERBO_DESHACER = /\b(?:deshac\w*|deshaz\w*|revert\w*|restaur\w*|recuper\w*|vuelve atras|volver atras)\b/;
+
+/**
+ * "la FAN termina en 6958", "la cuenta de la falabella termina en 1234": asigna los últimos 4 dígitos
+ * a una cuenta. Devuelve { termino, digitos, tipo } (tipo 'tarjeta' | 'cuenta' | null si el texto
+ * no lo dice) o null. Solo 4 dígitos: un número más largo no calza.
+ */
+export function detectarAsignarDigitos(texto) {
+  const norm = normalizar(texto).replace(/[¿?¡!.,;:]/g, ' ').replace(/\s+/g, ' ').trim();
+  const m = /^(?:(?:la|el|mi)\s+)?(?:(cuenta|tarjeta)\s+(?:del?\s+)?(?:(?:la|el|mi)\s+)?)?(.+?)\s+(?:termina|terminada|terminado|finaliza|acaba)\s+en\s+(\d{4})$/.exec(norm);
+  if (!m) return null;
+  const termino = m[2].trim();
+  if (!termino || termino.length > 40 || /\d/.test(termino) || ['cuenta', 'tarjeta'].includes(termino)) return null;
+  return { termino, digitos: m[3], tipo: m[1] ?? null };
+}
 
 /** "elimina el último gasto", "borra el último" (sin responder a ningún mensaje) */
 export function detectarEliminarUltimo(texto) {
@@ -307,6 +321,10 @@ export function clasificarPorReglas(texto) {
   // "elimina el último gasto" sin responder a ningún mensaje
   if (detectarEliminarUltimo(original)) return resultado('eliminar_ultimo');
 
+  // "la FAN termina en 6958": asignar los últimos 4 dígitos a una cuenta (siempre con confirmación)
+  const digitos = detectarAsignarDigitos(original);
+  if (digitos) return resultado('asignar_digitos', digitos);
+
   // Pedidos sin monto
   if (!hayMonto) {
     if (/\b(que puedes hacer|que sabes hacer|para que sirves|como te uso|como funciona|que haces|ayuda|help)\b/.test(norm)) {
@@ -487,6 +505,13 @@ export function crearIntenciones(ctx) {
       case 'ayuda':
         await ctx.ayuda(chatId);
         return true;
+
+      case 'asignar_digitos':
+        if (ctx.asignarDigitos && datos.digitos) {
+          await ctx.asignarDigitos(chatId, datos);
+          return true;
+        }
+        return preguntarIntencion(chatId, texto);
 
       case 'eliminar_ultimo':
         if (ctx.eliminarUltimo) {

@@ -22,6 +22,7 @@ import { calzarConCartola, normalizar } from './cuotas.js';
 import { guardarTemporal, confirmarTemporal, borrarTemporal } from '../storage.js';
 import { interpretarMovimientosCartola } from './gemini.js';
 import { formatearFechaCL } from './fechas.js';
+import { buscarCuentaPorTexto } from './intenciones.js';
 
 // Tiempo que se recuerda una importación pendiente en memoria (el archivo en tmp/ dura 24 horas)
 const ESPERA_MS = 2 * 60 * 60 * 1000;
@@ -542,6 +543,60 @@ export function crearCartolas(ctx) {
     );
   }
 
+  /**
+   * "la FAN termina en 6958": propone guardar esos 4 dígitos en la cuenta nombrada, con botones.
+   * `datos`: { termino, digitos, tipo }. Nunca guarda sin confirmar; reutiliza los botones de dígitos.
+   */
+  async function proponerDigitos(chatId, datos) {
+    try {
+      const cuentas = await listarCuentasConBanco();
+      const hallada = buscarCuentaPorTexto(datos.termino, cuentas);
+      if (!hallada) {
+        await enviar(chatId, `No encontré una cuenta que calce con «${esc(datos.termino)}». Escribe /cuentas para ver las que tienes.`);
+        return;
+      }
+      if (hallada.ambiguas) {
+        await enviar(chatId, `Hay varias cuentas que calzan: ${hallada.ambiguas.map(c => esc(c.nombre)).join(', ')}. Dime cuál con su nombre.`);
+        return;
+      }
+
+      const cuenta = hallada.cuenta;
+      // Sin "cuenta"/"tarjeta" en el texto, se decide por el tipo de la cuenta
+      const tipo = datos.tipo ?? (String(cuenta.tipo).startsWith('tarjeta') ? 'tarjeta' : 'cuenta');
+      const columna = tipo === 'cuenta' ? 'ultimos4_cuenta' : 'ultimos4';
+
+      const otra = cuentas.find(c => c.id !== cuenta.id && c[columna] === datos.digitos);
+      if (otra) {
+        await enviar(chatId, `Esos dígitos (•${esc(datos.digitos)}) ya están asignados a ${esc(otra.nombre)}. No los asigné.`);
+        return;
+      }
+      if (cuenta[columna] === datos.digitos) {
+        await enviar(chatId, `${esc(cuenta.nombre)} ya tiene •${esc(datos.digitos)}.`);
+        return;
+      }
+
+      const key = nuevaClave(chatId);
+      digitosPendientes.set(key, { cuentaId: cuenta.id, nombre: cuenta.nombre, digitos: datos.digitos, tipo });
+      setTimeout(() => digitosPendientes.delete(key), ESPERA_MS);
+
+      await enviar(chatId,
+        `¿Guardo •${esc(datos.digitos)} como los últimos 4 ${tipo === 'cuenta' ? 'del número de cuenta' : 'de la tarjeta'} de ${esc(cuenta.nombre)}?` +
+        (cuenta[columna] ? ` Reemplaza a •${esc(cuenta[columna])}.` : ''),
+        {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: 'Sí, guardar', callback_data: `cad_${key}` },
+              { text: 'No', callback_data: `can_${key}` }
+            ]]
+          }
+        }
+      );
+    } catch (error) {
+      console.error('Error al proponer dígitos:', error.code ?? error.name);
+      await enviar(chatId, 'No pude procesar eso. Inténtalo de nuevo.');
+    }
+  }
+
   /** En un lote las preguntas de dígitos se hacen al final, antes de las de cuotas */
   async function vaciarPreguntasDigitos(chatId, lote) {
     for (const { cuenta, candidato } of lote.digitosPorPreguntar.splice(0)) {
@@ -792,5 +847,5 @@ export function crearCartolas(ctx) {
     return false;
   }
 
-  return { recibirArchivo, manejarCallback };
+  return { recibirArchivo, manejarCallback, proponerDigitos };
 }

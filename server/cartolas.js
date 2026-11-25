@@ -459,6 +459,26 @@ export async function analizarPDF(buffer, { interpretarConIA = null } = {}) {
 // Cuánto del comienzo del archivo se revisa (ahí están el encabezado y los datos de la cuenta)
 const LARGO_ENCABEZADO = 6000;
 
+// Línea que parece un movimiento: una fecha y un monto (con separador de miles o con $)
+const FECHA_EN_LINEA = /\b\d{1,2}[/\-.]\d{1,2}(?:[/\-.]\d{2,4})?\b/;
+const MONTO_EN_LINEA = /\$\s?\d|\b\d{1,3}(?:\.\d{3})+\b/;
+
+/**
+ * Parte de la cartola que va antes de la primera línea que parece un movimiento (fecha y monto):
+ * el encabezado con los datos de la cuenta. Si no hay ninguna línea así, es todo el texto.
+ * Sirve para no confundir una descripción de movimiento ("transferencia a cuenta 1234...") con
+ * el número de cuenta de la cartola.
+ */
+export function encabezadoCartola(texto) {
+  const original = String(texto ?? '');
+  let posicion = 0;
+  for (const linea of original.split('\n')) {
+    if (FECHA_EN_LINEA.test(linea) && MONTO_EN_LINEA.test(linea)) return original.slice(0, posicion);
+    posicion += linea.length + 1;
+  }
+  return original;
+}
+
 /**
  * Busca en un texto los últimos 4 dígitos de una tarjeta o de una cuenta: "**** 1234",
  * "XXXX-1234", "terminada en 1234", "N° cuenta 00-123-45678". Devuelve solo esos 4 dígitos,
@@ -477,9 +497,13 @@ export function buscarUltimos4(texto) {
     hallazgos.push({ indice, digitos, tipo });
   };
 
+  // Los números de cuenta solo se buscan en el encabezado (antes del primer movimiento); las
+  // máscaras de tarjeta pueden estar en cualquier parte de los primeros LARGO_ENCABEZADO caracteres
+  const cabecera = encabezadoCartola(original);
+
   // 1. Número de cuenta: se toman solo los 4 últimos dígitos del número que sigue a "cuenta"
   const cuenta = /\b(?:n[°ºo]\.?\s*(?:de\s+)?(?:cuenta|cta\.?)|(?:cuenta|cta\.?)(?:\s+(?:corriente|vista|rut|de\s+ahorro|cte\.?))?(?:\s*(?:n[°ºo]\.?|nro\.?|n[uú]mero))?)\s*:?\s*([\dxX*•][\dxX*•\-. ]{3,28}\d)/gi;
-  for (const m of original.matchAll(cuenta)) {
+  for (const m of cabecera.matchAll(cuenta)) {
     // Una fecha después de "cuenta" no es un número de cuenta
     if (/^\d{1,2}[-. ]\d{1,2}[-. ]\d{2,4}$/.test(m[1].trim())) continue;
     const digitos = m[1].replace(/\D/g, '');
@@ -489,6 +513,7 @@ export function buscarUltimos4(texto) {
   // 2. "cuenta terminada en 1234" y "terminada en 1234" (tarjeta)
   const terminada = /\b(?:(cuenta)\s+)?(?:terminad[ao]s?|termina|final(?:iza)?)\s+en\s+(\d{4})(?!\d)/gi;
   for (const m of original.matchAll(terminada)) {
+    if (m[1] && m.index >= cabecera.length) continue; // "cuenta terminada en" dentro de un movimiento
     agregar(m.index, m.index + m[0].length, m[2], m[1] ? 'cuenta' : 'tarjeta');
   }
   for (const m of original.matchAll(/\bfinal\s+(\d{4})(?!\d)/gi)) {

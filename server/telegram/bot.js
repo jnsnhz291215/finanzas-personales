@@ -235,7 +235,8 @@ export async function iniciarBot() {
       cuentas: (chatId) => enviarCuentas(chatId),
       buscar: (chatId, texto) => admin.buscar(chatId, texto),
       ayuda: (chatId) => enviar(chatId, textoAyuda()),
-      eliminarUltimo: (chatId) => registros.eliminarUltimo(chatId)
+      eliminarUltimo: (chatId) => registros.eliminarUltimo(chatId),
+      asignarDigitos: (chatId, datos) => cartolas.proponerDigitos(chatId, datos)
     });
 
     sistema = crearSistema({ bot, enviar, editar, responderCallback, esc, esChatAutorizado });
@@ -306,6 +307,9 @@ function textoAyuda() {
     '• busca uber de octubre\n' +
     '• qué cuentas tengo\n' +
     '• pásame los datos de la mercado pago\n\n' +
+    '<b>Reconocer cuentas en las cartolas</b>\n' +
+    '• la FAN termina en 6958\n' +
+    '• la cuenta de la falabella termina en 1234\n\n' +
     '<b>Corregir o eliminar</b> (responde al mensaje del gasto, pago, cuenta o cartola)\n' +
     '• elimina esto / bórralo / me equivoqué, sácalo\n' +
     '• eran 4500 / era con la falabella / la categoría es comida / fue ayer\n' +

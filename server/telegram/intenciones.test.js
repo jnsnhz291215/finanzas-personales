@@ -1,4 +1,4 @@
-import { clasificarPorReglas, puedeEnviarseAGemini, limpiarBusqueda, clasificarReply, detectarEliminarUltimo, replyDesdeGemini } from './intenciones.js';
+import { clasificarPorReglas, puedeEnviarseAGemini, limpiarBusqueda, clasificarReply, detectarEliminarUltimo, replyDesdeGemini, detectarAsignarDigitos } from './intenciones.js';
 
 const intencion = (texto) => clasificarPorReglas(texto)?.intencion ?? null;
 
@@ -162,5 +162,22 @@ describe('respuestas a un registro (clasificarReply)', () => {
     expect(r.cambios).toEqual({ monto: 4500, cuenta_id: 2, categoria_id: 1 });
     expect(replyDesdeGemini({ accion: 'eliminar' }, { cuentas, categorias, hoy }).accion).toBe('eliminar');
     expect(replyDesdeGemini(null)).toBeNull();
+  });
+});
+
+describe('asignar los últimos 4 dígitos en lenguaje natural', () => {
+  test('la FAN termina en 6958', () => {
+    expect(detectarAsignarDigitos('la FAN termina en 6958')).toEqual({ termino: 'fan', digitos: '6958', tipo: null });
+    expect(intencion('la FAN termina en 6958')).toBe('asignar_digitos');
+  });
+
+  test('la cuenta de la falabella termina en 1234 es de cuenta', () => {
+    expect(detectarAsignarDigitos('la cuenta de la falabella termina en 1234')).toEqual({ termino: 'falabella', digitos: '1234', tipo: 'cuenta' });
+    expect(detectarAsignarDigitos('la tarjeta CMR termina en 5678').tipo).toBe('tarjeta');
+  });
+
+  test('un número largo o un gasto normal no calzan', () => {
+    expect(detectarAsignarDigitos('la FAN termina en 12345')).toBeNull();
+    expect(detectarAsignarDigitos('almuerzo 5500 débito')).toBeNull();
   });
 });

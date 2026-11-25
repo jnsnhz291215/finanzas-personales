@@ -93,6 +93,21 @@ describe('PDF: reglas sobre el texto', () => {
   });
 });
 
+describe('buscarUltimos4: encabezado', () => {
+  test('"cuenta" dentro de un movimiento no se toma como número de cuenta', () => {
+    const texto = 'Cartola\nFecha Descripción Monto\n12/11/2026 Traspaso a cuenta 5555 $1.000\nTarjeta XXXX 4321';
+    expect(buscarUltimos4(texto)).toEqual([{ digitos: '4321', tipo: 'tarjeta' }]);
+  });
+
+  test('el número de cuenta del encabezado sí se toma y la máscara puede ir más abajo', () => {
+    const texto = 'Cuenta corriente N° 00-123-45678\n12/11/2026 Compra $1.000\nTarjeta **** 1234';
+    expect(buscarUltimos4(texto)).toEqual([
+      { digitos: '5678', tipo: 'cuenta' },
+      { digitos: '1234', tipo: 'tarjeta' }
+    ]);
+  });
+});
+
 describe('buscarUltimos4', () => {
   test('máscaras de tarjeta: **** 1234, XXXX-1234, XXXX XXXX XXXX 1234', () => {
     expect(buscarUltimos4('Tarjeta **** 1234')).toEqual([{ digitos: '1234', tipo: 'tarjeta' }]);

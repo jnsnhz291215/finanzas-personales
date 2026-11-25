@@ -539,6 +539,11 @@ El bot se usa casi sin comandos: escribe como hablas o manda un archivo. Un enru
   detectada: Falabella débito •6958") y la sugiere antes que el banco. Si trae dígitos que no son de ninguna cuenta y eliges la
   cuenta a mano, el bot pregunta con botones si guardas esa terminación para reconocerla la próxima vez. Solo se leen y se guardan
   4 dígitos: nunca el número completo, y no se registran en consola. En `/savecard` puedes indicar `cuenta terminada en 1234`.
+  Los números de cuenta (`cuenta ...`) solo se buscan en el encabezado, antes de la primera línea que parezca un movimiento (fecha y
+  monto), para no confundir una descripción como "transferencia a cuenta 1234" con la cuenta de la cartola; las máscaras de tarjeta
+  (`****`, `XXXX`, `••••`) se buscan en los primeros 6.000 caracteres. También puedes asignarlos escribiendo `la FAN termina en 6958`
+  o `la cuenta de la falabella termina en 1234`: el bot muestra la cuenta que entendió y pide confirmar con botones antes de guardar
+  (sin "cuenta" ni "tarjeta" en el texto, decide por el tipo de la cuenta; rechaza dígitos que ya son de otra cuenta).
 - **Varias cartolas seguidas:** los archivos de un álbum de Telegram, o con menos de 10 segundos entre sí, se agrupan en una cola
   por chat. Se analiza cada uno, se descartan los duplicados (mismo hash) y se muestra un solo resumen con una línea por archivo
   (formato o banco, fechas, movimientos y totales). Con *Importar todo* se usa la cuenta sugerida según el contenido (por ejemplo
