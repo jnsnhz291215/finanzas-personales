@@ -6,7 +6,7 @@
 #   bash update.sh                  hace todo (a mano, desde una terminal)
 #   bash update.sh --sin-reinicio   verifica, descarga e instala, pero no toca PM2 (lo usa /update del bot,
 #                                   que antes de reiniciar manda la prueba del cambio y el resumen)
-#   bash update.sh --solo-reiniciar solo pm2 reload y pm2 save (lo usa /update del bot al final)
+#   bash update.sh --solo-reiniciar solo pm2 startOrReload y pm2 save (sirve también para el primer arranque) (lo usa /update del bot al final)
 #
 # No lee ni imprime .env ni secretos. Sale con código distinto de 0 si algo falla.
 
@@ -25,7 +25,7 @@ falla() { echo "ERROR: $1"; exit 1; }
 reiniciar_pm2() {
   echo "== Reiniciando =="
   command -v pm2 >/dev/null 2>&1 || falla "PM2 no está en el PATH de este proceso: revisa el PATH o nvm."
-  pm2 reload ecosystem.config.cjs --update-env || falla "pm2 reload falló."
+  pm2 startOrReload ecosystem.config.cjs --update-env || falla "pm2 startOrReload falló."
   pm2 save || falla "pm2 save falló."
   echo "[ok] PM2 recargado y guardado"
 }

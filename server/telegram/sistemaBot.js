@@ -11,7 +11,7 @@
  *    resumen con Gemini hecho solo con títulos de commits y nombres de archivos (esa llamada no
  *    cuenta para el límite por hora). Si existe update.sh en la raíz del repositorio, lo usa en lugar
  *    de hacer pull e instalar por su cuenta: `--sin-reinicio` antes de la prueba y `--solo-reiniciar`
- *    (pm2 reload y pm2 save) al final.
+ *    (pm2 startOrReload y pm2 save) al final.
  *  - Antes de salir se escribe tmp/reinicio.json (en la raíz de storage) con el chat, el motivo y el
  *    hash esperado; al arrancar, el bot avisa que volvió, compara el hash y borra ese archivo.
  *  - Los errores que se muestran en el chat se limpian: sin rutas del servidor, sin líneas que
@@ -245,7 +245,7 @@ export function crearSistema(ctx) {
     } catch (error) {
       console.error(`[sistema] no se pudo escribir el aviso de reinicio: error_code=${error.code ?? 'desconocido'}`);
     }
-    // Con update.sh, el script recarga PM2 (reload y save); si falla o el proceso sigue vivo, se sale
+    // Con update.sh, el script arranca o recarga PM2 (startOrReload y save); si falla o el proceso sigue vivo, se sale
     // igual y PM2 (autorestart) lo levanta
     if (conScript) {
       await new Promise(resolve => setTimeout(resolve, RETRASO_SALIDA_MS));
