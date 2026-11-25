@@ -194,3 +194,30 @@ CREATE TABLE IF NOT EXISTS archivos_importados (
   FOREIGN KEY (cuenta_id) REFERENCES cuentas(id) ON DELETE SET NULL,
   INDEX idx_hash (hash_archivo)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Mensajes de Telegram que crearon cada registro (para eliminar/corregir respondiéndoles)
+CREATE TABLE IF NOT EXISTS mensajes_registro (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  chat_id BIGINT NOT NULL,
+  message_id BIGINT NOT NULL,
+  tipo VARCHAR(30) NOT NULL,
+  registro_id INT NOT NULL,
+  creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_mensajes_registro_msg (chat_id, message_id),
+  INDEX idx_mensajes_registro_reg (tipo, registro_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Historial de eliminaciones y correcciones hechas desde el bot (permite deshacer por 24 h)
+CREATE TABLE IF NOT EXISTS historial_cambios (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  creado_ms BIGINT NOT NULL,
+  accion VARCHAR(20) NOT NULL,
+  tipo VARCHAR(30) NOT NULL,
+  registro_id INT NULL,
+  chat_id BIGINT NULL,
+  antes LONGTEXT NULL,
+  despues LONGTEXT NULL,
+  deshecho BOOLEAN NOT NULL DEFAULT FALSE,
+  INDEX idx_historial_cambios_reg (tipo, registro_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

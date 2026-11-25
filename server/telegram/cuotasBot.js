@@ -47,6 +47,10 @@ export function crearCuotas(ctx) {
     bot, enviar, editar, responderCallback, esc, esChatAutorizado, formatearMonto,
     resolverCuentaPago, guardarRespaldo, eliminarRespaldo, manejarFoto, iniciarComprobanteGasto
   } = ctx;
+  // Guarda qué mensajes de Telegram crearon cada registro (para eliminar/corregir respondiéndoles)
+  const vincular = ctx.vincularRegistro ?? (async () => {});
+  // Último mensaje de Juan por chat, para vincularlo al registro cuando se confirme
+  const mensajeUsuario = new Map();
 
   const dinero = (n) => `$${formatearMonto(n)}`;
 
@@ -163,7 +167,7 @@ export function crearCuotas(ctx) {
   async function iniciarAlta(chatId, texto) {
     const datos = parsearAltaCuotas(texto);
     const key = `${chatId}_${Date.now()}`;
-    pendientesAlta.set(key, { datos });
+    pendientesAlta.set(key, { datos, mensajeUsuarioId: mensajeUsuario.get(chatId) ?? null });
     caducar(pendientesAlta, key);
     await avanzarAlta(chatId, key);
   }
@@ -295,7 +299,8 @@ export function crearCuotas(ctx) {
       medioPago: extraerMedioPago(texto),
       fecha: extraerFecha(texto),
       archivo,
-      compraId: null
+      compraId: null,
+      mensajeUsuarioId: mensajeUsuario.get(chatId) ?? null
     });
     caducar(pendientesPago, key);
 
@@ -334,7 +339,7 @@ export function crearCuotas(ctx) {
         return;
       }
 
-      const { compra: actualizada } = await registrarPagoCuota({
+      const { compra: actualizada, movimientoId } = await registrarPagoCuota({
         compraId: compra.id,
         numero: p.numero,
         monto: p.monto,
@@ -344,6 +349,7 @@ export function crearCuotas(ctx) {
         archivoRespaldo: p.archivo
       });
       pendientesPago.delete(key);
+      await vincular(chatId, [p.mensajeUsuarioId, cb.message.message_id], 'pago_cuota', movimientoId);
 
       const restantes = actualizada.total_cuotas - actualizada.cuotas_pagadas;
       await editar(
@@ -373,6 +379,7 @@ export function crearCuotas(ctx) {
    */
   async function manejarEnvio(msg) {
     const chatId = msg.chat.id;
+    mensajeUsuario.set(chatId, msg.message_id);
     const caption = (msg.caption || '').trim();
     const info = msg.photo
       ? { fileId: msg.photo[msg.photo.length - 1].file_id, nombre: 'foto.jpg' }
@@ -447,6 +454,7 @@ export function crearCuotas(ctx) {
    */
   async function intentarMensaje(msg) {
     const chatId = msg.chat.id;
+    mensajeUsuario.set(chatId, msg.message_id);
     const texto = msg.text;
 
     try {
@@ -529,6 +537,7 @@ export function crearCuotas(ctx) {
         }
         pendientesAlta.delete(key);
         esperando.delete(chatId);
+        await vincular(chatId, [pendiente.mensajeUsuarioId, messageId], 'compra', r.id);
         const hoy = fechaHoySantiago();
         const compra = await obtenerCompra(r.id);
         await editar(`Compra en cuotas guardada.\n\n${lineaCompra(compra, hoy)}`, { chat_id: chatId, message_id: messageId });
@@ -632,7 +641,8 @@ export function crearCuotas(ctx) {
         const key = `${chatId}_${Date.now()}`;
         pendientesPago.set(key, {
           chatId, parsed: { numero: null, total: null, monto: null, palabras: [] },
-          medioPago: null, fecha: fechaHoySantiago(), archivo, compraId: null
+          medioPago: null, fecha: fechaHoySantiago(), archivo, compraId: null,
+          mensajeUsuarioId: foto.msg?.message_id ?? null
         });
         caducar(pendientesPago, key);
         await editar(`Comprobante de: ${esc(compra.alias)}`, { chat_id: chatId, message_id: messageId });
@@ -732,6 +742,7 @@ export function crearCuotas(ctx) {
         }
 
         if (/^nueva\b/i.test(argumento)) {
+          mensajeUsuario.set(chatId, msg.message_id);
           await iniciarAlta(chatId, argumento);
           return;
         }

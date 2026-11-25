@@ -88,6 +88,8 @@ export function candidatoDigitos(ultimos4, cuenta, cuentas) {
 
 export function crearCartolas(ctx) {
   const { enviar, editar, responderCallback, esc, formatearMonto, ofrecerPagoPorCartola, guardarNoLeido } = ctx;
+  // Guarda qué mensajes de Telegram crearon cada importación (para eliminarla respondiéndoles)
+  const vincular = ctx.vincularRegistro ?? (async () => {});
 
   // Archivos que van llegando: chatId -> { items, timer }
   const colas = new Map();
@@ -222,14 +224,14 @@ export function crearCartolas(ctx) {
    * Recibe un archivo ya descargado. Lo agrupa con los que lleguen seguidos y, cuando pasa la
    * ventana sin más archivos, analiza el lote completo.
    */
-  async function recibirArchivo(chatId, { nombre, buffer, ext, mediaGroupId = null }) {
+  async function recibirArchivo(chatId, { nombre, buffer, ext, mediaGroupId = null, mensajeId = null }) {
     let cola = colas.get(chatId);
     const primero = !cola;
     if (!cola) {
       cola = { items: [], timer: null };
       colas.set(chatId, cola);
     }
-    cola.items.push({ nombre, buffer, ext, mediaGroupId });
+    cola.items.push({ nombre, buffer, ext, mediaGroupId, mensajeId });
 
     clearTimeout(cola.timer);
     const esAlbum = cola.items.every(i => i.mediaGroupId && i.mediaGroupId === cola.items[0].mediaGroupId);
@@ -305,7 +307,9 @@ export function crearCartolas(ctx) {
         movimientos: analisis.movimientos,
         estado: 'pendiente',
         importados: 0,
-        cuentaNombre: null
+        cuentaNombre: null,
+        mensajeUsuarioId: archivo.mensajeId ?? null,
+        archivoId: null
       });
     }
 
@@ -444,12 +448,13 @@ export function crearCartolas(ctx) {
   async function importarItem(lote, item, cuenta) {
     try {
       const ruta = await confirmarTemporal(item.tmp, 'cartolas', { prefijo: 'telegram_' });
-      const { importados, registrados } = await registrarImportacion({
+      const { importados, registrados, archivoId } = await registrarImportacion({
         archivo: ruta,
         hash: item.hash,
         cuentaId: cuenta.id,
         movimientos: item.movimientos
       });
+      item.archivoId = archivoId;
       item.estado = 'importado';
       item.importados = importados;
       item.cuentaNombre = cuenta.nombre;
@@ -488,7 +493,14 @@ export function crearCartolas(ctx) {
       return `${i + 1}. omitido`;
     });
     const total = lote.items.reduce((suma, item) => suma + item.importados, 0);
-    await enviar(chatId, `<b>Listo: importé ${total} movimientos</b>\n\n${lineas.join('\n')}`);
+    const resumen = await enviar(chatId, `<b>Listo: importé ${total} movimientos</b>\n\n${lineas.join('\n')}`);
+
+    // Cada archivo importado queda ligado al mensaje en que Juan lo mandó; el resumen solo si fue uno
+    const importadas = lote.items.filter(item => item.estado === 'importado' && item.archivoId);
+    for (const item of importadas) {
+      await vincular(chatId, [item.mensajeUsuarioId], 'importacion', item.archivoId);
+    }
+    if (importadas.length === 1) await vincular(chatId, [resumen?.message_id], 'importacion', importadas[0].archivoId);
 
     // Dígitos nuevos de las cuentas elegidas a mano, y luego las preguntas de cuotas, todas juntas al final
     await vaciarPreguntasDigitos(chatId, lote);
@@ -604,13 +616,14 @@ export function crearCartolas(ctx) {
 
       try {
         const ruta = await confirmarTemporal(pendiente.tmp, 'cartolas', { prefijo: 'telegram_' });
-        const { importados, registrados } = await registrarImportacion({
+        const { importados, registrados, archivoId } = await registrarImportacion({
           archivo: ruta,
           hash: pendiente.hash,
           cuentaId: cuenta.id,
           movimientos: pendiente.movimientos
         });
         await editar(`Importé ${importados} movimientos en <b>${esc(cuenta.nombre)}</b>.`, { chat_id: chatId, message_id: messageId });
+        await vincular(chatId, [pendiente.mensajeUsuarioId, messageId], 'importacion', archivoId);
         await responderCallback(cb.id, { text: 'Importada' });
 
         // La cuenta se eligió a mano: si la cartola trae dígitos que no son de ninguna cuenta, se ofrece guardarlos
@@ -732,6 +745,7 @@ export function crearCartolas(ctx) {
             : 'No pude importar este archivo.',
           { chat_id: chatId, message_id: messageId }
         );
+        if (item.estado === 'importado') await vincular(chatId, [item.mensajeUsuarioId, messageId], 'importacion', item.archivoId);
         await avanzarLote(chatId, m[1]);
       } catch (error) {
         console.error('Error en el lote de cartolas:', error.code ?? error.name);

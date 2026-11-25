@@ -124,6 +124,7 @@ export async function inicializarDB() {
 
     // Migración: ultimos4_cuenta (últimos 4 del número de cuenta, distinto de ultimos4 de la tarjeta)
     migrarUltimos4Cuenta(database);
+    migrarRegistros(database);
 
     // Migración: tabla datos_transferencia
     migrarDatosTransferencia(database);
@@ -307,6 +308,39 @@ function migrarUltimos4Cuenta(database) {
   if (!columnas.includes('ultimos4_cuenta')) {
     database.exec('ALTER TABLE cuentas ADD COLUMN ultimos4_cuenta TEXT');
   }
+}
+
+/**
+ * Migración idempotente (SQLite): mensajes_registro (qué mensaje de Telegram creó cada registro,
+ * para poder responderle) e historial_cambios (eliminaciones y correcciones, para deshacer).
+ */
+function migrarRegistros(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS mensajes_registro (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id INTEGER NOT NULL,
+      message_id INTEGER NOT NULL,
+      tipo TEXT NOT NULL,
+      registro_id INTEGER NOT NULL,
+      creado_en DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_mensajes_registro_msg ON mensajes_registro(chat_id, message_id);
+    CREATE INDEX IF NOT EXISTS idx_mensajes_registro_reg ON mensajes_registro(tipo, registro_id);
+
+    CREATE TABLE IF NOT EXISTS historial_cambios (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      fecha DATETIME DEFAULT CURRENT_TIMESTAMP,
+      creado_ms INTEGER NOT NULL,
+      accion TEXT NOT NULL,
+      tipo TEXT NOT NULL,
+      registro_id INTEGER,
+      chat_id INTEGER,
+      antes TEXT,
+      despues TEXT,
+      deshecho INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_historial_cambios_reg ON historial_cambios(tipo, registro_id);
+  `);
 }
 
 /**

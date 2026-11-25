@@ -553,6 +553,32 @@ El bot se usa casi sin comandos: escribe como hablas o manda un archivo. Un enru
   el bot responde que no entendió y muestra ejemplos; los gastos con monto siguen funcionando solo con las reglas.
 - El menú `/` de Telegram solo muestra `/help`, `/plan`, `/cuotas` y `/update`; el resto de los comandos funciona igual si los escribes.
 
+### Eliminar o corregir un registro respondiéndole
+
+Responde (reply de Telegram) al mensaje que creó un registro: tu mensaje original o la confirmación del bot. Sirve para gastos e
+ingresos, pagos de cuota, compras en cuotas, cuentas e importaciones de cartola.
+
+| Dices | Qué pasa |
+| --- | --- |
+| `elimina esto`, `bórralo`, `me equivoqué, sácalo` | Muestra el registro y pide confirmar con **Eliminar** / **Cancelar** |
+| `eran 4500`, `4.500`, `eran 57 mil` | Corrige el monto |
+| `era con la falabella`, `con la FAN` | Cambia la cuenta (por nombre, banco o tipo; si calzan varias, te lo dice) |
+| `la categoría es comida`, `era de comida` | Cambia la categoría |
+| `fue ayer`, `fue el 15`, `15/11`, `fue el lunes` | Cambia la fecha |
+| `deshacer` (respondiendo a la confirmación de una eliminación o corrección) | Lo recupera, hasta 24 horas después |
+| `elimina el último gasto` (sin responder a nada) | Actúa sobre el último registro creado a mano en ese chat, con la misma confirmación |
+
+- Las correcciones muestran el antes y el después y piden **Guardar** / **Cancelar**; solo se corrigen movimientos y pagos de cuota.
+- Qué se elimina: un movimiento se borra junto con su comprobante (queda 24 h en `tmp/` por si lo deshaces); un pago de cuota se anula y la
+  cuota vuelve a quedar pendiente; una compra en cuotas se desactiva (sus pagos se conservan); una cuenta con movimientos solo se
+  desactiva, sin movimientos se elimina; una importación borra todos sus movimientos y el registro del archivo, así que puedes volver a
+  importarlo.
+- Las reglas entienden las frases de arriba; si no alcanzan, se consulta a Gemini (con el mismo límite por chat y sin enviar nada
+  sensible). Si el mensaje no se entiende, el bot lo trata como un mensaje normal.
+- Los vínculos mensaje-registro están en la tabla `mensajes_registro` y cada eliminación o corrección queda en `historial_cambios`
+  (se crean solas al arrancar). Los registros anteriores a esta función no tienen mensaje asociado: se pueden eliminar con
+  `/ultimos` o la web, no respondiéndoles.
+
 ### Reiniciar y actualizar desde el bot
 
 Solo para los chats de `TELEGRAM_ALLOWED_CHAT_IDS` y solo con `NODE_ENV=production` (en desarrollo se bloquean para no cerrar

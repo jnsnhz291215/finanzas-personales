@@ -27,6 +27,7 @@ import {
 import { crearAdmin } from './admin.js';
 import { crearCuotas } from './cuotasBot.js';
 import { crearCartolas } from './cartolasBot.js';
+import { crearRegistros } from './registrosBot.js';
 import { crearSistema } from './sistemaBot.js';
 import { crearIntenciones, clasificarPorReglas } from './intenciones.js';
 import { limitadorGemini } from './limiteGemini.js';
@@ -34,6 +35,7 @@ import { guardarBuffer, borrarArchivo } from '../storage.js';
 import { categoriaPorReglas } from '../gestion.js';
 import { canonizarPersona } from '../deudas.js';
 import { detectarPrestamo } from './prestamo.js';
+import { vincularMensajes } from '../registros.js';
 import {
   parsearCuenta,
   nombrePorDefecto,
@@ -72,6 +74,8 @@ let cuotas = null;
 let cartolas = null;
 // Reinicio y actualización desde el bot (sistemaBot.js); se crea al iniciar el bot
 let sistema = null;
+// Eliminar/corregir/deshacer respondiendo a un mensaje (registrosBot.js); se crea al iniciar el bot
+let registros = null;
 // Enrutador de intenciones para mensajes libres (intenciones.js); se crea al iniciar el bot
 let intenciones = null;
 // Foto que espera el texto de un gasto para quedar como su respaldo: chatId -> { fileId, nombre, hasta }
@@ -198,7 +202,8 @@ export async function iniciarBot() {
       guardarRespaldo: guardarRespaldoCuota,
       eliminarRespaldo: eliminarRespaldoCuota,
       manejarFoto,
-      iniciarComprobanteGasto
+      iniciarComprobanteGasto,
+      vincularRegistro: vincularMensajes
     });
     cuotas.configurarComandos();
 
@@ -208,10 +213,13 @@ export async function iniciarBot() {
       responderCallback,
       esc,
       formatearMonto,
+      vincularRegistro: vincularMensajes,
       ofrecerPagoPorCartola: (chatId, movimiento) => cuotas.ofrecerPagoPorCartola(chatId, movimiento),
       guardarNoLeido: (nombre, buffer) =>
         guardarBuffer('cartolas', nombre, buffer, { prefijo: `telegram_${Date.now()}_` })
     });
+
+    registros = crearRegistros({ enviar, editar, responderCallback, esc });
 
     intenciones = crearIntenciones({
       enviar,
@@ -226,7 +234,8 @@ export async function iniciarBot() {
       datos: (chatId, termino) => responderConsultaDatos(chatId, termino),
       cuentas: (chatId) => enviarCuentas(chatId),
       buscar: (chatId, texto) => admin.buscar(chatId, texto),
-      ayuda: (chatId) => enviar(chatId, textoAyuda())
+      ayuda: (chatId) => enviar(chatId, textoAyuda()),
+      eliminarUltimo: (chatId) => registros.eliminarUltimo(chatId)
     });
 
     sistema = crearSistema({ bot, enviar, editar, responderCallback, esc, esChatAutorizado });
@@ -297,6 +306,11 @@ function textoAyuda() {
     '• busca uber de octubre\n' +
     '• qué cuentas tengo\n' +
     '• pásame los datos de la mercado pago\n\n' +
+    '<b>Corregir o eliminar</b> (responde al mensaje del gasto, pago, cuenta o cartola)\n' +
+    '• elimina esto / bórralo / me equivoqué, sácalo\n' +
+    '• eran 4500 / era con la falabella / la categoría es comida / fue ayer\n' +
+    '• deshacer (respondiendo a la confirmación, hasta 24 horas después)\n' +
+    '• elimina el último gasto (sin responder a nada)\n\n' +
     '<b>Archivos</b>\n' +
     '• Manda la cartola (PDF, CSV o Excel) y elige la cuenta. Si mandas varias seguidas, te hago un solo resumen.\n' +
     '• Manda la foto de un comprobante y te pregunto si es de una cuota o de otro gasto.\n\n' +
@@ -533,6 +547,11 @@ function configurarManejadores() {
       return;
     }
 
+    // Respuesta (reply) a un mensaje que creó un registro: eliminar, corregir o deshacer
+    if (msg.text && msg.reply_to_message && registros && await registros.manejarReply(msg)) {
+      return;
+    }
+
     // Nombre nuevo para una cuenta pendiente (botón "Editar nombre")
     if (msg.text && await manejarNombreCuentaPendiente(msg)) {
       return;
@@ -600,6 +619,11 @@ function configurarManejadores() {
       return;
     }
 
+    // Botones de eliminar / corregir / deshacer registros
+    if (registros && await registros.manejarCallback(cb, chatId, data)) {
+      return;
+    }
+
     // Botones de importación de cartolas
     if (cartolas && await cartolas.manejarCallback(cb, chatId, data)) {
       return;
@@ -647,6 +671,7 @@ function configurarManejadores() {
       try {
         const movimientoId = await guardarMovimiento(tx);
         pendingTransactions.delete(txId);
+        await vincularMensajes(chatId, [tx.mensajeUsuarioId, cb.message.message_id], 'movimiento', movimientoId);
         const lineaPlan = await lineaDisponiblePlan(tx);
 
         await editar(
@@ -1297,7 +1322,9 @@ async function registrarTransaccion(msg, { confianzaBaja = false } = {}) {
       aproximado: datos.aproximado,
       confianzaBaja,
       archivo_respaldo: null,
-      messageId: null
+      messageId: null,
+      // Mensaje de Juan que originó el gasto (para poder eliminarlo o corregirlo respondiéndole)
+      mensajeUsuarioId: msg.message_id ?? null
     };
 
     // Foto sin texto que esperaba este gasto: queda como su respaldo (se borra si se cancela)
@@ -1562,7 +1589,7 @@ async function buscarCuentaDuplicada(datos) {
 
 async function guardarCuenta(datos) {
   // Nunca se guarda el número completo: solo los últimos 4 (ultimos4 de la tarjeta, ultimos4_cuenta de la cuenta)
-  await query(
+  const [insercion] = await query(
     `INSERT INTO cuentas (nombre, tipo, banco, ultimos4, ultimos4_cuenta, titular, cupo_total, dia_vencimiento)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
@@ -1576,6 +1603,7 @@ async function guardarCuenta(datos) {
       datos.tipo === 'credito' ? (datos.diaPago ?? null) : null
     ]
   );
+  return insercion.insertId;
 }
 
 async function listarCuentasActivas() {
@@ -1661,7 +1689,7 @@ function configurarComandosCuentas() {
       }
 
       const key = `${chatId}_${Date.now()}`;
-      pendingCuentas.set(key, { datos });
+      pendingCuentas.set(key, { datos, mensajeUsuarioId: msg.message_id ?? null });
       setTimeout(() => pendingCuentas.delete(key), 5 * 60 * 1000);
 
       if (!datos.tipo) {
@@ -1789,8 +1817,9 @@ async function manejarCallbackCuentas(cb, chatId, data) {
         return true;
       }
 
-      await guardarCuenta(pendiente.datos);
+      const cuentaId = await guardarCuenta(pendiente.datos);
       pendingCuentas.delete(key);
+      await vincularMensajes(chatId, [pendiente.mensajeUsuarioId, messageId], 'cuenta', cuentaId);
       esperandoNombreCuenta.delete(chatId);
 
       await editar(
@@ -2738,7 +2767,7 @@ async function manejarArchivo(msg) {
     // CSV, Excel y PDF se agrupan en una cola por chat (álbum o archivos seguidos), se analizan y se
     // importan desde aquí. Los archivos esperan en tmp/ y pasan a cartolas/{YYYY-MM}/ al confirmar
     // (ver cartolasBot.js)
-    await cartolas.recibirArchivo(chatId, { nombre: nombreArchivo, buffer, ext, mediaGroupId: msg.media_group_id ?? null });
+    await cartolas.recibirArchivo(chatId, { nombre: nombreArchivo, buffer, ext, mediaGroupId: msg.media_group_id ?? null, mensajeId: msg.message_id });
   } catch (error) {
     // No imprimir el objeto completo: puede incluir la URL con el token
     logErrorTelegram('procesar archivo', error);

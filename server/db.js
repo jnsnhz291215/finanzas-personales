@@ -99,6 +99,40 @@ if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
   }
 
   /**
+   * Migración idempotente (MariaDB): mensajes_registro (mensaje de Telegram que creó cada registro)
+   * e historial_cambios (eliminaciones y correcciones, para deshacer).
+   */
+  async function migrarRegistros(connection) {
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS mensajes_registro (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        chat_id BIGINT NOT NULL,
+        message_id BIGINT NOT NULL,
+        tipo VARCHAR(30) NOT NULL,
+        registro_id INT NOT NULL,
+        creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_mensajes_registro_msg (chat_id, message_id),
+        INDEX idx_mensajes_registro_reg (tipo, registro_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS historial_cambios (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        creado_ms BIGINT NOT NULL,
+        accion VARCHAR(20) NOT NULL,
+        tipo VARCHAR(30) NOT NULL,
+        registro_id INT NULL,
+        chat_id BIGINT NULL,
+        antes LONGTEXT NULL,
+        despues LONGTEXT NULL,
+        deshecho BOOLEAN NOT NULL DEFAULT FALSE,
+        INDEX idx_historial_cambios_reg (tipo, registro_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+  }
+
+  /**
    * Migración idempotente (MariaDB): plan_ahorro (una sola fila, id = 1) y gastos_fijos.
    */
   async function migrarPlanAhorro(connection) {
@@ -242,6 +276,7 @@ if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
         await migrarDatosCuenta(connection);
         await migrarTipoEfectivo(connection);
         await migrarUltimos4Cuenta(connection);
+        await migrarRegistros(connection);
         await migrarDatosTransferencia(connection);
         await migrarPlanAhorro(connection);
         await migrarComprasCuotas(connection);

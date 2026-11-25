@@ -4,7 +4,10 @@
  * prompt corto. Los comandos siguen funcionando como respaldo.
  *
  * Intenciones: registrar, pagar_cuota, nueva_compra_cuotas, consultar_gastos, plan,
- * datos_transferencia, cuentas, cuotas_pendientes, buscar y ayuda.
+ * datos_transferencia, cuentas, cuotas_pendientes, buscar, ayuda y eliminar_ultimo.
+ *
+ * También entiende las respuestas (reply de Telegram) a un mensaje que creó un registro: eliminar,
+ * corregir o deshacer (clasificarReply; la ejecución está en registrosBot.js).
  *
  * Privacidad: a Gemini nunca viaja nada de datos de transferencia, RUT, correos ni números de
  * cuenta. Si el mensaje parece contener algo así, ni siquiera se consulta (puedeEnviarseAGemini).
@@ -16,6 +19,7 @@
  */
 
 import { analizarMonto, parsearMontoExacto } from './parser.js';
+import { fechaHoySantiago, sumarDias, diaSemana, construirFecha } from './fechas.js';
 import { detectarConsultaDatos, terminoDesdeTexto } from './datosTransferencia.js';
 import { detectarConsultaPlan } from '../planAhorro.js';
 import { parsearPagoCuota, detectarAltaCuotas, detectarConsultaCuotas } from './cuotas.js';
@@ -68,6 +72,226 @@ export function limpiarBusqueda(texto) {
     .trim();
 }
 
+// ---------------------------------------------------------------------------
+// Respuestas a un registro: eliminar, corregir, deshacer
+// ---------------------------------------------------------------------------
+
+const VERBO_ELIMINAR = /\b(?:elimin\w*|borr\w*|sac(?:a|alo|ala|ar)|quit(?:a|alo|ala|ar)|anul\w*)\b/;
+const VERBO_DESHACER = /\b(?:deshac\w*|deshaz\w*|revert\w*|restaur\w*|recuper\w*|vuelve atras|volver atras)\b/;
+
+/** "elimina el último gasto", "borra el último" (sin responder a ningún mensaje) */
+export function detectarEliminarUltimo(texto) {
+  const norm = normalizar(texto).replace(/[¿?¡!.,;:]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!VERBO_ELIMINAR.test(norm) || /\d/.test(norm)) return false;
+  return /\bultim[oa]\b/.test(norm) && norm.split(' ').length <= 8;
+}
+
+const MESES_NOMBRE = {
+  enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6, julio: 7,
+  agosto: 8, septiembre: 9, setiembre: 9, octubre: 10, noviembre: 11, diciembre: 12
+};
+const DIAS_NOMBRE = { domingo: 0, lunes: 1, martes: 2, miercoles: 3, jueves: 4, viernes: 5, sabado: 6 };
+
+const RELLENO_FECHA = new Set([
+  'no', 'fue', 'era', 'es', 'fueron', 'eran', 'del', 'de', 'el', 'la', 'dia', 'lo', 'hice', 'pague', 'compre',
+  'gaste', 'fecha', 'cambia', 'cambiala', 'cambialo', 'corrige', 'a', 'seria'
+]);
+
+/**
+ * Fecha (YYYY-MM-DD) cuando el texto es SOLO una fecha con palabras de relleno: "fue ayer",
+ * "era del 15", "el lunes", "15/11", "fue el 3 de noviembre". Si hay algo más, devuelve null.
+ */
+export function fechaDeTexto(texto, hoy = fechaHoySantiago()) {
+  const palabras = normalizar(texto).replace(/[¿?¡!.,;:]/g, ' ').split(/\s+/).filter(Boolean);
+  while (palabras.length > 1 && RELLENO_FECHA.has(palabras[0])) palabras.shift();
+  const expr = palabras.join(' ');
+  if (!expr) return null;
+
+  if (expr === 'hoy') return hoy;
+  if (expr === 'ayer') return sumarDias(hoy, -1);
+  if (expr === 'anteayer' || expr === 'antier') return sumarDias(hoy, -2);
+
+  if (expr in DIAS_NOMBRE) {
+    let diferencia = DIAS_NOMBRE[expr] - diaSemana(hoy);
+    if (diferencia > 0) diferencia -= 7;
+    return sumarDias(hoy, diferencia);
+  }
+
+  const anioHoy = Number(hoy.slice(0, 4));
+  const mesHoy = Number(hoy.slice(5, 7));
+  let m;
+
+  // 15/11, 15-11, 15/11/2026
+  if ((m = /^(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2}|\d{4}))?$/.exec(expr))) {
+    const anioDado = m[3] ? (m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3])) : null;
+    let f = construirFecha(anioDado ?? anioHoy, Number(m[2]), Number(m[1]));
+    if (f && !anioDado && f > hoy) f = construirFecha(anioHoy - 1, Number(m[2]), Number(m[1]));
+    return f && f <= hoy ? f : null;
+  }
+
+  // 15 de noviembre [de 2026]
+  if ((m = /^(\d{1,2})\s+de\s+([a-z]+)(?:\s+de\s+(\d{4}))?$/.exec(expr)) && MESES_NOMBRE[m[2]]) {
+    const anioDado = m[3] ? Number(m[3]) : null;
+    let f = construirFecha(anioDado ?? anioHoy, MESES_NOMBRE[m[2]], Number(m[1]));
+    if (f && !anioDado && f > hoy) f = construirFecha(anioHoy - 1, MESES_NOMBRE[m[2]], Number(m[1]));
+    return f && f <= hoy ? f : null;
+  }
+
+  // Solo el día: el 15 (de este mes, o del anterior si todavía no llega)
+  if ((m = /^(\d{1,2})$/.exec(expr)) && palabras.length === 1 && /\b(?:el|del|dia)\b/.test(normalizar(texto))) {
+    let f = construirFecha(anioHoy, mesHoy, Number(m[1]));
+    if (!f || f > hoy) {
+      const mesAnterior = mesHoy === 1 ? 12 : mesHoy - 1;
+      f = construirFecha(mesHoy === 1 ? anioHoy - 1 : anioHoy, mesAnterior, Number(m[1]));
+    }
+    return f;
+  }
+
+  return null;
+}
+
+const TIPOS_CUENTA_PALABRA = [
+  { palabra: 'debito', tipo: 'tarjeta_debito' },
+  { palabra: 'credito', tipo: 'tarjeta_credito' },
+  { palabra: 'efectivo', tipo: 'efectivo' },
+  { palabra: 'corriente', tipo: 'cuenta_corriente' },
+  { palabra: 'vista', tipo: 'cuenta_vista' },
+  { palabra: 'rut', tipo: 'cuenta_vista' },
+  { palabra: 'ahorro', tipo: 'cuenta_ahorro' }
+];
+
+/**
+ * Busca la cuenta que nombra el texto ("falabella", "débito", "FAN"). Devuelve { cuenta },
+ * { ambiguas: [cuentas] } si varias calzan por igual, o null. `cuentas`: { id, nombre, banco, tipo }.
+ */
+export function buscarCuentaPorTexto(texto, cuentas = []) {
+  const t = normalizar(texto).replace(/[¿?¡!.,;:]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!t) return null;
+
+  const puntuadas = cuentas.map(c => {
+    const nombre = normalizar(c.nombre ?? '');
+    const banco = normalizar(c.banco ?? '');
+    let puntos = 0;
+    if (nombre && nombre === t) puntos = 100;
+    else if (nombre.length >= 3 && t.length >= 3 && (nombre.includes(t) || t.includes(nombre))) puntos = 80;
+    else if (banco && banco === t) puntos = 70;
+    else if (banco.length >= 3 && t.length >= 3 && (banco.includes(t) || t.includes(banco))) puntos = 60;
+    else if (TIPOS_CUENTA_PALABRA.some(x => x.tipo === c.tipo && new RegExp(`\\b${x.palabra}\\b`).test(t))) puntos = 50;
+    return { cuenta: c, puntos };
+  }).filter(x => x.puntos > 0);
+
+  if (puntuadas.length === 0) return null;
+  const mejor = Math.max(...puntuadas.map(x => x.puntos));
+  const empatadas = puntuadas.filter(x => x.puntos === mejor).map(x => x.cuenta);
+  return empatadas.length === 1 ? { cuenta: empatadas[0] } : { ambiguas: empatadas };
+}
+
+/** Categoría que nombra el texto: igual o, si no, la única que lo contiene. null si no hay una clara. */
+export function buscarCategoriaPorTexto(texto, categorias = []) {
+  const t = normalizar(texto).replace(/[¿?¡!.,;:]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!t) return null;
+  const igual = categorias.find(c => normalizar(c.nombre) === t);
+  if (igual) return igual;
+  const parecidas = categorias.filter(c => {
+    const n = normalizar(c.nombre);
+    return t.length >= 3 && n.length >= 3 && (n.includes(t) || t.includes(n));
+  });
+  return parecidas.length === 1 ? parecidas[0] : null;
+}
+
+const PREFIJO_MONTO = /^\s*(?:no[,.]?\s*)?(?:eran|era|son|fueron|fue|es|ser[ií]an?|el\s+monto\s+(?:es|era|fue|son)|monto|corrige(?:\s+el)?\s+monto(?:\s+a)?|cambia(?:lo)?(?:\s+el\s+monto)?\s+a|c[aá]mbialo\s+a)\s*(?:de\s+)?(.+)$/i;
+
+/**
+ * Aplica a una cuenta/categoría nombrada en `termino` el cambio que corresponda. `soloCuenta` o
+ * `soloCategoria` limitan la búsqueda cuando el texto lo dice ("la categoría es...").
+ */
+function resolverTermino(termino, { cuentas, categorias }, { soloCuenta = false, soloCategoria = false } = {}, salida) {
+  if (!soloCategoria) {
+    const c = buscarCuentaPorTexto(termino, cuentas);
+    if (c?.cuenta) { salida.cambios.cuenta_id = c.cuenta.id; return true; }
+    if (c?.ambiguas) { salida.ambiguas = c.ambiguas; return true; }
+  }
+  if (!soloCuenta) {
+    const cat = buscarCategoriaPorTexto(termino, categorias);
+    if (cat) { salida.cambios.categoria_id = cat.id; return true; }
+  }
+  const donde = soloCuenta ? 'cuentas' : soloCategoria ? 'categorías' : 'cuentas ni categorías';
+  salida.problemas.push(`No encontré «${termino.trim().slice(0, 40)}» entre tus ${donde}.`);
+  return true;
+}
+
+/**
+ * Interpreta la respuesta a un mensaje que creó un registro, solo con reglas. Devuelve
+ *   { accion: 'deshacer' } | { accion: 'eliminar' } |
+ *   { accion: 'corregir', cambios: { monto?, fecha?, cuenta_id?, categoria_id? }, ambiguas?, problemas }
+ * o null si las reglas no alcanzan (entonces se consulta a Gemini). Función pura.
+ */
+export function clasificarReply(texto, { cuentas = [], categorias = [], hoy = fechaHoySantiago() } = {}) {
+  const original = String(texto ?? '').trim();
+  if (!original || original.startsWith('/')) return null;
+
+  const norm = normalizar(original).replace(/[¿?¡!.,;:]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (norm.split(' ').length > 14) return null;
+
+  if (VERBO_DESHACER.test(norm)) return { accion: 'deshacer', origen: 'reglas' };
+  if (VERBO_ELIMINAR.test(norm) && !analizarMonto(original)) return { accion: 'eliminar', origen: 'reglas' };
+
+  const salida = { accion: 'corregir', cambios: {}, problemas: [], ambiguas: null, origen: 'reglas' };
+
+  // Un monto solo ("4500") o precedido de "eran", "era", "son"...
+  const exacto = parsearMontoExacto(original);
+  if (exacto) {
+    salida.cambios.monto = exacto;
+    return salida;
+  }
+  const conPrefijo = PREFIJO_MONTO.exec(original);
+  if (conPrefijo) {
+    const resto = conPrefijo[1].replace(/\b(?:pesos|clp)\b/gi, '').trim();
+    const monto = parsearMontoExacto(resto);
+    if (monto) {
+      salida.cambios.monto = monto;
+      return salida;
+    }
+  }
+
+  const fecha = fechaDeTexto(original, hoy);
+  if (fecha) {
+    salida.cambios.fecha = fecha;
+    return salida;
+  }
+
+  const contexto = { cuentas, categorias };
+  let m;
+  if ((m = /\bcategoria\s*(?:es|era|seria|a|de|:)?\s+(.+)$/.exec(norm))) {
+    resolverTermino(m[1], contexto, { soloCategoria: true }, salida);
+  } else if ((m = /\bcuenta\s*(?:es|era|seria|a|de|:)?\s+(.+)$/.exec(norm)) || (m = /^(?:no\s+)?(?:con|desde)\s+(?:la\s+|el\s+|mi\s+)?(?:tarjeta\s+)?(.+)$/.exec(norm))) {
+    resolverTermino(m[1], contexto, { soloCuenta: true }, salida);
+  } else if ((m = /^(?:no\s+)?(?:era|fue|es|seria)\s+(?:con|de|desde|en)\s+(?:la\s+|el\s+|mi\s+)?(?:tarjeta\s+|cuenta\s+)?(.+)$/.exec(norm))) {
+    resolverTermino(m[1], contexto, {}, salida);
+  } else {
+    return null;
+  }
+  return salida;
+}
+
+/**
+ * Convierte lo que devolvió Gemini ({ accion, monto, fecha, cuenta, categoria }) en lo mismo que
+ * clasificarReply. Lo que no se pueda resolver con las cuentas y categorías reales queda en problemas.
+ */
+export function replyDesdeGemini(ia, { cuentas = [], categorias = [], hoy = fechaHoySantiago() } = {}) {
+  if (!ia || !['eliminar', 'corregir', 'deshacer'].includes(ia.accion)) return null;
+  if (ia.accion !== 'corregir') return { accion: ia.accion, origen: 'gemini' };
+
+  const salida = { accion: 'corregir', cambios: {}, problemas: [], ambiguas: null, origen: 'gemini' };
+  if (Number.isInteger(ia.monto) && ia.monto > 0) salida.cambios.monto = ia.monto;
+  if (typeof ia.fecha === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(ia.fecha) && ia.fecha <= hoy) salida.cambios.fecha = ia.fecha;
+  if (ia.cuenta) resolverTermino(ia.cuenta, { cuentas, categorias }, { soloCuenta: true }, salida);
+  if (ia.categoria) resolverTermino(ia.categoria, { cuentas, categorias }, { soloCategoria: true }, salida);
+
+  const hayAlgo = Object.keys(salida.cambios).length > 0 || salida.ambiguas || salida.problemas.length > 0;
+  return hayAlgo ? salida : null;
+}
+
 /**
  * Clasifica un mensaje con reglas. Devuelve { intencion, datos, confianza: 'alta', origen: 'reglas' }
  * o null si ninguna regla alcanza. Función pura.
@@ -79,6 +303,9 @@ export function clasificarPorReglas(texto) {
   const norm = normalizar(original).replace(/[¿?¡!]/g, ' ').replace(/\s+/g, ' ').trim();
   const hayMonto = Boolean(analizarMonto(original));
   const resultado = (intencion, datos = {}) => ({ intencion, datos, confianza: 'alta', origen: 'reglas' });
+
+  // "elimina el último gasto" sin responder a ningún mensaje
+  if (detectarEliminarUltimo(original)) return resultado('eliminar_ultimo');
 
   // Pedidos sin monto
   if (!hayMonto) {
@@ -260,6 +487,13 @@ export function crearIntenciones(ctx) {
       case 'ayuda':
         await ctx.ayuda(chatId);
         return true;
+
+      case 'eliminar_ultimo':
+        if (ctx.eliminarUltimo) {
+          await ctx.eliminarUltimo(chatId);
+          return true;
+        }
+        return preguntarIntencion(chatId, texto);
 
       default:
         return preguntarIntencion(chatId, texto);

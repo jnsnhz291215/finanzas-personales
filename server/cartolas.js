@@ -297,13 +297,13 @@ export async function registrarImportacion({ archivo, hash, cuentaId, movimiento
   }
 
   // Registrar archivo importado
-  await query(
+  const [registro] = await query(
     `INSERT INTO archivos_importados (nombre_archivo, hash_archivo, cuenta_id, cantidad_movimientos, ruta_archivo)
      VALUES (?, ?, ?, ?, ?)`,
     [path.basename(archivo), hash, cuentaId, registrados.length, archivo]
   );
 
-  return { importados: registrados.length, registrados };
+  return { importados: registrados.length, registrados, archivoId: registro.insertId };
 }
 
 // ---------------------------------------------------------------------------

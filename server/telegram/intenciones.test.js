@@ -1,4 +1,4 @@
-import { clasificarPorReglas, puedeEnviarseAGemini, limpiarBusqueda } from './intenciones.js';
+import { clasificarPorReglas, puedeEnviarseAGemini, limpiarBusqueda, clasificarReply, detectarEliminarUltimo, replyDesdeGemini } from './intenciones.js';
 
 const intencion = (texto) => clasificarPorReglas(texto)?.intencion ?? null;
 
@@ -98,5 +98,69 @@ describe('limpiarBusqueda', () => {
     expect(limpiarBusqueda('uber de octubre')).toBe('uber octubre');
     expect(limpiarBusqueda('los gastos del mes pasado')).toBe('mes pasado');
     expect(limpiarBusqueda('')).toBe('');
+  });
+});
+
+describe('respuestas a un registro (clasificarReply)', () => {
+  const cuentas = [
+    { id: 1, nombre: 'FAN', banco: 'Banco de Chile', tipo: 'tarjeta_debito' },
+    { id: 2, nombre: 'CMR', banco: 'Falabella', tipo: 'tarjeta_credito' }
+  ];
+  const categorias = [{ id: 1, nombre: 'Comida' }, { id: 2, nombre: 'Transporte' }];
+  const hoy = '2026-11-25';
+  const reply = (texto) => clasificarReply(texto, { cuentas, categorias, hoy });
+
+  test('eliminar', () => {
+    for (const t of ['elimina esto', 'eliminar', 'bórralo', 'me equivoqué, sácalo']) {
+      expect(reply(t)?.accion).toBe('eliminar');
+    }
+  });
+
+  test('deshacer', () => {
+    expect(reply('deshacer')?.accion).toBe('deshacer');
+    expect(reply('deshazlo')?.accion).toBe('deshacer');
+  });
+
+  test('corregir el monto', () => {
+    expect(reply('eran 4500').cambios).toEqual({ monto: 4500 });
+    expect(reply('4.500').cambios).toEqual({ monto: 4500 });
+    expect(reply('eran 57 mil').cambios).toEqual({ monto: 57000 });
+  });
+
+  test('corregir la cuenta por banco, nombre o tipo', () => {
+    expect(reply('era con la falabella').cambios).toEqual({ cuenta_id: 2 });
+    expect(reply('con la FAN').cambios).toEqual({ cuenta_id: 1 });
+    expect(reply('era con la tarjeta de débito').cambios).toEqual({ cuenta_id: 1 });
+  });
+
+  test('corregir la categoría y avisar si no existe', () => {
+    expect(reply('la categoría es comida').cambios).toEqual({ categoria_id: 1 });
+    expect(reply('la categoría es viajes').problemas[0]).toMatch(/viajes/);
+  });
+
+  test('corregir la fecha', () => {
+    expect(reply('fue ayer').cambios).toEqual({ fecha: '2026-11-24' });
+    expect(reply('fue el 15').cambios).toEqual({ fecha: '2026-11-15' });
+    expect(reply('15/11').cambios).toEqual({ fecha: '2026-11-15' });
+    expect(reply('fue el lunes').cambios).toEqual({ fecha: '2026-11-23' });
+  });
+
+  test('un texto que no es ninguna acción no se interpreta', () => {
+    expect(reply('hola, qué tal')).toBeNull();
+    expect(reply('almuerzo 5500 débito')).toBeNull();
+  });
+
+  test('"elimina el último gasto" sin responder a nada', () => {
+    expect(detectarEliminarUltimo('elimina el último gasto')).toBe(true);
+    expect(detectarEliminarUltimo('borra el último')).toBe(true);
+    expect(detectarEliminarUltimo('borra los últimos 3')).toBe(false);
+    expect(intencion('borra el último gasto')).toBe('eliminar_ultimo');
+  });
+
+  test('la respuesta de Gemini se resuelve con las cuentas y categorías reales', () => {
+    const r = replyDesdeGemini({ accion: 'corregir', monto: 4500, fecha: null, cuenta: 'CMR', categoria: 'Comida' }, { cuentas, categorias, hoy });
+    expect(r.cambios).toEqual({ monto: 4500, cuenta_id: 2, categoria_id: 1 });
+    expect(replyDesdeGemini({ accion: 'eliminar' }, { cuentas, categorias, hoy }).accion).toBe('eliminar');
+    expect(replyDesdeGemini(null)).toBeNull();
   });
 });

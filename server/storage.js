@@ -337,6 +337,62 @@ export async function borrarTemporal(ruta) {
 }
 
 /**
+ * "Papelera" para poder deshacer una eliminación: mueve un archivo guardado a tmp/ (que se limpia
+ * a las 24 horas, igual que la ventana de deshacer) y le renueva la fecha para que ese plazo
+ * cuente desde ahora. Devuelve la ruta tmp/<archivo> o null si no había archivo. Nunca lanza.
+ */
+export async function enviarAPapelera(valor) {
+  try {
+    const origen = await resolverArchivo(valor);
+    if (!origen) return null;
+    const carpeta = carpetaTmp();
+    await fs.mkdir(carpeta, { recursive: true });
+    const nombre = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}-${nombreSeguro(path.basename(origen))}`;
+    const destino = path.join(carpeta, nombre);
+    try {
+      await fs.rename(origen, destino);
+    } catch (error) {
+      if (error.code !== 'EXDEV') throw error;
+      await fs.copyFile(origen, destino);
+      await fs.unlink(origen);
+    }
+    const ahora = new Date();
+    await fs.utimes(destino, ahora, ahora).catch(() => {});
+    return `tmp/${nombre}`;
+  } catch (error) {
+    console.error(`[storage] papelera: error_code=${error.code ?? 'desconocido'}`);
+    return null;
+  }
+}
+
+/**
+ * Devuelve un archivo de la papelera a su ruta relativa original (cartolas/2026-11/x.pdf, etc.).
+ * Solo restaura rutas nuevas (<tipo>/<mes>/<archivo>). true si lo restauró. Nunca lanza.
+ */
+export async function restaurarDePapelera(rutaTmp, rutaOriginal) {
+  try {
+    const origen = await resolverTemporal(rutaTmp);
+    const m = /^(cartolas|comprobantes|archivos)\/(.+)$/.exec(String(rutaOriginal ?? '').replace(/\\/g, '/'));
+    if (!origen || !m) return false;
+    const base = carpetaBase(m[1]);
+    const destino = path.resolve(base, m[2]);
+    if (!dentroDe(base, destino) || await existe(destino)) return false;
+    await fs.mkdir(path.dirname(destino), { recursive: true });
+    try {
+      await fs.rename(origen, destino);
+    } catch (error) {
+      if (error.code !== 'EXDEV') throw error;
+      await fs.copyFile(origen, destino);
+      await fs.unlink(origen);
+    }
+    return true;
+  } catch (error) {
+    console.error(`[storage] restaurar de papelera: error_code=${error.code ?? 'desconocido'}`);
+    return false;
+  }
+}
+
+/**
  * Borra de tmp/ los archivos con más de 24 horas (o `maxEdadMs`). Devuelve cuántos borró.
  * No registra nombres; nunca lanza.
  */
