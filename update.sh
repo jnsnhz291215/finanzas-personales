@@ -44,7 +44,7 @@ echo "[ok] node $(node --version)"
 echo "[ok] npm  $(npm --version)"
 
 # Herramientas de respaldo de /reset: solo avisan, no impiden actualizar. mysqldump y mysql solo
-# importan con DB_ENGINE=mariadb (el bot pasa esa variable; a mano puede no estar definida).
+# importan con DB_ENGINE=mariadb (se toma del entorno o de la línea DB_ENGINE= del .env).
 revisar_herramienta() {
   if command -v "$1" >/dev/null 2>&1; then
     echo "[ok] $1 disponible"
@@ -53,11 +53,39 @@ revisar_herramienta() {
   fi
 }
 revisar_herramienta tar
-if [ "${DB_ENGINE:-sqlite}" = "mariadb" ] || [ "${DB_ENGINE:-sqlite}" = "mysql" ]; then
+
+# Motor de base de datos: del entorno; si no, solo la línea DB_ENGINE= del .env (sin cargar el .env
+# ni mostrar ninguna otra variable); si no, sqlite.
+MOTOR_DB=""
+ORIGEN_MOTOR=""
+if [ -n "${DB_ENGINE:-}" ]; then
+  MOTOR_DB="$DB_ENGINE"
+  ORIGEN_MOTOR="entorno"
+elif [ -f .env ]; then
+  LINEA_MOTOR="$(grep -E '^[[:space:]]*DB_ENGINE=' .env 2>/dev/null | tail -1)"
+  if [ -n "$LINEA_MOTOR" ]; then
+    VALOR_MOTOR="${LINEA_MOTOR#*=}"
+    VALOR_MOTOR="$(printf '%s' "$VALOR_MOTOR" | tr -d '\r' | sed -E "s/^[[:space:]]+//; s/[[:space:]]+#.*\$//; s/[[:space:]]+\$//; s/^\"(.*)\"\$/\\1/; s/^'(.*)'\$/\\1/")"
+    if [ -n "$VALOR_MOTOR" ]; then
+      MOTOR_DB="$VALOR_MOTOR"
+      ORIGEN_MOTOR=".env"
+    fi
+  fi
+  unset LINEA_MOTOR VALOR_MOTOR
+fi
+if [ -z "$MOTOR_DB" ]; then
+  MOTOR_DB="sqlite"
+  ORIGEN_MOTOR="por defecto"
+  echo "[aviso] DB_ENGINE no definido en .env, se asume sqlite"
+fi
+MOTOR_DB="$(printf '%s' "$MOTOR_DB" | tr '[:upper:]' '[:lower:]')"
+echo "[ok] motor de base de datos: $MOTOR_DB ($ORIGEN_MOTOR)"
+
+if [ "$MOTOR_DB" = "mariadb" ] || [ "$MOTOR_DB" = "mysql" ]; then
   revisar_herramienta mysqldump
   revisar_herramienta mysql
 else
-  echo "mysqldump y mysql: no se revisan (DB_ENGINE=${DB_ENGINE:-sqlite})"
+  echo "mysqldump y mysql: no se revisan (DB_ENGINE=$MOTOR_DB)"
 fi
 
 RAMA="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" || falla "No pude leer la rama: ¿esto es un repositorio git?"
