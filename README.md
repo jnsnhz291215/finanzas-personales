@@ -538,6 +538,13 @@ El bot se usa casi sin comandos: escribe como hablas o manda un archivo. Un enru
   (formato o banco, fechas, movimientos y totales). Con *Importar todo* se usa la cuenta sugerida según el contenido (por ejemplo
   Falabella) y se pregunta solo por los que no tienen sugerencia; con *Revisar uno por uno* ves cada archivo (con vista previa si
   es PDF). Las preguntas de cuotas se hacen al final, todas juntas.
+- **Cuenta:** el gasto usa la cuenta que mencionas (por ejemplo "débito"); si no mencionas ninguna, la última cuenta con que
+  registraste un gasto a mano, y si no hay, la cuenta activa más antigua. No se pregunta antes: el botón *Cambiar cuenta* de la
+  confirmación permite corregirla.
+- **Foto con texto:** una foto con un texto que es un gasto (`almuerzo 5500`) se registra como gasto normal y la foto queda como su
+  respaldo; con un pago de cuota, como respaldo de esa cuota.
+- **Límite de Gemini:** máximo 30 llamadas por hora por chat, contadas en memoria (se reinician al reiniciar el servidor). Al pasarlo,
+  el bot responde que no entendió y muestra ejemplos; los gastos con monto siguen funcionando solo con las reglas.
 - El menú `/` de Telegram solo muestra `/help`, `/plan`, `/cuotas` y `/update`; el resto de los comandos funciona igual si los escribes.
 
 ### Reiniciar y actualizar desde el bot

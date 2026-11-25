@@ -21,6 +21,7 @@ import { detectarConsultaPlan } from '../planAhorro.js';
 import { parsearPagoCuota, detectarAltaCuotas, detectarConsultaCuotas } from './cuotas.js';
 import { normalizar } from './cuentas.js';
 import { interpretarIntencion, geminiDisponible } from './gemini.js';
+import { limitadorGemini } from './limiteGemini.js';
 
 const ESPERA_MS = 10 * 60 * 1000;
 
@@ -144,6 +145,8 @@ export function puedeEnviarseAGemini(texto) {
 
 export function crearIntenciones(ctx) {
   const { enviar, editar, responderCallback, esc } = ctx;
+  // Límite de llamadas a Gemini por chat (30 por hora); se puede inyectar en pruebas
+  const limitador = ctx.limitador ?? limitadorGemini;
 
   // Mensajes que esperan que el usuario elija la intención: clave -> { texto }
   const preguntas = new Map();
@@ -173,6 +176,20 @@ export function crearIntenciones(ctx) {
         ]
       }
     });
+    return true;
+  }
+
+  /** Se pasó el límite de Gemini: no se interpreta el mensaje y se muestran ejemplos */
+  async function noEntendido(chatId) {
+    await enviar(chatId,
+      'No entendí ese mensaje. Prueba con algo como:\n' +
+      '• almuerzo 5500 débito\n' +
+      '• me pagaron 400 mil\n' +
+      '• cuánto gasté este mes\n' +
+      '• cuánto puedo gastar\n' +
+      '• pagué cuota tía mac 7/12\n\n' +
+      'Escribe /help para ver más ejemplos.'
+    );
     return true;
   }
 
@@ -273,6 +290,9 @@ export function crearIntenciones(ctx) {
 
     // 2. Gemini, solo con mensajes que no traen datos sensibles
     if (geminiDisponible() && puedeEnviarseAGemini(texto)) {
+      // Máximo 30 llamadas por hora por chat; al pasarlo no se interpreta y se muestran ejemplos
+      if (!limitador.consumir(chatId)) return noEntendido(chatId);
+
       const ia = await interpretarIntencion(texto);
       if (ia && ia.intencion !== 'desconocida') {
         const datos = ia.intencion === 'datos_transferencia' ? { texto: ia.texto } : { texto: ia.texto ?? undefined };

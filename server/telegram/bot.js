@@ -28,7 +28,8 @@ import { crearAdmin } from './admin.js';
 import { crearCuotas } from './cuotasBot.js';
 import { crearCartolas } from './cartolasBot.js';
 import { crearSistema } from './sistemaBot.js';
-import { crearIntenciones } from './intenciones.js';
+import { crearIntenciones, clasificarPorReglas } from './intenciones.js';
+import { limitadorGemini } from './limiteGemini.js';
 import { guardarBuffer, borrarArchivo } from '../storage.js';
 import { categoriaPorReglas } from '../gestion.js';
 import { canonizarPersona } from '../deudas.js';
@@ -526,6 +527,8 @@ function configurarManejadores() {
     }
 
     if (msg.photo) {
+      // Foto con caption que es un gasto ("almuerzo 5500"): se registra y la foto queda de respaldo
+      if (await manejarFotoConGasto(msg)) return;
       await manejarFoto(msg);
       return;
     }
@@ -1136,8 +1139,10 @@ function cuentaPorDefecto(cuentas, evitar = null) {
  * Consulta a Gemini con el contexto actual. Devuelve null si no está configurado
  * o si algo falla; nunca lanza.
  */
-async function interpretarConGemini(texto, cuentas) {
+async function interpretarConGemini(texto, cuentas, chatId) {
   if (!geminiDisponible()) return null;
+  // Máximo 30 llamadas por hora por chat; al pasarlo se sigue solo con las reglas
+  if (!limitadorGemini.consumir(chatId)) return null;
 
   try {
     const [categorias] = await query('SELECT nombre FROM categorias');
@@ -1202,7 +1207,7 @@ async function registrarTransaccion(msg, { confianzaBaja = false } = {}) {
 
     // Respaldo: si las reglas no encontraron monto o categoría, consultar Gemini
     if (!datos.monto || !datos.categoriaDetectada) {
-      const ia = await interpretarConGemini(texto, cuentas);
+      const ia = await interpretarConGemini(texto, cuentas, chatId);
       if (ia) datos = combinarConGemini(datos, ia);
     }
 
@@ -1235,8 +1240,9 @@ async function registrarTransaccion(msg, { confianzaBaja = false } = {}) {
         cuentaDestino = null;
       }
     } else {
-      // Cuenta según el medio de pago, o la cuenta por defecto
-      cuenta = elegirCuenta(cuentas, datos.medioPago) || cuentaPorDefecto(cuentas);
+      // Cuenta según el medio de pago, la última cuenta usada o la cuenta por defecto (sin preguntar;
+      // el botón "Cambiar cuenta" permite corregirla)
+      cuenta = elegirCuenta(cuentas, datos.medioPago) || await ultimaCuentaUsada(cuentas) || cuentaPorDefecto(cuentas);
     }
 
     // Buscar categoría por nombre detectado
@@ -1356,7 +1362,29 @@ async function guardarMovimiento(tx) {
 async function resolverCuentaPago(medioPago) {
   const cuentas = await listarCuentas();
   if (cuentas.length === 0) return null;
-  return elegirCuenta(cuentas, medioPago) || cuentaPorDefecto(cuentas);
+  return elegirCuenta(cuentas, medioPago) || await ultimaCuentaUsada(cuentas) || cuentaPorDefecto(cuentas);
+}
+
+/**
+ * Cuenta del último movimiento que registraste a mano (sin contar importaciones de cartolas ni pagos
+ * de cuotas), si sigue activa. null si no hay ninguno.
+ */
+async function ultimaCuentaUsada(cuentas) {
+  try {
+    const [filas] = await query(
+      `SELECT cuenta_id FROM movimientos
+       WHERE importado_de IS NULL AND compra_cuota_id IS NULL
+       ORDER BY creado_en DESC, id DESC
+       LIMIT 20`
+    );
+    for (const fila of filas) {
+      const cuenta = cuentas.find(c => Number(c.id) === Number(fila.cuenta_id));
+      if (cuenta) return cuenta;
+    }
+  } catch (error) {
+    console.error('Error al buscar la última cuenta usada:', error.code ?? error.name);
+  }
+  return null;
 }
 
 /**
@@ -2705,6 +2733,28 @@ async function manejarArchivo(msg) {
     logErrorTelegram('procesar archivo', error);
     await enviar(chatId, '❌ Error al procesar el archivo.');
   }
+}
+
+/**
+ * Foto con un caption que es un gasto o ingreso ("almuerzo 5500 débito"): se procesa como un gasto
+ * normal y la foto queda como respaldo de ese movimiento (se guarda al armar el borrador y se
+ * borra si se cancela). Devuelve false si el caption no es un gasto: la foto sigue su flujo.
+ */
+async function manejarFotoConGasto(msg) {
+  const caption = (msg.caption || '').trim();
+  if (!caption || !intenciones) return false;
+  if (clasificarPorReglas(caption)?.intencion !== 'registrar') return false;
+
+  const chatId = msg.chat.id;
+  const foto = msg.photo[msg.photo.length - 1];
+  esperandoComprobante.set(chatId, { fileId: foto.file_id, nombre: 'foto.jpg', hasta: Date.now() + 60 * 1000 });
+  try {
+    await intenciones.manejarTexto({ ...msg, text: caption });
+  } finally {
+    // Si el borrador no llegó a armarse, la foto no queda esperando un gasto ajeno
+    esperandoComprobante.delete(chatId);
+  }
+  return true;
 }
 
 /**
