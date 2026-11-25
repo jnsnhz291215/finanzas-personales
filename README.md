@@ -647,7 +647,7 @@ máximo de 8 segundos; si se pasa, esa sección sale como "No respondió".
 | --- | --- |
 | Servidor | sistema operativo y versión, equipo, tiempo encendido (equipo y app), Node y `NODE_ENV`, memoria libre y disco de la partición del storage |
 | App | versión (hash corto y título), rama, cambios locales sin commit y si el remoto tiene commits nuevos (`git fetch` con 6 s y `GIT_TERMINAL_PROMPT=0`; si el fetch falla es un Aviso, no un error) |
-| Web | "Deshabilitada" o "Escuchando en 127.0.0.1:PUERTO"; error si la web está bloqueada, no escucha o escucha fuera de localhost |
+| Web | "Deshabilitada" o "Escuchando en 127.0.0.1:PUERTO"; error si la web está bloqueada, no escucha, escucha fuera de localhost o está habilitada con `SERVIR_FRONTEND=false` (expondría solo la API, sin pantalla) |
 | PM2 | si corre bajo PM2 (variable `pm_id`), nombre y reinicios |
 | Base de datos | motor, conexión, usuario conectado, nombre y versión (con SQLite, tamaño del archivo), tablas principales y conteo de movimientos, cuentas y cuotas activas |
 | Gemini | si hay `GEMINI_API_KEY`, una llamada mínima con su latencia; si falla, el motivo (clave, cuota, red). **No cuenta para el límite de 30 por hora** |

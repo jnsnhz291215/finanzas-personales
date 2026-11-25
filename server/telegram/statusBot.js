@@ -338,18 +338,25 @@ async function chequeoBaseDeDatos() {
 }
 
 /** Estado de la web a partir de la decisión (env) y de la dirección en que escucha de verdad */
-export function revisarWeb(decision, escucha) {
+export function revisarWeb(decision, escucha, env = {}) {
   if (!decision.habilitada) return [{ estado: 'ok', texto: 'Deshabilitada (no se escucha ningún puerto)' }];
-  if (decision.bloqueo) return [{ estado: 'fallo', texto: `Habilitada pero bloqueada: ${decision.bloqueo}` }];
-  if (!escucha) return [{ estado: 'fallo', texto: `Habilitada pero no está escuchando en ${decision.host}:${decision.puerto}` }];
-  if (!esLoopback(escucha.host)) {
-    return [{ estado: 'fallo', texto: `Escucha fuera de localhost (${escucha.host}:${escucha.puerto}): cualquiera en la red podría entrar` }];
+
+  const items = [];
+  if (decision.bloqueo) items.push({ estado: 'fallo', texto: `Habilitada pero bloqueada: ${decision.bloqueo}` });
+  else if (!escucha) items.push({ estado: 'fallo', texto: `Habilitada pero no está escuchando en ${decision.host}:${decision.puerto}` });
+  else if (!esLoopback(escucha.host)) {
+    items.push({ estado: 'fallo', texto: `Escucha fuera de localhost (${escucha.host}:${escucha.puerto}): cualquiera en la red podría entrar` });
+  } else items.push({ estado: 'ok', texto: `Escuchando en ${escucha.host}:${escucha.puerto}` });
+
+  // Web habilitada sin pantalla: solo expone la API, sin ningún uso a cambio
+  if (env.SERVIR_FRONTEND !== 'true') {
+    items.push({ estado: 'fallo', texto: 'WEB_HABILITADA=true con SERVIR_FRONTEND=false: expone la API sin pantalla; deshabilita la web o activa SERVIR_FRONTEND' });
   }
-  return [{ estado: 'ok', texto: `Escuchando en ${escucha.host}:${escucha.puerto}` }];
+  return items;
 }
 
 async function chequeoWeb() {
-  return revisarWeb(decidirWeb(process.env), direccionEscuchando());
+  return revisarWeb(decidirWeb(process.env), direccionEscuchando(), process.env);
 }
 
 async function chequeoGemini() {

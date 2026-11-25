@@ -131,7 +131,17 @@ describe('sección Web', () => {
 
   test('deshabilitada funciona; escuchando en localhost funciona', () => {
     expect(revisarWeb(deshabilitada, null)[0]).toMatchObject({ estado: 'ok', texto: expect.stringMatching(/Deshabilitada/) });
-    expect(revisarWeb(habilitada, { host: '127.0.0.1', puerto: 3005 })[0].texto).toBe('Escuchando en 127.0.0.1:3005');
+    expect(revisarWeb(habilitada, { host: '127.0.0.1', puerto: 3005 }, { SERVIR_FRONTEND: 'true' })[0].texto).toBe('Escuchando en 127.0.0.1:3005');
+  });
+
+  test('habilitada sin SERVIR_FRONTEND=true es un error aunque escuche en localhost', () => {
+    const escucha = { host: '127.0.0.1', puerto: 3005 };
+    const sinPantalla = revisarWeb(habilitada, escucha, { SERVIR_FRONTEND: 'false' });
+    expect(sinPantalla[0].estado).toBe('ok');
+    expect(sinPantalla[1]).toMatchObject({ estado: 'fallo', texto: expect.stringMatching(/SERVIR_FRONTEND/) });
+    expect(revisarWeb(habilitada, escucha, {})).toHaveLength(2);
+    expect(revisarWeb(habilitada, escucha, { SERVIR_FRONTEND: 'true' })).toHaveLength(1);
+    expect(revisarWeb(deshabilitada, null, { SERVIR_FRONTEND: 'false' })).toHaveLength(1);
   });
 
   test('escuchar fuera de localhost, estar bloqueada o no escuchar es un error', () => {
