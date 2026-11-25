@@ -95,19 +95,30 @@ source database/crear_usuario.sql
 exit
 ```
 
-### 3. Configurar Rutas de Almacenamiento
+### 3. Configurar el Almacenamiento
+
+Todos los archivos (cartolas, comprobantes y lo que se manda al bot) viven bajo **una sola raíz**,
+`FINANZAS_STORAGE`, ordenados por tipo y por mes de recepción (hora de Chile):
+
+```
+<FINANZAS_STORAGE>/
+├── cartolas/{YYYY-MM}/       cartolas importadas (web y bot)
+├── comprobantes/{YYYY-MM}/   comprobantes de cuotas y respaldos de movimientos
+├── archivos/{YYYY-MM}/       otros archivos que se mandan al bot
+└── tmp/
+```
+
+- **Producción** (junto a las apps de Basalto): `FINANZAS_STORAGE=/home/basalto/apps/finanzas-juan/storage`
+- **Desarrollo**: si la variable está vacía se usa `storage/` en la raíz del repo (ignorada por git).
+- El servidor crea las carpetas al arrancar; la raíz debe poder escribirse.
+- En la base de datos se guarda la ruta relativa a la raíz, por ejemplo `comprobantes/2026-11/respaldo_cuota_123_foto.jpg`.
+- `CARTOLAS_PATH` y `RESPALDOS_PATH` están **obsoletas**: si siguen definidas mandan para su tipo y el servidor avisa al
+  arrancar. Los registros anteriores (`/uploads/respaldos/<archivo>`, rutas absolutas de cartolas) se siguen resolviendo y los
+  archivos existentes **no se mueven**.
 
 ```bash
-# Crear carpetas en el NAS o servidor (ajustar rutas según tu configuración)
-mkdir -p /ruta/al/nas/finanzas-juan/uploads
-mkdir -p /ruta/al/nas/finanzas-juan/cartolas
-mkdir -p /ruta/al/nas/finanzas-juan/respaldos
-
-# Dar permisos de escritura
-chmod 755 /ruta/al/nas/finanzas-juan
-chmod 755 /ruta/al/nas/finanzas-juan/uploads
-chmod 755 /ruta/al/nas/finanzas-juan/cartolas
-chmod 755 /ruta/al/nas/finanzas-juan/respaldos
+mkdir -p /home/basalto/apps/finanzas-juan/storage
+chmod 755 /home/basalto/apps/finanzas-juan/storage
 ```
 
 ### 4. Configurar Variables de Entorno
@@ -125,7 +136,11 @@ Configurar:
 NODE_ENV=production
 PORT=3005
 
-# Base de Datos (usuario exclusivo, BD separada)
+# Motor de base de datos: sqlite (por defecto) o mariadb. En el servidor: mariadb
+DB_ENGINE=mariadb
+
+# Base de Datos MariaDB (usuario exclusivo, BD separada). Obligatorias con DB_ENGINE=mariadb:
+# DB_HOST, DB_USER, DB_PASSWORD y DB_NAME (DB_PORT es opcional, 3306 por defecto)
 DB_HOST=localhost
 DB_PORT=3306
 DB_USER=finanzas_juan
@@ -138,11 +153,17 @@ SESSION_SECRET=genera_uno_con_openssl_rand_base64_32
 # Contraseña inicial (cambiarla después del primer login)
 ADMIN_PASSWORD=cambiar123
 
-# Rutas de almacenamiento (AJUSTAR A TU SERVIDOR/NAS)
-UPLOADS_PATH=/ruta/al/nas/finanzas-juan/uploads
-CARTOLAS_PATH=/ruta/al/nas/finanzas-juan/cartolas
-RESPALDOS_PATH=/ruta/al/nas/finanzas-juan/respaldos
+# Raíz del almacenamiento (ver la sección Configurar el Almacenamiento)
+FINANZAS_STORAGE=/home/basalto/apps/finanzas-juan/storage
 ```
+
+> **Motor de base de datos.** Se elige con `DB_ENGINE`: `sqlite` (por defecto, archivo `finanzas.db`, para desarrollo) o `mariadb`.
+> Sin `DB_ENGINE` la app usa SQLite aunque existan las variables `DB_*`: en el servidor hay que definir `DB_ENGINE=mariadb`
+> explícitamente. Con `mariadb` el servidor no arranca si falta `DB_HOST`, `DB_USER`, `DB_PASSWORD` o `DB_NAME`, y un valor distinto
+> de `sqlite`/`mariadb` también es un error. Al arrancar escribe en el log `Motor de base de datos: sqlite|mariadb`, sin host,
+> usuario ni contraseña. Los datos de SQLite y de MariaDB son independientes: cambiar de motor no copia los datos.
+> `/reset` y `/update` además esperan `tar` (y, con MariaDB, `mysqldump` y `mysql`) en el PATH del proceso; `/update` y `update.sh`
+> avisan si PM2 no los ve.
 
 ### 5. Instalar Dependencias
 
@@ -156,13 +177,29 @@ npm install
 cd ..
 ```
 
-### 6. Compilar el Frontend
+### 6. Compilar el Frontend (opcional)
+
+La aplicación se puede usar solo desde el bot de Telegram. El servidor **no sirve la web por defecto**:
+la API y el bot funcionan igual y no hace falta compilar el frontend.
+
+Si quieres usar también la web, compílala y actívala en el `.env`:
 
 ```bash
 npm run build:client
 ```
 
+```env
+SERVIR_FRONTEND=true
+```
+
+Con `SERVIR_FRONTEND=false` (o sin la variable) el servidor no sirve `client/dist`. El código del frontend
+se conserva en `client/`.
+
 ### 7. Configurar PM2
+
+> **La app debe correr bajo PM2 con `autorestart`.** `ecosystem.config.cjs` ya lo trae (`autorestart: true` y
+> `NODE_ENV=production`). Los comandos `/reboot` y `/update` del bot terminan el proceso con `process.exit(0)` y es PM2 quien
+> lo vuelve a levantar; sin PM2 (o sin autorestart) la app se quedaría apagada.
 
 ```bash
 # Iniciar con PM2
@@ -362,6 +399,293 @@ pm2 restart finanzas-personales
 3. Ingresar texto a buscar (ej: "uber")
 4. Seleccionar categoría (ej: "Transporte")
 5. Al importar, movimientos con "uber" se categorizarán automáticamente
+
+## 🤖 Bot de Telegram
+
+La aplicación incluye un bot de Telegram para registrar gastos/ingresos y consultar información desde tu móvil.
+
+### Configuración del Bot
+
+1. **Crear el bot en Telegram**:
+   - Habla con [@BotFather](https://t.me/botfather) en Telegram
+   - Envía `/newbot` y sigue las instrucciones
+   - Guarda el token que te entrega (parecido a `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`)
+
+2. **Obtener tu Chat ID**:
+   - Busca tu bot en Telegram y envíale `/miid`
+   - El bot te responderá con tu chat ID (un número como `123456789`)
+   - Copia este número
+
+3. **Configurar en el servidor**:
+   
+   Si aún no tienes un archivo `.env`, créalo desde el ejemplo:
+   ```bash
+   cp .env.example .env
+   ```
+   
+   Edita tu archivo `.env` y agrega:
+   ```env
+   # Token del bot (obtenido de @BotFather)
+   TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+   
+   # Tu chat ID (obtenido con /miid)
+   TELEGRAM_ALLOWED_CHAT_IDS=123456789
+   ```
+   
+   Si quieres autorizar varios chat IDs (por ejemplo, tu móvil y tu PC), sepáralos con comas:
+   ```env
+   TELEGRAM_ALLOWED_CHAT_IDS=123456789,987654321
+   ```
+
+4. **Reiniciar el servidor**:
+   ```bash
+   pm2 restart finanzas-personales
+   pm2 logs finanzas-personales
+   ```
+   
+   Deberías ver: `✓ Bot de Telegram iniciado (long polling)`
+
+### Uso del Bot
+
+#### Registrar Gastos e Ingresos
+
+Escribe en lenguaje natural. El bot entiende:
+
+**Montos**:
+- `12500`, `12.500`, `$12.500` (formato chileno)
+- `5 lucas`, `5k` (miles de pesos)
+
+**Fechas**:
+- `hoy`, `ayer`, `anteayer`
+- `lunes`, `martes`, etc. (asume la semana pasada)
+- `15/11`, `15-11` (día/mes del año actual)
+
+**Medios de pago**:
+- `con débito`, `con crédito`, `con la CMR`
+- `en efectivo`, `por transferencia`
+
+**Ejemplos**:
+```
+ayer pagué 12.500 en el super con débito
+gasté 5 lucas en uber con la CMR
+hoy pagué $2.500 en el metro
+me pagaron 300.000 de sueldo
+el 15/11 compré en jumbo con crédito $45.000
+```
+
+El bot te mostrará un resumen y te pedirá confirmar antes de guardar.
+
+#### Comandos Disponibles
+
+- `/start` - Iniciar el bot y ver instrucciones
+- `/ayuda` - Ver todos los comandos disponibles
+- `/resumen` - Resumen del mes actual (ingresos, gastos, saldo)
+- `/ultimos` - Ver los últimos 10 movimientos
+- `/borrar_ultimo` - Eliminar el último movimiento (con confirmación)
+- `/miid` - Obtener tu chat ID
+
+#### Importar Cartolas
+
+Envía directamente un archivo de cartola (**CSV, Excel o PDF**) al bot y se importa completo desde Telegram:
+
+1. El bot lee los movimientos y muestra un resumen (cantidad, rango de fechas, cargos y abonos).
+2. **PDF:** la lectura es menos confiable, así que antes de elegir la cuenta muestra una **vista previa** de los primeros
+   movimientos y pide confirmar con los botones *Importar* o *Cancelar*. Primero intenta leerlo con reglas sobre el texto; si
+   no alcanzan, y hay `GEMINI_API_KEY`, usa Gemini **solo con el texto extraído**, con los números de cuenta y los RUT
+   enmascarados, y descarta cualquier movimiento cuyo monto no aparezca en el texto.
+3. Eliges la cuenta. Se aplican las reglas de autocategorización y se evitan duplicados (mismo archivo = mismo hash).
+4. Si una transferencia calza con el alias de cartola de una compra en cuotas, el bot pregunta con botones si es un pago de cuota.
+
+Mientras no confirmes, el archivo espera en `tmp/` y solo pasa a `cartolas/{YYYY-MM}/` al importar. Los archivos sin confirmar se
+borran solos a las 24 horas (se revisa al arrancar el servidor y cada hora). Si un archivo no se puede leer de ninguna forma, el
+bot lo dice y lo deja guardado en `cartolas/{YYYY-MM}/`.
+
+#### Enviar Respaldos
+
+Envía fotos de boletas o comprobantes. Se guardarán en la carpeta de uploads del servidor.
+
+### Interpretación con Gemini (opcional)
+
+El bot primero lee tus mensajes con un parser de reglas. Si no encuentra el monto o la categoría, puede pedirle ayuda a Gemini para entender mensajes escritos de forma libre.
+
+1. Crea una API key en [Google AI Studio](https://aistudio.google.com/apikey).
+2. Agrega a tu `.env`:
+   ```env
+   GEMINI_API_KEY=tu_api_key
+   # Opcional; por defecto gemini-2.5-flash
+   GEMINI_MODEL=gemini-2.5-flash
+   ```
+3. Reinicia el servidor.
+
+- Sin `GEMINI_API_KEY` el bot funciona exactamente igual que antes.
+- Si Gemini tarda más de 8 segundos o falla, el bot sigue con el resultado de las reglas (o responde que no detectó un monto).
+- Al usarlo, **el texto del mensaje, la fecha de hoy, tus nombres de categorías y los medios de pago se envían a Google**. No se envían montos de la base de datos ni otros movimientos.
+- Los errores se registran solo con código y mensaje, nunca con la key.
+- Los montos aproximados ("57 mil y algo") se marcan en la confirmación; puedes responder con el número exacto antes de apretar Guardar.
+
+### Uso en lenguaje natural
+
+El bot se usa casi sin comandos: escribe como hablas o manda un archivo. Un enrutador de intenciones
+(`server/telegram/intenciones.js`) prueba primero reglas rápidas (sin tildes ni mayúsculas) y, si no alcanzan y hay
+`GEMINI_API_KEY`, consulta a Gemini con un prompt corto. Los comandos siguen existiendo como respaldo.
+
+| Escribes | Qué hace |
+|---|---|
+| `almuerzo 5500 débito falabella`, `me pagaron 400 mil` | Registra un gasto o ingreso (con confirmación) |
+| `pagué cuota tía mac 7/12` (también con la foto del comprobante) | Paga una cuota |
+| `compré audífonos en 6 cuotas de 15 mil con la tarjeta de la tía` | Crea una compra en cuotas |
+| `cuánto gasté este mes`, `cuánto llevo en comida` | Gastos del mes o de una categoría |
+| `cuánto puedo gastar`, `cuánto debería ahorrar` | Plan de ahorro |
+| `pásame los datos de la mercado pago` | Datos de transferencia |
+| `qué cuentas tengo`, `cuánto le debo a la tía`, `busca uber de octubre`, `qué puedes hacer` | Cuentas, cuotas, búsqueda y ayuda |
+
+- **Si no está claro, pregunta con botones** (qué quisiste decir, el monto que falta, la cuenta). Todo lo que escribe en la base de
+  datos pide confirmación; cuando la intención la dedujo Gemini, la confirmación agrega el botón *Corregir*.
+- **Privacidad:** a Gemini nunca viaja nada de datos de transferencia, RUT, correos ni números de cuenta: si el mensaje parece
+  traer algo así, ni siquiera se consulta. Guardar cuentas y datos de transferencia sigue siendo solo con `/savecard` y `/savetrans`.
+- **Archivos:** un PDF, CSV o Excel va directo a importar la cartola. Una foto sin texto pregunta si es el comprobante de una
+  cuota, de otro gasto, o solo guardarla.
+- **Reconocer la cuenta por los dígitos:** al leer una cartola (CSV, Excel o PDF) el bot busca en el encabezado los últimos 4
+  dígitos de la tarjeta o de la cuenta (`**** 1234`, `XXXX-1234`, `terminada en 1234`, `N° cuenta ...1234`) y los compara con
+  `ultimos4` (tarjeta) y `ultimos4_cuenta` (número de cuenta) de tus cuentas; si coinciden, lo dice en el resumen ("Cuenta
+  detectada: Falabella débito •6958") y la sugiere antes que el banco. Si trae dígitos que no son de ninguna cuenta y eliges la
+  cuenta a mano, el bot pregunta con botones si guardas esa terminación para reconocerla la próxima vez. Solo se leen y se guardan
+  4 dígitos: nunca el número completo, y no se registran en consola. En `/savecard` puedes indicar `cuenta terminada en 1234`.
+  Los números de cuenta (`cuenta ...`) solo se buscan en el encabezado, antes de la primera línea que parezca un movimiento (fecha y
+  monto), para no confundir una descripción como "transferencia a cuenta 1234" con la cuenta de la cartola; las máscaras de tarjeta
+  (`****`, `XXXX`, `••••`) se buscan en los primeros 6.000 caracteres. También puedes asignarlos escribiendo `la FAN termina en 6958`
+  o `la cuenta de la falabella termina en 1234`: el bot muestra la cuenta que entendió y pide confirmar con botones antes de guardar
+  (sin "cuenta" ni "tarjeta" en el texto, decide por el tipo de la cuenta; rechaza dígitos que ya son de otra cuenta).
+- **Varias cartolas seguidas:** los archivos de un álbum de Telegram, o con menos de 10 segundos entre sí, se agrupan en una cola
+  por chat. Se analiza cada uno, se descartan los duplicados (mismo hash) y se muestra un solo resumen con una línea por archivo
+  (formato o banco, fechas, movimientos y totales). Con *Importar todo* se usa la cuenta sugerida según el contenido (por ejemplo
+  Falabella) y se pregunta solo por los que no tienen sugerencia; con *Revisar uno por uno* ves cada archivo (con vista previa si
+  es PDF). Las preguntas de cuotas se hacen al final, todas juntas.
+- **Cuenta:** el gasto usa la cuenta que mencionas (por ejemplo "débito"); si no mencionas ninguna, la última cuenta con que
+  registraste un gasto a mano, y si no hay, la cuenta activa más antigua. No se pregunta antes: el botón *Cambiar cuenta* de la
+  confirmación permite corregirla.
+- **Foto con texto:** una foto con un texto que es un gasto (`almuerzo 5500`) se registra como gasto normal y la foto queda como su
+  respaldo; con un pago de cuota, como respaldo de esa cuota.
+- **Límite de Gemini:** máximo 30 llamadas por hora por chat, contadas en memoria (se reinician al reiniciar el servidor). Al pasarlo,
+  el bot responde que no entendió y muestra ejemplos; los gastos con monto siguen funcionando solo con las reglas.
+- El menú `/` de Telegram solo muestra `/help`, `/plan`, `/cuotas` y `/update`; el resto de los comandos funciona igual si los escribes.
+
+### Eliminar o corregir un registro respondiéndole
+
+Responde (reply de Telegram) al mensaje que creó un registro: tu mensaje original o la confirmación del bot. Sirve para gastos e
+ingresos, pagos de cuota, compras en cuotas, cuentas e importaciones de cartola.
+
+| Dices | Qué pasa |
+| --- | --- |
+| `elimina esto`, `bórralo`, `me equivoqué, sácalo` | Muestra el registro y pide confirmar con **Eliminar** / **Cancelar** |
+| `eran 4500`, `4.500`, `eran 57 mil` | Corrige el monto |
+| `era con la falabella`, `con la FAN` | Cambia la cuenta (por nombre, banco o tipo; si calzan varias, te lo dice) |
+| `la categoría es comida`, `era de comida` | Cambia la categoría |
+| `fue ayer`, `fue el 15`, `15/11`, `fue el lunes` | Cambia la fecha |
+| `deshacer` (respondiendo a la confirmación de una eliminación o corrección) | Lo recupera, hasta 24 horas después |
+| `elimina el último gasto` (sin responder a nada) | Actúa sobre el último registro creado a mano en ese chat, con la misma confirmación |
+
+- Las correcciones muestran el antes y el después y piden **Guardar** / **Cancelar**; solo se corrigen movimientos y pagos de cuota.
+- Qué se elimina: un movimiento se borra junto con su comprobante (queda 24 h en `tmp/` por si lo deshaces); un pago de cuota se anula y la
+  cuota vuelve a quedar pendiente; una compra en cuotas se desactiva (sus pagos se conservan); una cuenta con movimientos solo se
+  desactiva, sin movimientos se elimina; una importación borra todos sus movimientos y el registro del archivo, así que puedes volver a
+  importarlo.
+- Las reglas entienden las frases de arriba; si no alcanzan, se consulta a Gemini (con el mismo límite por chat y sin enviar nada
+  sensible). Si el mensaje no se entiende, el bot lo trata como un mensaje normal.
+- Los vínculos mensaje-registro están en la tabla `mensajes_registro` y cada eliminación o corrección queda en `historial_cambios`
+  (se crean solas al arrancar). Los registros anteriores a esta función no tienen mensaje asociado: se pueden eliminar con
+  `/ultimos` o la web, no respondiéndoles.
+
+### Empezar de cero: /reset y restaurar un respaldo
+
+Solo para los chats de `TELEGRAM_ALLOWED_CHAT_IDS`. `/reset` no aparece en el menú `/`; también funciona escribiendo "empezar de cero"
+o "borrar todo".
+
+1. El bot muestra lo que hay (movimientos, cuentas, cuotas, plan de ahorro, gastos fijos, datos de transferencia, reglas, categorías
+   personalizadas y archivos en storage) y ofrece tres botones:
+   - **Borrar movimientos y archivos:** borra movimientos, pagos de préstamos, importaciones de cartolas, los vínculos mensaje-registro,
+     el historial de cambios y los archivos de `cartolas/`, `comprobantes/` y `archivos/`. Mantiene cuentas, datos de transferencia,
+     plan, cuotas (con su contador de cuotas pagadas) y categorías.
+   - **Borrar todo:** además borra cuentas, cuotas, plan (vuelve a 50/30/20 sin ingreso), gastos fijos, datos de transferencia, reglas y
+     categorías, y vuelve a crear las categorías base y la cuenta Efectivo. El usuario de la web no se toca.
+   - **Cancelar.**
+2. **Segunda confirmación:** hay que escribir exactamente `BORRAR TODO` (o `BORRAR MOVIMIENTOS`, según el botón) en 2 minutos.
+   Cualquier otro texto cancela.
+3. **Respaldo automático antes de borrar**, en `<FINANZAS_STORAGE>/respaldos/reset-AAAA-MM-DD_HHMMSS/` (hora de Chile):
+   la BD (SQLite: copia de `finanzas.db` con la API de respaldo; MariaDB: `mysqldump` con un archivo de opciones temporal de permisos
+   600, sin la contraseña en los argumentos) y `storage.tar.gz` con los archivos (sin `respaldos/` ni `tmp/`). Si el respaldo falla,
+   no se borra nada. El reset nunca borra `respaldos/`. Requiere `tar` (y `mysqldump` si usas MariaDB) en el PATH del proceso.
+4. El borrado de la BD es una sola transacción (hijos antes que padres), reinicia los autoincrementos y deja una fila `reset` en
+   `historial_cambios`. Al terminar, el bot resume lo borrado y la ruta relativa del respaldo.
+
+**Restaurar:** escribe "restaurar último respaldo". Muestra qué respaldo es y pide la misma doble confirmación (botón y luego
+`RESTAURAR RESPALDO`). Antes de restaurar hace otro respaldo del estado actual (`respaldos/antes-de-restaurar-...`). Con MariaDB
+necesita el cliente `mysql` en el PATH.
+
+### Reiniciar y actualizar desde el bot
+
+Solo para los chats de `TELEGRAM_ALLOWED_CHAT_IDS` y solo con `NODE_ENV=production` (en desarrollo se bloquean para no cerrar
+`npm run dev`). Ambos piden confirmación con botones.
+
+- **`/reboot`**: responde "Reiniciando...", escribe `tmp/reinicio.json` (en la raíz de `FINANZAS_STORAGE`) y termina el proceso
+  1,5 segundos después; PM2 lo levanta de nuevo. Al arrancar, el bot avisa "Listo, volví a estar en línea" con la versión actual.
+- **`/update`**: edita un solo mensaje con el avance (*Verificando*, *Descargando cambios*, *Instalando dependencias* si aplica,
+  *Reiniciando*).
+  1. **Verifica** que `git`, `node` y `npm` existan en el PATH del proceso (muestra sus versiones), que el remoto responda
+     (`git ls-remote --heads origin`, 20 s de tiempo máximo y `GIT_TERMINAL_PROMPT=0`) y la rama actual. Si algo falla lo explica en
+     simple ("PM2 no encuentra npm: revisa el PATH o nvm", "no hay acceso al repositorio: falta la deploy key") y no sigue.
+  2. Ejecuta `git pull --ff-only` en la raíz del repositorio; si falla o hay conflictos, no reinicia y manda las últimas líneas del
+     error (sin rutas del servidor ni nada de `.env`). Si no hubo cambios, avisa "Ya estaba al día" y no reinicia.
+  3. **Prueba del cambio:** rama, hash anterior y nuevo, fecha (hora de Chile) y autor del último commit y total de archivos
+     cambiados (`git diff --stat`).
+  4. Si cambió `package.json` o `package-lock.json`, ejecuta `npm ci --omit=dev` (si falla, no reinicia).
+  5. **Resumen con IA:** a Gemini solo viajan los títulos de los commits nuevos (hasta 30, sin los que parezcan traer datos
+     sensibles) y los nombres de los archivos cambiados, nunca su contenido ni el diff. Devuelve 3 a 6 viñetas en español. Sin
+     clave o con error, se muestran los títulos tal cual.
+  6. Guarda en `tmp/reinicio.json` el hash esperado y reinicia como `/reboot`. Al volver, el mensaje "Listo, volví a estar en línea"
+     incluye la versión y dice "Actualización confirmada" si coincide con el hash esperado, o "Algo no calzó" si no.
+  - **`update.sh`:** está en la raíz del repositorio y `/update` lo usa en vez de hacer el `git pull` y el `npm ci` por su cuenta. Imprime
+    las mismas verificaciones (git, node y npm con su versión, rama, remoto), hace `git pull --ff-only`, muestra el hash anterior y el
+    nuevo, ejecuta `npm ci --omit=dev` solo si cambió `package.json` o `package-lock.json`, y recarga con
+    `pm2 reload ecosystem.config.cjs --update-env` y `pm2 save`. A mano: `bash update.sh`. El bot lo llama en dos partes
+    (`--sin-reinicio` al comienzo y `--solo-reiniciar` al final) para poder mandar antes la prueba del cambio y el resumen con IA; al
+    volver, compara el hash con el esperado. Si `pm2 reload` falla, el bot reinicia el proceso directamente y PM2 lo levanta.
+  - La llamada a Gemini del resumen de `/update` no cuenta para el límite de 30 por hora por chat.
+
+Los comandos del sistema se ejecutan con `execFile` (sin shell) y con tiempo máximo, y ningún argumento viene de texto escrito por
+el usuario. El usuario que corre PM2 necesita permiso para `git pull` (con credenciales sin contraseña, por ejemplo una deploy key)
+y para escribir en el repositorio y en `node_modules`.
+
+### Seguridad
+
+- El bot **solo responde a los chat IDs autorizados** configurados en `.env`
+- Cualquier otro usuario que intente usar el bot recibirá un mensaje de "No autorizado"
+- El comando `/miid` es el único disponible para usuarios no autorizados (para que puedas obtener tu chat ID)
+- El bot usa **long polling** (no webhook), por lo que no necesitas exponer puertos ni configurar HTTPS
+
+### Solución de Problemas
+
+**El bot no responde**:
+```bash
+# Ver logs
+pm2 logs finanzas-personales
+
+# Verificar que el token esté configurado
+grep TELEGRAM_BOT_TOKEN .env
+
+# Reiniciar
+pm2 restart finanzas-personales
+```
+
+**"No estás autorizado"**:
+- Envía `/miid` al bot para obtener tu chat ID
+- Verifica que ese ID esté en `TELEGRAM_ALLOWED_CHAT_IDS` en `.env`
+- Reinicia el servidor después de modificar `.env`
+
+**El bot no detecta correctamente los montos o fechas**:
+- Revisa los ejemplos de formato en `/ayuda`
+- Asegúrate de incluir el monto en el mensaje
+- Las fechas son opcionales (por defecto usa "hoy")
 
 ## 🔄 Actualizaciones
 

@@ -9,6 +9,7 @@ export default function Layout({ usuario, onLogout, children }) {
     { path: '/cuentas', icon: 'fa-credit-card', label: 'Cuentas' },
     { path: '/importar', icon: 'fa-file-import', label: 'Importar' },
     { path: '/prestamos', icon: 'fa-handshake', label: 'Préstamos' },
+    { path: '/plan-ahorro', icon: 'fa-piggy-bank', label: 'Plan de ahorro' },
     { path: '/categorias', icon: 'fa-tags', label: 'Categorías' }
   ];
 

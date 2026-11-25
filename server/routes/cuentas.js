@@ -4,13 +4,25 @@ import { requireAuth } from '../middleware/auth.js';
 
 const router = express.Router();
 
+// Saldo según movimientos: abonos suman, cargos restan, y lo que llega como cuenta destino
+// (pago de tarjeta, transferencia propia) suma. En una tarjeta de crédito un saldo negativo
+// es deuda y el pago la reduce.
+const SQL_SALDO = `
+  (SELECT COALESCE(SUM(CASE WHEN m.tipo = 'abono' THEN m.monto ELSE -m.monto END), 0)
+     FROM movimientos m WHERE m.cuenta_id = c.id)
+  + (SELECT COALESCE(SUM(d.monto), 0)
+       FROM movimientos d
+      WHERE d.cuenta_destino_id = c.id
+        AND d.tipo_movimiento IN ('pago_tarjeta', 'transferencia_propia'))`;
+
 router.use(requireAuth);
 
 // Listar todas las cuentas
 router.get('/', async (req, res) => {
   try {
     const [cuentas] = await query(
-      'SELECT * FROM cuentas ORDER BY creado_en DESC'
+      `SELECT c.*, ${SQL_SALDO} AS saldo_movimientos
+       FROM cuentas c ORDER BY c.creado_en DESC`
     );
     res.json(cuentas);
   } catch (error) {
@@ -23,7 +35,8 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const [cuentas] = await query(
-      'SELECT * FROM cuentas WHERE id = ?',
+      `SELECT c.*, ${SQL_SALDO} AS saldo_movimientos
+       FROM cuentas c WHERE c.id = ?`,
       [req.params.id]
     );
     
