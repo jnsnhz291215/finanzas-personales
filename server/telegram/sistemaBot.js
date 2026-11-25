@@ -25,6 +25,7 @@ import { fileURLToPath } from 'url';
 import { carpetaTmp } from '../storage.js';
 import { resumirCambios, geminiDisponible } from './gemini.js';
 import { puedeEnviarseAGemini } from './intenciones.js';
+import { elegirMotor } from '../motorDB.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // server/telegram -> raíz del repositorio
@@ -334,6 +335,18 @@ export function crearSistema(ctx) {
       const remoto = await ejecutar('git', ['ls-remote', '--heads', 'origin'], { timeoutMs: TIMEOUT_REMOTO_MS });
       if (remoto.ok) lineas.push('Repositorio remoto: responde');
       else problemas.push(explicarFalloRemoto({ error: remoto.error, timeout: remoto.timeout }));
+    }
+
+    // Herramientas de respaldo (/reset): solo avisan, no impiden actualizar
+    const respaldo = [['tar', true]];
+    let motor = 'sqlite';
+    try { motor = elegirMotor(); } catch { /* un DB_ENGINE inválido ya lo reporta el arranque */ }
+    if (motor === 'mariadb') respaldo.push(['mysqldump', true], ['mysql', true]);
+    for (const [programa] of respaldo) {
+      const r = await ejecutar(programa, ['--version'], { timeoutMs: 10000 });
+      lineas.push(r.ok
+        ? `${programa}: disponible`
+        : `Aviso: el proceso no encuentra ${programa}; /reset no podrá hacer o restaurar respaldos`);
     }
 
     return { ok: problemas.length === 0, lineas, problemas, rama };

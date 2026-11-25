@@ -1,14 +1,25 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-// Siempre usar SQLite para la demo, comentar para usar MySQL en producción real
-const USE_SQLITE = true; // Cambiar a false cuando tengas MariaDB configurado
+import { elegirMotor, variablesFaltantesMariaDB } from './motorDB.js';
+
+// Motor de BD según DB_ENGINE ('sqlite' por defecto, 'mariadb' en el servidor)
+const MOTOR_ELEGIDO = elegirMotor();
+
+if (MOTOR_ELEGIDO === 'mariadb') {
+  const faltantes = variablesFaltantesMariaDB();
+  if (faltantes.length > 0) {
+    throw new Error(`DB_ENGINE=mariadb necesita estas variables de entorno: ${faltantes.join(', ')}`);
+  }
+}
+// Solo el motor, nunca host, usuario ni contraseña
+console.log(`✓ Motor de base de datos: ${MOTOR_ELEGIDO}`);
 
 let dbModule;
 // Motor de BD en uso: 'sqlite' o 'mariadb' (lo usa el reset del bot para respaldar y borrar)
 let motor = 'sqlite';
 
-if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
+if (MOTOR_ELEGIDO === 'mariadb') {
   // Usar MySQL en producción
   const mysql = (await import('mysql2/promise')).default;
   const bcrypt = (await import('bcrypt')).default;
@@ -309,7 +320,7 @@ if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
   };
 } else {
   // Usar SQLite (para desarrollo/demo)
-  console.log('⚠ Usando SQLite para desarrollo/demo (cambiar USE_SQLITE a false en db.js para MariaDB)');
+  console.log('⚠ Usando SQLite (desarrollo). Para MariaDB define DB_ENGINE=mariadb y las variables DB_*.');
   dbModule = await import('./db-sqlite.js');
 }
 

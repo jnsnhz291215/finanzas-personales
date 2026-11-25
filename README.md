@@ -136,7 +136,11 @@ Configurar:
 NODE_ENV=production
 PORT=3005
 
-# Base de Datos (usuario exclusivo, BD separada)
+# Motor de base de datos: sqlite (por defecto) o mariadb. En el servidor: mariadb
+DB_ENGINE=mariadb
+
+# Base de Datos MariaDB (usuario exclusivo, BD separada). Obligatorias con DB_ENGINE=mariadb:
+# DB_HOST, DB_USER, DB_PASSWORD y DB_NAME (DB_PORT es opcional, 3306 por defecto)
 DB_HOST=localhost
 DB_PORT=3306
 DB_USER=finanzas_juan
@@ -152,6 +156,14 @@ ADMIN_PASSWORD=cambiar123
 # Raíz del almacenamiento (ver la sección Configurar el Almacenamiento)
 FINANZAS_STORAGE=/home/basalto/apps/finanzas-juan/storage
 ```
+
+> **Motor de base de datos.** Se elige con `DB_ENGINE`: `sqlite` (por defecto, archivo `finanzas.db`, para desarrollo) o `mariadb`.
+> Sin `DB_ENGINE` la app usa SQLite aunque existan las variables `DB_*`: en el servidor hay que definir `DB_ENGINE=mariadb`
+> explícitamente. Con `mariadb` el servidor no arranca si falta `DB_HOST`, `DB_USER`, `DB_PASSWORD` o `DB_NAME`, y un valor distinto
+> de `sqlite`/`mariadb` también es un error. Al arrancar escribe en el log `Motor de base de datos: sqlite|mariadb`, sin host,
+> usuario ni contraseña. Los datos de SQLite y de MariaDB son independientes: cambiar de motor no copia los datos.
+> `/reset` y `/update` además esperan `tar` (y, con MariaDB, `mysqldump` y `mysql`) en el PATH del proceso; `/update` y `update.sh`
+> avisan si PM2 no los ve.
 
 ### 5. Instalar Dependencias
 

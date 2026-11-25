@@ -43,6 +43,23 @@ echo "[ok] git  $(git --version | sed 's/^git version //')"
 echo "[ok] node $(node --version)"
 echo "[ok] npm  $(npm --version)"
 
+# Herramientas de respaldo de /reset: solo avisan, no impiden actualizar. mysqldump y mysql solo
+# importan con DB_ENGINE=mariadb (el bot pasa esa variable; a mano puede no estar definida).
+revisar_herramienta() {
+  if command -v "$1" >/dev/null 2>&1; then
+    echo "[ok] $1 disponible"
+  else
+    echo "[aviso] el proceso no encuentra $1: /reset no podrá hacer o restaurar respaldos"
+  fi
+}
+revisar_herramienta tar
+if [ "${DB_ENGINE:-sqlite}" = "mariadb" ] || [ "${DB_ENGINE:-sqlite}" = "mysql" ]; then
+  revisar_herramienta mysqldump
+  revisar_herramienta mysql
+else
+  echo "mysqldump y mysql: no se revisan (DB_ENGINE=${DB_ENGINE:-sqlite})"
+fi
+
 RAMA="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" || falla "No pude leer la rama: ¿esto es un repositorio git?"
 [ "$RAMA" != "HEAD" ] || falla "El repositorio no está en ninguna rama (HEAD suelto)."
 echo "[ok] rama $RAMA"
