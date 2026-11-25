@@ -6,8 +6,12 @@
  *  - Solo con NODE_ENV=production: en desarrollo se bloquean para no matar `npm run dev`.
  *  - Los comandos del sistema se ejecutan con execFile (sin shell) y con timeout. Ningún
  *    argumento viene de texto del usuario: son valores fijos o hashes que devuelve git.
- *  - Antes de salir se escribe tmp/reinicio.json (en la raíz de storage) con el chat y el motivo;
- *    al arrancar, el bot avisa que volvió y borra ese archivo.
+ *  - /update verifica primero el entorno (git, node, npm, remoto y rama), edita un solo mensaje con
+ *    el avance, muestra la prueba del cambio (hash anterior y nuevo, último commit, archivos) y un
+ *    resumen con Gemini hecho solo con títulos de commits y nombres de archivos. Si existe
+ *    update.sh en la raíz del repositorio, lo usa en lugar de hacer pull e instalar por su cuenta.
+ *  - Antes de salir se escribe tmp/reinicio.json (en la raíz de storage) con el chat, el motivo y el
+ *    hash esperado; al arrancar, el bot avisa que volvió, compara el hash y borra ese archivo.
  *  - Los errores que se muestran en el chat se limpian: sin rutas del servidor, sin líneas que
  *    mencionen .env y sin credenciales en URLs.
  */
@@ -17,6 +21,9 @@ import fs from 'fs/promises';
 import { execFile } from 'child_process';
 import { fileURLToPath } from 'url';
 import { carpetaTmp } from '../storage.js';
+import { resumirCambios, geminiDisponible } from './gemini.js';
+import { puedeEnviarseAGemini } from './intenciones.js';
+import { limitadorGemini } from './limiteGemini.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // server/telegram -> raíz del repositorio
@@ -27,7 +34,11 @@ const TIMEOUT_GIT_MS = 60 * 1000;
 const TIMEOUT_NPM_MS = 5 * 60 * 1000;
 // Tiempo para que el último mensaje salga antes de terminar el proceso (entre 1 y 2 segundos)
 const RETRASO_SALIDA_MS = 1500;
-const MAX_COMMITS = 10;
+const TIMEOUT_REMOTO_MS = 20 * 1000;
+const TIMEOUT_SCRIPT_MS = 10 * 60 * 1000;
+const MAX_TITULOS = 30;
+const MAX_ARCHIVOS_IA = 100;
+const NOMBRE_SCRIPT = 'update.sh';
 const ARCHIVOS_DE_DEPENDENCIAS = ['package.json', 'package-lock.json'];
 
 /** Ejecuta un programa con argumentos fijos, sin shell, y devuelve { ok, salida, error } */
@@ -50,7 +61,9 @@ function ejecutar(programa, argumentos, { timeoutMs, cwd = RAIZ_REPO } = {}) {
             ok: false,
             salida: String(stdout ?? ''),
             error: String(stderr || stdout || error.message || ''),
-            timeout: Boolean(error.killed)
+            timeout: Boolean(error.killed),
+            // El programa no está en el PATH del proceso
+            faltante: error.code === 'ENOENT'
           });
         } else {
           resolve({ ok: true, salida: String(stdout ?? ''), error: '' });
@@ -82,6 +95,87 @@ export function limpiarSalida(texto, maxLineas = 6) {
 
 const esHashGit = (texto) => /^[0-9a-f]{40}$/.test(texto);
 
+// ---------------------------------------------------------------------------
+// Funciones puras (se prueban sin git ni Telegram)
+// ---------------------------------------------------------------------------
+
+/** Explica en lenguaje simple por qué falló `git ls-remote` */
+export function explicarFalloRemoto({ error = '', timeout = false } = {}) {
+  if (timeout) return 'El repositorio no respondió a tiempo: revisa la conexión a internet del servidor.';
+  const t = String(error).toLowerCase();
+  if (/could not resolve host|network is unreachable|connection (?:timed out|refused|reset)|no route to host/.test(t)) {
+    return 'No hay conexión con el repositorio: revisa internet y DNS en el servidor.';
+  }
+  if (/permission denied|publickey|authentication failed|could not read from remote|access denied|repository not found|\b40[134]\b|host key verification failed/.test(t)) {
+    return 'No hay acceso al repositorio: falta la deploy key o no tiene permiso de lectura.';
+  }
+  return 'No pude consultar el repositorio remoto.';
+}
+
+/** Qué decir cuando un programa no se puede ejecutar */
+export function explicarProgramaFaltante(programa) {
+  if (programa === 'npm') return 'PM2 no encuentra npm: revisa el PATH o nvm.';
+  if (programa === 'node') return 'PM2 no encuentra node: revisa el PATH o nvm.';
+  if (programa === 'git') return 'El proceso no encuentra git: instálalo o agrégalo al PATH.';
+  return `El proceso no encuentra ${programa}.`;
+}
+
+/** Cantidad de archivos de la última línea de `git diff --stat` ("12 files changed, 80 insertions...") */
+export function contarArchivosDelStat(stat) {
+  const lineas = String(stat ?? '').split('\n').map(l => l.trim()).filter(Boolean);
+  const resumen = lineas[lineas.length - 1] ?? '';
+  const m = /(\d+)\s+files?\s+changed/.exec(resumen);
+  return m ? Number(m[1]) : 0;
+}
+
+/** Fecha y hora en Chile (DD-MM-YYYY HH:MM) a partir de una fecha ISO; el texto original si no es válida */
+export function fechaHoraChile(iso) {
+  const fecha = new Date(iso);
+  if (Number.isNaN(fecha.getTime())) return String(iso ?? '');
+  const partes = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Santiago',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+    }).formatToParts(fecha).map(p => [p.type, p.value])
+  );
+  return `${partes.day}-${partes.month}-${partes.year} ${partes.hour}:${partes.minute}`;
+}
+
+/**
+ * Texto del mensaje único de avance: encabezado, lo verificado, los pasos (los terminados con
+ * "listo", el actual con "...") y, al final, el estado final si ya terminó.
+ */
+export function textoProgreso({ titulo = 'Actualizando', entorno = [], pasos = [], final = null }, esc = (t) => t) {
+  const partes = [`<b>${esc(titulo)}</b>`];
+  if (entorno.length > 0) partes.push(entorno.map(l => esc(l)).join('\n'));
+  if (pasos.length > 0) {
+    partes.push(pasos.map(p => (p.fallo ? `${esc(p.nombre)}: falló` : p.listo ? `${esc(p.nombre)}: listo` : `${esc(p.nombre)}...`)).join('\n'));
+  }
+  if (final) partes.push(esc(final));
+  return partes.join('\n\n');
+}
+
+/** Títulos que se pueden mandar a Gemini: sin datos sensibles y como máximo MAX_TITULOS */
+export function titulosParaIA(titulos) {
+  return titulos.filter(t => puedeEnviarseAGemini(t)).slice(0, MAX_TITULOS);
+}
+
+/** Mensaje de "volví" según el hash esperado guardado antes de reiniciar */
+export function textoVuelta({ hashActual, hashEsperado, motivo }, esc = (t) => t) {
+  const corto = hashActual ? hashActual.slice(0, 7) : null;
+  let texto = `Listo, volví a estar en línea.${corto ? `\nVersión: ${esc(corto)}` : ''}`;
+  if (motivo === 'update' && hashEsperado) {
+    if (hashActual && hashActual === hashEsperado) {
+      texto += '\nActualización confirmada: la versión es la esperada.';
+    } else {
+      texto += `\nAlgo no calzó: esperaba la versión ${esc(hashEsperado.slice(0, 7))}` +
+        `${corto ? ` y estoy en ${esc(corto)}` : ' y no pude leer la actual'}. Revisa el servidor.`;
+    }
+  }
+  return texto;
+}
+
 /** Archivo que se escribe justo antes de salir y se lee al arrancar */
 function archivoReinicio() {
   return path.join(carpetaTmp(), 'reinicio.json');
@@ -95,6 +189,8 @@ export function crearSistema(ctx) {
   let enProceso = false;
 
   const esProduccion = () => process.env.NODE_ENV === 'production';
+  // Límite de llamadas a Gemini por chat; se puede inyectar en pruebas
+  const limitador = ctx.limitador ?? limitadorGemini;
 
   async function hashActual(corto = false) {
     const r = await ejecutar('git', ['rev-parse', ...(corto ? ['--short'] : []), 'HEAD'], { timeoutMs: 10000 });
@@ -102,14 +198,50 @@ export function crearSistema(ctx) {
   }
 
   /**
-   * Deja el aviso para el próximo arranque y termina el proceso (PM2 lo vuelve a levantar).
-   * `mensajeId` es el mensaje de confirmación, que pasa a decir "Reiniciando...".
+   * Mensaje único de avance: se edita en cada paso en vez de mandar uno nuevo.
+   * `titulo` abre el mensaje; entorno son las líneas de lo verificado.
    */
-  async function reiniciar(chatId, mensajeId, motivo) {
-    await editar('Reiniciando...', { chat_id: chatId, message_id: mensajeId });
+  function crearProgreso(chatId, mensajeId, titulo) {
+    const estado = { titulo, entorno: [], pasos: [], final: null };
+    const pintar = () => editar(textoProgreso(estado, esc), { chat_id: chatId, message_id: mensajeId });
+    const cerrarActual = (fallo = false) => {
+      const actual = estado.pasos[estado.pasos.length - 1];
+      if (!actual) return;
+      if (fallo) actual.fallo = true;
+      else actual.listo = true;
+    };
+    return {
+      async paso(nombre) {
+        cerrarActual();
+        estado.pasos.push({ nombre, listo: false });
+        await pintar();
+      },
+      async entorno(lineas) {
+        estado.entorno = lineas;
+        await pintar();
+      },
+      async terminar(final, fallo = false) {
+        cerrarActual(fallo);
+        estado.final = final;
+        await pintar();
+      }
+    };
+  }
+
+  /**
+   * Deja el aviso para el próximo arranque (con el hash esperado si es una actualización) y termina
+   * el proceso (PM2 lo vuelve a levantar). `progreso` es el mensaje de avance; sin él, el mensaje de
+   * confirmación pasa a decir "Reiniciando...".
+   */
+  async function reiniciar(chatId, mensajeId, motivo, { esperado = null, anterior = null, progreso = null } = {}) {
+    if (progreso) await progreso.paso('Reiniciando');
+    else await editar('Reiniciando...', { chat_id: chatId, message_id: mensajeId });
     try {
       await fs.mkdir(carpetaTmp(), { recursive: true });
-      await fs.writeFile(archivoReinicio(), JSON.stringify({ chatId, motivo, en: new Date().toISOString() }));
+      await fs.writeFile(
+        archivoReinicio(),
+        JSON.stringify({ chatId, motivo, esperado, anterior, en: new Date().toISOString() })
+      );
     } catch (error) {
       console.error(`[sistema] no se pudo escribir el aviso de reinicio: error_code=${error.code ?? 'desconocido'}`);
     }
@@ -118,8 +250,9 @@ export function crearSistema(ctx) {
   }
 
   /**
-   * Al arrancar: si hay un reinicio pendiente de avisar, manda "Listo, volví a estar en línea"
-   * con el hash actual y borra el archivo. Nunca lanza.
+   * Al arrancar: si hay un reinicio pendiente de avisar, manda "Listo, volví a estar en línea" con
+   * el hash actual; si fue una actualización, lo compara con el esperado ("Actualización
+   * confirmada" o "Algo no calzó"). Borra el archivo. Nunca lanza.
    */
   async function notificarReinicioPendiente() {
     let datos;
@@ -139,8 +272,13 @@ export function crearSistema(ctx) {
       const chatId = Number(datos?.chatId);
       if (!Number.isInteger(chatId) || !esChatAutorizado(chatId)) return;
 
-      const hash = await hashActual(true);
-      await enviar(chatId, `Listo, volví a estar en línea.${hash ? `\nVersión: ${esc(hash)}` : ''}`);
+      const actual = await hashActual();
+      const esperado = esHashGit(String(datos?.esperado ?? '')) ? datos.esperado : null;
+      await enviar(chatId, textoVuelta({
+        hashActual: actual && esHashGit(actual) ? actual : null,
+        hashEsperado: esperado,
+        motivo: datos?.motivo
+      }, esc));
     } catch {
       // el aviso es opcional
     }
@@ -151,62 +289,176 @@ export function crearSistema(ctx) {
   // -------------------------------------------------------------------------
 
   /**
-   * Ejecuta la actualización paso a paso. Cualquier fallo avisa y no reinicia.
-   * Devuelve true solo si todo salió bien y hay que reiniciar.
+   * Revisa que git, node y npm estén en el PATH del proceso, que el remoto responda y en qué rama
+   * está el repositorio. Devuelve { ok, lineas, problemas, rama }: `lineas` es lo verificado (para
+   * mostrar) y `problemas` explica en lenguaje simple lo que falta.
    */
-  async function actualizar(chatId) {
+  async function verificarEntorno() {
+    const lineas = [];
+    const problemas = [];
+    let rama = null;
+
+    const version = async (programa, etiqueta = programa) => {
+      const r = await ejecutar(programa, ['--version'], { timeoutMs: 10000 });
+      if (r.ok) {
+        lineas.push(`${etiqueta}: ${r.salida.trim().split('\n')[0].replace(/^git version /, '').slice(0, 40)}`);
+        return true;
+      }
+      problemas.push(r.faltante ? explicarProgramaFaltante(programa) : `${programa} no respondió bien.`);
+      return false;
+    };
+
+    const hayGit = await version('git');
+    await version('node');
+    await version('npm');
+
+    if (hayGit) {
+      const ramaR = await ejecutar('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { timeoutMs: 10000 });
+      rama = ramaR.ok ? ramaR.salida.trim() : null;
+      if (!rama) {
+        problemas.push('No pude leer la rama del repositorio: ¿el proceso corre dentro del repositorio?');
+      } else if (rama === 'HEAD') {
+        problemas.push('El repositorio no está en ninguna rama (HEAD suelto): no se puede actualizar con git pull.');
+      } else {
+        lineas.push(`Rama: ${rama}`);
+      }
+
+      const remoto = await ejecutar('git', ['ls-remote', '--heads', 'origin'], { timeoutMs: TIMEOUT_REMOTO_MS });
+      if (remoto.ok) lineas.push('Repositorio remoto: responde');
+      else problemas.push(explicarFalloRemoto({ error: remoto.error, timeout: remoto.timeout }));
+    }
+
+    return { ok: problemas.length === 0, lineas, problemas, rama };
+  }
+
+  /** ¿Existe update.sh en la raíz del repositorio? */
+  async function hayScript() {
+    try {
+      await fs.access(path.join(RAIZ_REPO, NOMBRE_SCRIPT));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Prueba de que hubo cambio: rama, hash anterior y nuevo, fecha y autor del último commit y
+   * cantidad de archivos cambiados. Devuelve { texto, archivos: [nombres], titulos: [...] }.
+   */
+  async function pruebaDelCambio(anterior, nuevo, rama) {
+    const ultimo = await ejecutar('git', ['log', '-1', '--format=%an%x1f%cI'], { timeoutMs: 10000 });
+    const [autor, fecha] = ultimo.ok ? ultimo.salida.trim().split('\x1f') : ['', ''];
+    const stat = await ejecutar('git', ['diff', '--stat', `${anterior}..${nuevo}`], { timeoutMs: 15000 });
+    const nombres = await ejecutar('git', ['diff', '--name-only', `${anterior}..${nuevo}`], { timeoutMs: 15000 });
+    const log = await ejecutar('git', ['log', '--format=%s', '-n', String(MAX_TITULOS), `${anterior}..${nuevo}`], { timeoutMs: 15000 });
+
+    const archivos = nombres.ok ? nombres.salida.split('\n').map(l => l.trim()).filter(Boolean) : [];
+    const titulos = log.ok ? log.salida.split('\n').map(l => l.trim()).filter(Boolean) : [];
+    const total = stat.ok ? contarArchivosDelStat(stat.salida) : archivos.length;
+
+    const texto =
+      '<b>Prueba de la actualización</b>\n\n' +
+      (rama ? `Rama: ${esc(rama)}\n` : '') +
+      `Antes: ${esc(anterior.slice(0, 7))}\nAhora: ${esc(nuevo.slice(0, 7))}\n` +
+      (fecha ? `Último commit: ${esc(fechaHoraChile(fecha))}${autor ? ` por ${esc(autor)}` : ''}\n` : '') +
+      `Archivos cambiados: ${total}`;
+    return { texto, archivos, titulos };
+  }
+
+  /** Resumen en viñetas con Gemini (solo títulos y nombres de archivos); si no se puede, los títulos tal cual */
+  async function resumenDeCambios(chatId, titulos, archivos) {
+    if (titulos.length === 0) return null;
+
+    let puntos = null;
+    const seguros = titulosParaIA(titulos);
+    if (geminiDisponible() && seguros.length > 0 && limitador.consumir(chatId)) {
+      puntos = await resumirCambios(seguros, archivos.slice(0, MAX_ARCHIVOS_IA));
+    }
+    if (puntos) return `<b>Qué cambió</b>\n${puntos.map(p => `• ${esc(p)}`).join('\n')}`;
+    return `<b>Cambios</b> (títulos de los commits)\n${titulos.map(t => `• ${esc(t)}`).join('\n')}`;
+  }
+
+  /**
+   * Ejecuta la actualización paso a paso, editando un solo mensaje. Cualquier fallo avisa y no
+   * reinicia. Devuelve { reiniciar: true, esperado, anterior, progreso } si todo salió bien.
+   */
+  async function actualizar(chatId, mensajeId) {
+    const progreso = crearProgreso(chatId, mensajeId, 'Actualizando');
+    const detener = async (final, detalle = null, fallo = true) => {
+      await progreso.terminar(final, fallo);
+      if (detalle) await enviar(chatId, detalle);
+      return { reiniciar: false };
+    };
+
+    // 1. Verificar el entorno
+    await progreso.paso('Verificando');
+    const entorno = await verificarEntorno();
+    await progreso.entorno(entorno.lineas);
+    if (!entorno.ok) {
+      return detener('No actualicé ni reinicié porque falta algo:', entorno.problemas.map(p => `• ${esc(p)}`).join('\n'));
+    }
+
     const anterior = await hashActual();
     if (!anterior || !esHashGit(anterior)) {
-      await enviar(chatId, 'No pude leer la versión actual del repositorio, así que no actualicé ni reinicié.');
-      return false;
+      return detener('No pude leer la versión actual del repositorio, así que no actualicé ni reinicié.');
     }
 
-    // a. git pull --ff-only
-    const pull = await ejecutar('git', ['pull', '--ff-only'], { timeoutMs: TIMEOUT_GIT_MS });
-    if (!pull.ok) {
-      const detalle = pull.timeout ? 'Se agotó el tiempo de espera.' : limpiarSalida(pull.error);
-      await enviar(chatId,
-        `No pude actualizar (git pull falló). No reinicié.${detalle ? `\n\n<pre>${esc(detalle)}</pre>` : ''}`
-      );
-      return false;
-    }
-
-    // c. ¿hubo cambios?
-    const nuevo = await hashActual();
-    if (!nuevo || !esHashGit(nuevo)) {
-      await enviar(chatId, 'Actualicé, pero no pude leer la versión nueva. No reinicié.');
-      return false;
-    }
-    if (nuevo === anterior) {
-      await enviar(chatId, 'Ya estaba al día. No reinicié.');
-      return false;
-    }
-
-    // d. dependencias, solo si cambió package.json o package-lock.json
-    const diff = await ejecutar('git', ['diff', '--name-only', anterior, nuevo], { timeoutMs: 15000 });
-    const cambiados = diff.ok ? diff.salida.split('\n').map(l => l.trim()) : [];
-    if (cambiados.some(archivo => ARCHIVOS_DE_DEPENDENCIAS.includes(archivo))) {
-      await enviar(chatId, 'Cambiaron las dependencias: ejecutando npm ci...');
-      const npm = await ejecutar('npm', ['ci', '--omit=dev'], { timeoutMs: TIMEOUT_NPM_MS });
-      if (!npm.ok) {
-        const detalle = npm.timeout ? 'Se agotó el tiempo de espera.' : limpiarSalida(npm.error);
-        await enviar(chatId,
-          'El código se actualizó, pero npm ci falló, así que no reinicié.' +
-          `${detalle ? `\n\n<pre>${esc(detalle)}</pre>` : ''}`
+    // 2. Descargar (con update.sh si existe; si no, git pull)
+    const conScript = await hayScript();
+    await progreso.paso(conScript ? `Ejecutando ${NOMBRE_SCRIPT}` : 'Descargando cambios');
+    if (conScript) {
+      const r = await ejecutar('bash', [NOMBRE_SCRIPT], { timeoutMs: TIMEOUT_SCRIPT_MS });
+      const salida = limpiarSalida(r.ok ? r.salida : (r.error || r.salida), 12);
+      if (!r.ok) {
+        const motivo = r.timeout ? 'Se agotó el tiempo de espera.' : salida;
+        return detener(
+          `${NOMBRE_SCRIPT} falló, así que no reinicié.`,
+          motivo ? `<pre>${esc(motivo)}</pre>` : null
         );
-        return false;
+      }
+      if (salida) await enviar(chatId, `<b>Salida de ${NOMBRE_SCRIPT}</b>\n<pre>${esc(salida)}</pre>`);
+    } else {
+      const pull = await ejecutar('git', ['pull', '--ff-only'], { timeoutMs: TIMEOUT_GIT_MS });
+      if (!pull.ok) {
+        const detalle = pull.timeout ? 'Se agotó el tiempo de espera.' : limpiarSalida(pull.error);
+        return detener(
+          'No pude actualizar (git pull falló). No reinicié.',
+          detalle ? `<pre>${esc(detalle)}</pre>` : null
+        );
       }
     }
 
-    // e. resumen de lo nuevo
-    const log = await ejecutar('git', ['log', '--oneline', '-n', String(MAX_COMMITS), `${anterior}..${nuevo}`], { timeoutMs: 15000 });
-    const titulos = log.ok ? log.salida.split('\n').filter(Boolean) : [];
-    await enviar(chatId,
-      '<b>Actualización lista</b>\n\n' +
-      `Antes: ${esc(anterior.slice(0, 7))}\nAhora: ${esc(nuevo.slice(0, 7))}` +
-      (titulos.length > 0 ? `\n\n<b>Cambios:</b>\n${titulos.map(t => esc(t)).join('\n')}` : '')
-    );
-    return true;
+    // 3. ¿Hubo cambios?
+    const nuevo = await hashActual();
+    if (!nuevo || !esHashGit(nuevo)) {
+      return detener('Actualicé, pero no pude leer la versión nueva. No reinicié.');
+    }
+    if (nuevo === anterior) {
+      return detener(`Ya estaba al día (versión ${anterior.slice(0, 7)}). No reinicié.`, null, false);
+    }
+
+    // 4. Prueba del cambio
+    const prueba = await pruebaDelCambio(anterior, nuevo, entorno.rama);
+    await enviar(chatId, prueba.texto);
+
+    // 5. Dependencias, solo si cambió package.json o package-lock.json (con update.sh se encarga el script)
+    if (!conScript && prueba.archivos.some(archivo => ARCHIVOS_DE_DEPENDENCIAS.includes(archivo))) {
+      await progreso.paso('Instalando dependencias');
+      const npm = await ejecutar('npm', ['ci', '--omit=dev'], { timeoutMs: TIMEOUT_NPM_MS });
+      if (!npm.ok) {
+        const detalle = npm.timeout ? 'Se agotó el tiempo de espera.' : (npm.faltante ? explicarProgramaFaltante('npm') : limpiarSalida(npm.error));
+        return detener(
+          'El código se actualizó, pero npm ci falló, así que no reinicié.',
+          detalle ? `<pre>${esc(detalle)}</pre>` : null
+        );
+      }
+    }
+
+    // 6. Resumen de lo nuevo
+    const resumen = await resumenDeCambios(chatId, prueba.titulos, prueba.archivos);
+    if (resumen) await enviar(chatId, resumen);
+
+    return { reiniciar: true, esperado: nuevo, anterior, progreso };
   }
 
   // -------------------------------------------------------------------------
@@ -225,7 +477,7 @@ export function crearSistema(ctx) {
 
     const texto = accion === 'reboot'
       ? '¿Reiniciar la app? Estará unos segundos sin responder.'
-      : '¿Actualizar la app? Hago git pull, instalo dependencias si cambiaron y reinicio solo si todo sale bien.';
+      : '¿Actualizar la app? Verifico git, node, npm y el repositorio, hago git pull (o ejecuto update.sh si existe), instalo dependencias si cambiaron y reinicio solo si todo sale bien.';
     await enviar(chatId, texto, {
       reply_markup: {
         inline_keyboard: [[
@@ -270,12 +522,11 @@ export function crearSistema(ctx) {
         return true; // el proceso termina en un momento; enProceso no se libera a propósito
       }
 
-      await editar('Actualizando...', { chat_id: chatId, message_id: messageId });
-      if (await actualizar(chatId)) {
-        await reiniciar(chatId, messageId, 'update');
+      const r = await actualizar(chatId, messageId);
+      if (r.reiniciar) {
+        await reiniciar(chatId, messageId, 'update', { esperado: r.esperado, anterior: r.anterior, progreso: r.progreso });
         return true;
       }
-      await editar('Actualización terminada sin reiniciar.', { chat_id: chatId, message_id: messageId });
     } catch (error) {
       console.error(`[sistema] error inesperado: ${error.code ?? error.name}`);
       await enviar(chatId, 'Ocurrió un error inesperado. No reinicié.');

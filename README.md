@@ -586,10 +586,26 @@ Solo para los chats de `TELEGRAM_ALLOWED_CHAT_IDS` y solo con `NODE_ENV=producti
 
 - **`/reboot`**: responde "Reiniciando...", escribe `tmp/reinicio.json` (en la raíz de `FINANZAS_STORAGE`) y termina el proceso
   1,5 segundos después; PM2 lo levanta de nuevo. Al arrancar, el bot avisa "Listo, volví a estar en línea" con la versión actual.
-- **`/update`**: ejecuta `git pull --ff-only` en la raíz del repositorio. Si falla o hay conflictos, no reinicia y manda las últimas
-  líneas del error (sin rutas del servidor ni nada de `.env`). Si no hubo cambios, avisa "Ya estaba al día" y no reinicia. Si
-  cambió `package.json` o `package-lock.json`, ejecuta `npm ci --omit=dev` (si falla, no reinicia). Si todo sale bien, muestra la
-  versión anterior y la nueva, los títulos de hasta 10 commits nuevos y reinicia como `/reboot`.
+- **`/update`**: edita un solo mensaje con el avance (*Verificando*, *Descargando cambios*, *Instalando dependencias* si aplica,
+  *Reiniciando*).
+  1. **Verifica** que `git`, `node` y `npm` existan en el PATH del proceso (muestra sus versiones), que el remoto responda
+     (`git ls-remote --heads origin`, 20 s de tiempo máximo y `GIT_TERMINAL_PROMPT=0`) y la rama actual. Si algo falla lo explica en
+     simple ("PM2 no encuentra npm: revisa el PATH o nvm", "no hay acceso al repositorio: falta la deploy key") y no sigue.
+  2. Ejecuta `git pull --ff-only` en la raíz del repositorio; si falla o hay conflictos, no reinicia y manda las últimas líneas del
+     error (sin rutas del servidor ni nada de `.env`). Si no hubo cambios, avisa "Ya estaba al día" y no reinicia.
+  3. **Prueba del cambio:** rama, hash anterior y nuevo, fecha (hora de Chile) y autor del último commit y total de archivos
+     cambiados (`git diff --stat`).
+  4. Si cambió `package.json` o `package-lock.json`, ejecuta `npm ci --omit=dev` (si falla, no reinicia).
+  5. **Resumen con IA:** a Gemini solo viajan los títulos de los commits nuevos (hasta 30, sin los que parezcan traer datos
+     sensibles) y los nombres de los archivos cambiados, nunca su contenido ni el diff. Devuelve 3 a 6 viñetas en español. Sin
+     clave, con error o al pasar el límite por chat, se muestran los títulos tal cual.
+  6. Guarda en `tmp/reinicio.json` el hash esperado y reinicia como `/reboot`. Al volver, el mensaje "Listo, volví a estar en línea"
+     incluye la versión y dice "Actualización confirmada" si coincide con el hash esperado, o "Algo no calzó" si no.
+  - **`update.sh` (opcional):** si existe en la raíz del repositorio, `/update` lo ejecuta (`bash update.sh`) en vez de hacer el
+    `git pull` y el `npm ci` por su cuenta, y muestra sus últimas líneas de salida. Las verificaciones del bot se hacen igual antes
+    de correrlo; las mismas comprobaciones (versiones, remoto, rama) conviene imprimirlas también en el script. El bot compara
+    los hashes antes y después, así que el script no tiene que reportarlos. Si el script reinicia PM2 por su cuenta, el aviso de
+    "volví" igual funciona. Hoy el repositorio no trae un `update.sh`.
 
 Los comandos del sistema se ejecutan con `execFile` (sin shell) y con tiempo máximo, y ningún argumento viene de texto escrito por
 el usuario. El usuario que corre PM2 necesita permiso para `git pull` (con credenciales sin contraseña, por ejemplo una deploy key)
