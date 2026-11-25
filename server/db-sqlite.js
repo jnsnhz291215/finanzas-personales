@@ -122,6 +122,9 @@ export async function inicializarDB() {
     // Migración: tipo 'efectivo' en cuentas (reconstruye la tabla si el CHECK no lo incluye)
     migrarTipoEfectivo(database);
 
+    // Migración: ultimos4_cuenta (últimos 4 del número de cuenta, distinto de ultimos4 de la tarjeta)
+    migrarUltimos4Cuenta(database);
+
     // Migración: tabla datos_transferencia
     migrarDatosTransferencia(database);
 
@@ -175,7 +178,7 @@ const TIPOS_CUENTA_SQL = "'cuenta_corriente', 'cuenta_vista', 'cuenta_ahorro', '
 // Columnas conocidas de cuentas (en el orden de la tabla reconstruida)
 const COLUMNAS_CUENTAS = [
   'id', 'nombre', 'tipo', 'banco', 'numero_cuenta', 'cupo_total', 'dia_facturacion',
-  'dia_vencimiento', 'activa', 'notas', 'creado_en', 'actualizado_en', 'ultimos4', 'titular'
+  'dia_vencimiento', 'activa', 'notas', 'creado_en', 'actualizado_en', 'ultimos4', 'titular', 'ultimos4_cuenta'
 ];
 
 /**
@@ -231,7 +234,8 @@ function migrarTipoEfectivo(database) {
           creado_en DATETIME DEFAULT CURRENT_TIMESTAMP,
           actualizado_en DATETIME DEFAULT CURRENT_TIMESTAMP,
           ultimos4 TEXT,
-          titular TEXT
+          titular TEXT,
+          ultimos4_cuenta TEXT
         )
       `);
       database.exec(`INSERT INTO cuentas_nueva (${columnasCopia}) SELECT ${columnasCopia} FROM cuentas`);
@@ -292,6 +296,17 @@ function migrarComprasCuotas(database) {
     database.exec('ALTER TABLE movimientos ADD COLUMN numero_cuota INTEGER');
   }
   database.exec('CREATE INDEX IF NOT EXISTS idx_movimientos_compra_cuota ON movimientos(compra_cuota_id)');
+}
+
+/**
+ * Migración idempotente (SQLite): agrega ultimos4_cuenta a cuentas, los últimos 4 dígitos del
+ * número de cuenta (ultimos4 es el de la tarjeta). Nunca se guardan números completos.
+ */
+function migrarUltimos4Cuenta(database) {
+  const columnas = database.prepare('PRAGMA table_info(cuentas)').all().map(c => c.name);
+  if (!columnas.includes('ultimos4_cuenta')) {
+    database.exec('ALTER TABLE cuentas ADD COLUMN ultimos4_cuenta TEXT');
+  }
 }
 
 /**

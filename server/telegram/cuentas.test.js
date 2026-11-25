@@ -172,6 +172,48 @@ describe('titular', () => {
   });
 });
 
+describe('cuenta terminada en (ultimos4Cuenta)', () => {
+  test('"cuenta terminada en 1234" llena ultimos4Cuenta y no ultimos4', () => {
+    const r = parsearCuenta('/savecard cuenta corriente FAN banco de chile cuenta terminada en 1234');
+
+    expect(r.ultimos4Cuenta).toBe('1234');
+    expect(r.ultimos4).toBeNull();
+    expect(r.tipo).toBe('cuenta_corriente');
+    expect(r.nombre).toBe('FAN');
+  });
+
+  test('tarjeta y cuenta en el mismo texto', () => {
+    const r = parsearCuenta('/savecard tarjeta debito FAN banco de chile terminada en 6958 cuenta terminada en 1234');
+
+    expect(r.ultimos4).toBe('6958');
+    expect(r.ultimos4Cuenta).toBe('1234');
+    expect(r.tipo).toBe('debito');
+  });
+
+  test('"cuenta corriente terminada en" conserva el tipo', () => {
+    const r = parsearCuenta('/savecard FAN banco estado cuenta vista terminada en 4321');
+
+    expect(r.tipo).toBe('cuenta_vista');
+    expect(r.ultimos4Cuenta).toBe('4321');
+    expect(r.banco).toBe('BancoEstado');
+  });
+
+  test('sin "cuenta" delante, "terminada en" sigue siendo de la tarjeta', () => {
+    const r = parsearCuenta('/savecard tarjeta debito FAN terminada en 1234');
+
+    expect(r.ultimos4).toBe('1234');
+    expect(r.ultimos4Cuenta).toBeNull();
+  });
+
+  test('un número largo de cuenta se rechaza y no se guarda ningún dígito', () => {
+    const r = parsearCuenta('/savecard cuenta vista FAN 00123456789012345');
+
+    expect(r.numeroCompletoRechazado).toBe(true);
+    expect(r.ultimos4Cuenta).toBeNull();
+    expect(JSON.stringify(r)).not.toContain('0012345');
+  });
+});
+
 describe('tipo efectivo', () => {
   test('efectivo se guarda como efectivo, no como cuenta_vista', () => {
     expect(TIPO_DB.efectivo).toBe('efectivo');

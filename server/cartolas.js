@@ -250,7 +250,9 @@ export async function analizarCartola(buffer, ext) {
   const { datos, esManual } = await leerCartola(buffer, ext);
   const formato = datos.length > 0 ? detectarFormato(datos) : null;
   const movimientos = formato && !esManual ? procesarDatos(datos, formato) : [];
-  return { formato, movimientos, esManual, datos };
+  // Solo los últimos 4 dígitos de tarjeta o cuenta que aparezcan (para reconocer la cuenta)
+  const ultimos4 = buscarUltimos4(textoInicialArchivo(buffer, ext));
+  return { formato, movimientos, esManual, datos, ultimos4 };
 }
 
 /** Fecha de importación de una cartola con ese hash, o null si no se ha importado */
@@ -427,23 +429,101 @@ export async function analizarPDF(buffer, { interpretarConIA = null } = {}) {
   try {
     texto = await extraerTextoPDF(buffer);
   } catch {
-    return { movimientos: [], origen: null, legible: false, escaneado: false, banco: null };
+    return { movimientos: [], origen: null, legible: false, escaneado: false, banco: null, ultimos4: [] };
   }
-  if (pdfSinTexto(texto)) return { movimientos: [], origen: null, legible: false, escaneado: true, banco: null };
+  if (pdfSinTexto(texto)) return { movimientos: [], origen: null, legible: false, escaneado: true, banco: null, ultimos4: [] };
 
   // Banco o institución que aparece primero en el texto (sirve para sugerir la cuenta)
   const banco = buscarBanco(normalizar(texto))?.nombre ?? null;
+  // Últimos 4 dígitos de tarjeta o cuenta del encabezado (nunca el número completo)
+  const ultimos4 = buscarUltimos4(texto);
 
   const reglas = movimientosDesdeTextoPDF(texto);
   if (reglas.movimientos.length >= MIN_MOVIMIENTOS_REGLAS && reglas.sinTipo === 0) {
-    return { movimientos: reglas.movimientos, origen: 'reglas', legible: true, banco };
+    return { movimientos: reglas.movimientos, origen: 'reglas', legible: true, banco, ultimos4 };
   }
 
   if (interpretarConIA) {
     const lista = await interpretarConIA(enmascararTextoCartola(texto));
     const { movimientos } = validarMovimientosIA(lista, texto);
-    if (movimientos.length > 0) return { movimientos, origen: 'ia', legible: true, banco };
+    if (movimientos.length > 0) return { movimientos, origen: 'ia', legible: true, banco, ultimos4 };
   }
 
-  return { movimientos: [], origen: null, legible: true, banco };
+  return { movimientos: [], origen: null, legible: true, banco, ultimos4 };
+}
+
+// ---------------------------------------------------------------------------
+// Últimos 4 dígitos de la tarjeta o de la cuenta que aparecen en la cartola
+// ---------------------------------------------------------------------------
+
+// Cuánto del comienzo del archivo se revisa (ahí están el encabezado y los datos de la cuenta)
+const LARGO_ENCABEZADO = 6000;
+
+/**
+ * Busca en un texto los últimos 4 dígitos de una tarjeta o de una cuenta: "**** 1234",
+ * "XXXX-1234", "terminada en 1234", "N° cuenta 00-123-45678". Devuelve solo esos 4 dígitos,
+ * con su tipo: [{ digitos, tipo: 'tarjeta' | 'cuenta' }], sin repetidos y en orden de aparición.
+ * Nunca devuelve ni conserva el número completo, y no registra nada en consola.
+ */
+export function buscarUltimos4(texto) {
+  const original = String(texto ?? '').slice(0, LARGO_ENCABEZADO);
+  const hallazgos = [];
+  const ocupados = [];
+  const libre = (ini, fin) => !ocupados.some(([a, b]) => ini < b && fin > a);
+
+  const agregar = (indice, fin, digitos, tipo) => {
+    if (!/^\d{4}$/.test(digitos) || !libre(indice, fin)) return;
+    ocupados.push([indice, fin]);
+    hallazgos.push({ indice, digitos, tipo });
+  };
+
+  // 1. Número de cuenta: se toman solo los 4 últimos dígitos del número que sigue a "cuenta"
+  const cuenta = /\b(?:n[°ºo]\.?\s*(?:de\s+)?(?:cuenta|cta\.?)|(?:cuenta|cta\.?)(?:\s+(?:corriente|vista|rut|de\s+ahorro|cte\.?))?(?:\s*(?:n[°ºo]\.?|nro\.?|n[uú]mero))?)\s*:?\s*([\dxX*•][\dxX*•\-. ]{3,28}\d)/gi;
+  for (const m of original.matchAll(cuenta)) {
+    // Una fecha después de "cuenta" no es un número de cuenta
+    if (/^\d{1,2}[-. ]\d{1,2}[-. ]\d{2,4}$/.test(m[1].trim())) continue;
+    const digitos = m[1].replace(/\D/g, '');
+    if (digitos.length >= 4) agregar(m.index, m.index + m[0].length, digitos.slice(-4), 'cuenta');
+  }
+
+  // 2. "cuenta terminada en 1234" y "terminada en 1234" (tarjeta)
+  const terminada = /\b(?:(cuenta)\s+)?(?:terminad[ao]s?|termina|final(?:iza)?)\s+en\s+(\d{4})(?!\d)/gi;
+  for (const m of original.matchAll(terminada)) {
+    agregar(m.index, m.index + m[0].length, m[2], m[1] ? 'cuenta' : 'tarjeta');
+  }
+  for (const m of original.matchAll(/\bfinal\s+(\d{4})(?!\d)/gi)) {
+    agregar(m.index, m.index + m[0].length, m[1], 'tarjeta');
+  }
+
+  // 3. Máscaras de tarjeta: "**** 1234", "XXXX-1234", "XXXX XXXX XXXX 1234", "•••• 1234"
+  const mascara = /(?:(?:\*{2,}|[xX]{3,}|•{2,})[\s\-.]*)+(\d{4})(?!\d)/g;
+  for (const m of original.matchAll(mascara)) {
+    agregar(m.index, m.index + m[0].length, m[1], 'tarjeta');
+  }
+
+  const vistos = new Set();
+  return hallazgos
+    .sort((a, b) => a.indice - b.indice)
+    .map(({ digitos, tipo }) => ({ digitos, tipo }))
+    .filter(h => {
+      const clave = `${h.tipo}:${h.digitos}`;
+      if (vistos.has(clave)) return false;
+      vistos.add(clave);
+      return true;
+    })
+    .slice(0, 4);
+}
+
+/** Texto del comienzo de un CSV o Excel (donde suele estar el encabezado de la cartola) */
+function textoInicialArchivo(buffer, ext) {
+  try {
+    if (ext === '.csv') return buffer.toString('utf8').slice(0, LARGO_ENCABEZADO);
+    if (['.xlsx', '.xls'].includes(ext)) {
+      const libro = xlsx.read(buffer, { type: 'buffer' });
+      return xlsx.utils.sheet_to_csv(libro.Sheets[libro.SheetNames[0]]).slice(0, LARGO_ENCABEZADO);
+    }
+  } catch {
+    // si no se puede leer, simplemente no hay dígitos que detectar
+  }
+  return '';
 }

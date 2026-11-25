@@ -1462,6 +1462,7 @@ function textoConfirmacionCuenta(datos) {
     `Banco: ${datos.banco ? esc(datos.banco) : 'sin indicar'}`,
     `Nombre: ${esc(datos.nombre)}`,
     `Terminada en: ${datos.ultimos4 ? esc(datos.ultimos4) : 'sin indicar'}`,
+    `Cuenta terminada en: ${datos.ultimos4Cuenta ? esc(datos.ultimos4Cuenta) : 'sin indicar'}`,
     `Titular: ${datos.titular ? esc(datos.titular) : 'sin indicar'}`
   ];
   if (datos.tipo === 'credito' && datos.cupo) lineas.push(`Cupo: $${formatearMonto(datos.cupo)}`);
@@ -1525,6 +1526,7 @@ function combinarCuenta(reglas, ia) {
     banco,
     nombre: reglas.nombre || ia.nombre || nombrePorDefecto(tipo, banco),
     ultimos4: reglas.ultimos4 || ia.ultimos4,
+    ultimos4Cuenta: reglas.ultimos4Cuenta ?? null,
     titular: reglas.titular || ia.titular,
     cupo: tipo === 'credito' ? (reglas.cupo ?? ia.cupo) : null,
     diaPago: tipo === 'credito' ? (reglas.diaPago ?? ia.diaPago) : null
@@ -1542,6 +1544,13 @@ async function buscarCuentaDuplicada(datos) {
          LIMIT 1`,
         [tipoDb, banco, datos.ultimos4]
       )
+    : datos.ultimos4Cuenta
+    ? await query(
+        `SELECT id, nombre FROM cuentas
+         WHERE activa = 1 AND tipo = ? AND COALESCE(LOWER(banco), '') = ? AND ultimos4_cuenta = ?
+         LIMIT 1`,
+        [tipoDb, banco, datos.ultimos4Cuenta]
+      )
     : await query(
         `SELECT id, nombre FROM cuentas
          WHERE activa = 1 AND tipo = ? AND COALESCE(LOWER(banco), '') = ? AND LOWER(nombre) = ?
@@ -1552,15 +1561,16 @@ async function buscarCuentaDuplicada(datos) {
 }
 
 async function guardarCuenta(datos) {
-  // Nunca se guarda el número completo: solo ultimos4
+  // Nunca se guarda el número completo: solo los últimos 4 (ultimos4 de la tarjeta, ultimos4_cuenta de la cuenta)
   await query(
-    `INSERT INTO cuentas (nombre, tipo, banco, ultimos4, titular, cupo_total, dia_vencimiento)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO cuentas (nombre, tipo, banco, ultimos4, ultimos4_cuenta, titular, cupo_total, dia_vencimiento)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       datos.nombre,
       TIPO_DB[datos.tipo],
       datos.banco ?? null,
       datos.ultimos4 ?? null,
+      datos.ultimos4Cuenta ?? null,
       datos.titular ?? null,
       datos.tipo === 'credito' ? (datos.cupo ?? null) : null,
       datos.tipo === 'credito' ? (datos.diaPago ?? null) : null
@@ -1570,7 +1580,7 @@ async function guardarCuenta(datos) {
 
 async function listarCuentasActivas() {
   const [filas] = await query(
-    'SELECT id, nombre, tipo, banco, ultimos4 FROM cuentas WHERE activa = 1 ORDER BY creado_en ASC, id ASC'
+    'SELECT id, nombre, tipo, banco, ultimos4, ultimos4_cuenta FROM cuentas WHERE activa = 1 ORDER BY creado_en ASC, id ASC'
   );
   return filas;
 }
@@ -1579,7 +1589,8 @@ function lineaCuenta(cuenta, prefijo = '') {
   return (
     `${prefijo}<b>${esc(cuenta.nombre)}</b> - ${esc(ETIQUETAS_TIPO_DB[cuenta.tipo] ?? cuenta.tipo)}` +
     `${cuenta.banco ? ' - ' + esc(cuenta.banco) : ''}` +
-    `${cuenta.ultimos4 ? ' - terminada en ' + esc(cuenta.ultimos4) : ''}`
+    `${cuenta.ultimos4 ? ' - terminada en ' + esc(cuenta.ultimos4) : ''}` +
+    `${cuenta.ultimos4_cuenta ? ' - cuenta terminada en ' + esc(cuenta.ultimos4_cuenta) : ''}`
   );
 }
 

@@ -16,7 +16,7 @@
  */
 
 import { analizarCartola, analizarPDF, calcularHashBuffer, cartolaYaImportada, registrarImportacion } from '../cartolas.js';
-import { listarCuentasConBanco } from '../gestion.js';
+import { listarCuentasConBanco, guardarDigitosCuenta } from '../gestion.js';
 import { listarCompras } from '../cuotas.js';
 import { calzarConCartola, normalizar } from './cuotas.js';
 import { guardarTemporal, confirmarTemporal, borrarTemporal } from '../storage.js';
@@ -34,11 +34,8 @@ const MAX_PREGUNTAS_CUOTAS = 8;
 // Movimientos que se muestran en la vista previa de un PDF
 const FILAS_VISTA_PREVIA = 8;
 
-/**
- * Cuenta que probablemente corresponde a un banco detectado en la cartola (por ejemplo "Falabella").
- * Solo si hay exactamente una coincidencia; si no, null (se pregunta sin sugerir).
- */
-export function sugerirCuenta(banco, cuentas) {
+/** Cuenta que corresponde a un banco detectado ("Falabella"); solo si hay exactamente una coincidencia */
+function sugerirPorBanco(banco, cuentas) {
   if (!banco) return null;
   const clave = normalizar(banco).replace(/\b(banco|de)\b/g, ' ').replace(/\s+/g, ' ').trim();
   if (clave.length < 3) return null;
@@ -48,6 +45,45 @@ export function sugerirCuenta(banco, cuentas) {
     return (delBanco && (delBanco.includes(clave) || clave.includes(delBanco))) || normalizar(c.nombre).includes(clave);
   });
   return coincidencias.length === 1 ? coincidencias[0] : null;
+}
+
+/**
+ * Cuenta a la que corresponde una cartola. Prioridad 1: los últimos 4 dígitos que trae el archivo
+ * coinciden con ultimos4 (tarjeta) o ultimos4_cuenta (cuenta) de una sola cuenta. Prioridad 2: el
+ * banco detectado. Devuelve { cuenta, por: 'digitos' | 'banco', digitos } o null.
+ */
+export function detectarCuenta({ banco = null, ultimos4 = [] }, cuentas) {
+  const porDigitos = [];
+  for (const u of ultimos4) {
+    for (const c of cuentas) {
+      const coincide = (c.ultimos4 && c.ultimos4 === u.digitos) || (c.ultimos4_cuenta && c.ultimos4_cuenta === u.digitos);
+      if (coincide && !porDigitos.some(x => x.cuenta.id === c.id)) porDigitos.push({ cuenta: c, digitos: u.digitos });
+    }
+  }
+  // Si los dígitos calzan con dos cuentas distintas no se adivina: se cae al banco
+  if (porDigitos.length === 1) return { cuenta: porDigitos[0].cuenta, por: 'digitos', digitos: porDigitos[0].digitos };
+
+  const cuentaBanco = sugerirPorBanco(banco, cuentas);
+  return cuentaBanco ? { cuenta: cuentaBanco, por: 'banco', digitos: null } : null;
+}
+
+/** Cuenta sugerida (solo la cuenta): por dígitos y, si no, por banco */
+export function sugerirCuenta(banco, cuentas, ultimos4 = []) {
+  return detectarCuenta({ banco, ultimos4 }, cuentas)?.cuenta ?? null;
+}
+
+/**
+ * Dígitos de la cartola que no coinciden con ninguna cuenta y que la cuenta elegida todavía no
+ * tiene en esa columna (tarjeta -> ultimos4, cuenta -> ultimos4_cuenta). Devuelve el primero
+ * { digitos, tipo } o null: es lo que se ofrece guardar para reconocerla la próxima vez.
+ */
+export function candidatoDigitos(ultimos4, cuenta, cuentas) {
+  for (const u of ultimos4 ?? []) {
+    const yaPertenece = cuentas.some(c => c.ultimos4 === u.digitos || c.ultimos4_cuenta === u.digitos);
+    const columna = u.tipo === 'cuenta' ? 'ultimos4_cuenta' : 'ultimos4';
+    if (!yaPertenece && !cuenta[columna]) return { digitos: u.digitos, tipo: u.tipo };
+  }
+  return null;
 }
 
 export function crearCartolas(ctx) {
@@ -61,6 +97,8 @@ export function crearCartolas(ctx) {
   const pendientes = new Map();
   // Varios archivos pendientes: clave -> lote
   const lotes = new Map();
+  // Dígitos que se ofrecen guardar en una cuenta: clave -> { cuentaId, nombre, digitos, tipo }
+  const digitosPendientes = new Map();
   let contador = 0;
 
   const nuevaClave = (chatId) => `${chatId}_${Date.now()}_${contador++}`;
@@ -105,13 +143,26 @@ export function crearCartolas(ctx) {
 
   const etiquetaFuente = (item) => (item.esPDF ? 'PDF' : item.ext === '.csv' ? 'CSV' : 'Excel');
 
+  /** "Falabella débito •6958" (el nombre de la cuenta y la terminación que coincidió) */
+  const cuentaConDigitos = (deteccion) => `${esc(deteccion.cuenta.nombre)} •${esc(deteccion.digitos)}`;
+
+  /** Línea de detección de cuenta para el resumen de un archivo (vacía si no hay nada que decir) */
+  function lineaDeteccion(item) {
+    if (item.deteccion?.por === 'digitos') return `Cuenta detectada: ${cuentaConDigitos(item.deteccion)}`;
+    if (item.deteccion?.por === 'banco') return `Cuenta sugerida por el banco: ${esc(item.deteccion.cuenta.nombre)}`;
+    if (item.ultimos4?.length > 0) return `Terminación detectada: •${esc(item.ultimos4[0].digitos)} (no coincide con ninguna de tus cuentas)`;
+    return '';
+  }
+
   /** Una línea por archivo: formato o banco, rango de fechas, movimientos y totales */
   function lineaArchivo(numero, item) {
     const t = totales(item.movimientos);
     return (
       `${numero}. ${esc(item.formato)} (${etiquetaFuente(item)}) - ${formatearFechaCL(t.desde)} al ${formatearFechaCL(t.hasta)} - ` +
       `${item.movimientos.length} mov. - cargos ${dinero(t.sumaCargos)}, abonos ${dinero(t.sumaAbonos)}` +
-      (item.cuentaSugerida ? ` - cuenta sugerida: ${esc(item.cuentaSugerida.nombre)}` : '')
+      (item.deteccion?.por === 'digitos'
+        ? ` - cuenta detectada: ${cuentaConDigitos(item.deteccion)}`
+        : item.cuentaSugerida ? ` - cuenta sugerida: ${esc(item.cuentaSugerida.nombre)}` : '')
     );
   }
 
@@ -145,6 +196,7 @@ export function crearCartolas(ctx) {
           movimientos: r.movimientos,
           origen: r.origen,
           banco: r.banco,
+          ultimos4: r.ultimos4 ?? [],
           formato: r.banco ?? 'PDF sin banco reconocido'
         };
       }
@@ -153,7 +205,10 @@ export function crearCartolas(ctx) {
       if (r.esManual || r.movimientos.length === 0) return { estado: 'ilegible' };
       const nombre = r.formato?.banco;
       const reconocido = nombre && !['Genérico', 'Manual'].includes(nombre) ? nombre : null;
-      return { estado: 'ok', movimientos: r.movimientos, origen: null, banco: reconocido, formato: nombre ?? 'Formato genérico' };
+      return {
+        estado: 'ok', movimientos: r.movimientos, origen: null, banco: reconocido,
+        ultimos4: r.ultimos4 ?? [], formato: nombre ?? 'Formato genérico'
+      };
     } catch {
       return { estado: 'ilegible' };
     }
@@ -245,6 +300,7 @@ export function crearCartolas(ctx) {
         esPDF: archivo.ext === '.pdf',
         origen: analisis.origen,
         banco: analisis.banco,
+        ultimos4: analisis.ultimos4 ?? [],
         formato: analisis.formato,
         movimientos: analisis.movimientos,
         estado: 'pendiente',
@@ -264,7 +320,10 @@ export function crearCartolas(ctx) {
       await enviar(chatId, 'No tienes cuentas activas. Crea una con /savecard y vuelve a enviar la cartola.');
       return;
     }
-    for (const item of validos) item.cuentaSugerida = sugerirCuenta(item.banco, cuentas);
+    for (const item of validos) {
+      item.deteccion = detectarCuenta({ banco: item.banco, ultimos4: item.ultimos4 }, cuentas);
+      item.cuentaSugerida = item.deteccion?.cuenta ?? null;
+    }
 
     if (validos.length === 1) {
       if (avisos.length > 0) await enviar(chatId, avisos.map(a => esc(a)).join('\n'));
@@ -303,7 +362,8 @@ export function crearCartolas(ctx) {
     if (!item.esPDF) {
       await pedirCuentaUno(
         chatId, key,
-        `<b>Cartola recibida</b>\n\nFormato detectado: ${esc(item.formato)}\n${resumenTexto(item.movimientos)}`,
+        `<b>Cartola recibida</b>\n\nFormato detectado: ${esc(item.formato)}\n${resumenTexto(item.movimientos)}` +
+          (lineaDeteccion(item) ? `\n${lineaDeteccion(item)}` : ''),
         cuentas, item.cuentaSugerida
       );
       return;
@@ -313,7 +373,7 @@ export function crearCartolas(ctx) {
     await enviar(chatId,
       '<b>Cartola en PDF leída</b>\n\n' +
       `Lectura automática ${item.origen === 'ia' ? 'con ayuda de IA' : 'por reglas'}: revisa que los datos sean correctos.\n\n` +
-      `${resumenTexto(item.movimientos)}\n\n<b>Primeros movimientos:</b>\n${vistaPrevia(item.movimientos)}`,
+      `${resumenTexto(item.movimientos)}${lineaDeteccion(item) ? `\n${lineaDeteccion(item)}` : ''}\n\n<b>Primeros movimientos:</b>\n${vistaPrevia(item.movimientos)}`,
       {
         reply_markup: {
           inline_keyboard: [[
@@ -331,7 +391,7 @@ export function crearCartolas(ctx) {
 
   async function ofrecerLote(chatId, items, avisos, cuentas) {
     const key = nuevaClave(chatId);
-    const lote = { chatId, items, cuentas, modo: null, ocupado: false, registrados: [] };
+    const lote = { chatId, items, cuentas, modo: null, ocupado: false, registrados: [], digitosPorPreguntar: [] };
     lotes.set(key, lote);
     setTimeout(async () => {
       if (lotes.delete(key)) {
@@ -364,6 +424,7 @@ export function crearCartolas(ctx) {
     const encabezado =
       `<b>Archivo ${indice + 1} de ${lote.items.length}</b>\n\n${esc(item.formato)} (${etiquetaFuente(item)})\n` +
       resumenTexto(item.movimientos) +
+      (lineaDeteccion(item) ? `\n${lineaDeteccion(item)}` : '') +
       (item.esPDF ? `\n\n<b>Primeros movimientos:</b>\n${vistaPrevia(item.movimientos)}` : '');
 
     await enviar(chatId, `${encabezado}\n\n¿En qué cuenta lo importo?`, {
@@ -429,7 +490,8 @@ export function crearCartolas(ctx) {
     const total = lote.items.reduce((suma, item) => suma + item.importados, 0);
     await enviar(chatId, `<b>Listo: importé ${total} movimientos</b>\n\n${lineas.join('\n')}`);
 
-    // Las preguntas de cuotas, todas juntas y al final
+    // Dígitos nuevos de las cuentas elegidas a mano, y luego las preguntas de cuotas, todas juntas al final
+    await vaciarPreguntasDigitos(chatId, lote);
     await preguntarPorCuotas(chatId, lote.registrados);
   }
 
@@ -440,8 +502,39 @@ export function crearCartolas(ctx) {
       for (const item of lote.items) if (item.estado === 'pendiente') await borrarTemporal(item.tmp);
     }
     await editar('Importación cancelada. Descarté los archivos pendientes.', { chat_id: chatId, message_id: messageId });
-    // Lo que ya se había importado sigue su camino: se pregunta por las cuotas
+    // Lo que ya se había importado sigue su camino: dígitos nuevos y preguntas de cuotas
+    if (lote) await vaciarPreguntasDigitos(chatId, lote);
     if (lote?.registrados.length > 0) await preguntarPorCuotas(chatId, lote.registrados);
+  }
+
+  // -------------------------------------------------------------------------
+  // Dígitos de la cartola que no coinciden con ninguna cuenta
+  // -------------------------------------------------------------------------
+
+  /** "¿Guardo •1234 en esta cuenta para reconocerla la próxima vez?" con botones */
+  async function preguntarGuardarDigitos(chatId, cuenta, candidato) {
+    const key = nuevaClave(chatId);
+    digitosPendientes.set(key, { cuentaId: cuenta.id, nombre: cuenta.nombre, digitos: candidato.digitos, tipo: candidato.tipo });
+    setTimeout(() => digitosPendientes.delete(key), ESPERA_MS);
+
+    await enviar(chatId,
+      `¿Guardo •${esc(candidato.digitos)} en esta cuenta (${esc(cuenta.nombre)}) para reconocerla la próxima vez?`,
+      {
+        reply_markup: {
+          inline_keyboard: [[
+            { text: 'Sí, guardar', callback_data: `cad_${key}` },
+            { text: 'No', callback_data: `can_${key}` }
+          ]]
+        }
+      }
+    );
+  }
+
+  /** En un lote las preguntas de dígitos se hacen al final, antes de las de cuotas */
+  async function vaciarPreguntasDigitos(chatId, lote) {
+    for (const { cuenta, candidato } of lote.digitosPorPreguntar.splice(0)) {
+      await preguntarGuardarDigitos(chatId, cuenta, candidato);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -489,7 +582,8 @@ export function crearCartolas(ctx) {
       }
       await responderCallback(cb.id, {});
       await pedirCuentaUno(
-        chatId, key, `<b>Cartola en PDF</b>\n\n${resumenTexto(pendiente.movimientos)}`,
+        chatId, key,
+        `<b>Cartola en PDF</b>\n\n${resumenTexto(pendiente.movimientos)}${lineaDeteccion(pendiente) ? `\n${lineaDeteccion(pendiente)}` : ''}`,
         pendiente.cuentas, pendiente.cuentaSugerida, messageId
       );
       return true;
@@ -518,6 +612,11 @@ export function crearCartolas(ctx) {
         });
         await editar(`Importé ${importados} movimientos en <b>${esc(cuenta.nombre)}</b>.`, { chat_id: chatId, message_id: messageId });
         await responderCallback(cb.id, { text: 'Importada' });
+
+        // La cuenta se eligió a mano: si la cartola trae dígitos que no son de ninguna cuenta, se ofrece guardarlos
+        const candidato = candidatoDigitos(pendiente.ultimos4, cuenta, pendiente.cuentas);
+        if (candidato) await preguntarGuardarDigitos(chatId, cuenta, candidato);
+
         await preguntarPorCuotas(chatId, registrados);
       } catch (error) {
         console.error('Error al importar la cartola:', error.code ?? error.name);
@@ -534,6 +633,39 @@ export function crearCartolas(ctx) {
       if (pendiente) await borrarTemporal(pendiente.tmp);
       await editar('Importación cancelada. Descarté el archivo.', { chat_id: chatId, message_id: messageId });
       await responderCallback(cb.id, { text: 'Cancelada' });
+      return true;
+    }
+
+    // ---- Guardar los dígitos para reconocer la cuenta ----
+
+    if (data.startsWith('cad_')) {
+      const key = data.replace('cad_', '');
+      const pendiente = digitosPendientes.get(key);
+      if (!pendiente) {
+        await responderCallback(cb.id, { text: 'Solicitud expirada' });
+        return true;
+      }
+      digitosPendientes.delete(key);
+      try {
+        const guardado = await guardarDigitosCuenta(pendiente.cuentaId, pendiente.tipo, pendiente.digitos);
+        await editar(
+          guardado
+            ? `Listo: •${esc(pendiente.digitos)} queda asociada a ${esc(pendiente.nombre)}.`
+            : 'No pude guardar esos dígitos.',
+          { chat_id: chatId, message_id: messageId }
+        );
+        await responderCallback(cb.id, { text: guardado ? 'Guardado' : 'Sin cambios' });
+      } catch (error) {
+        console.error('Error al guardar los dígitos de la cuenta:', error.code ?? error.name);
+        await responderCallback(cb.id, { text: 'Error al guardar' });
+      }
+      return true;
+    }
+
+    if (data.startsWith('can_')) {
+      digitosPendientes.delete(data.replace('can_', ''));
+      await editar('Entendido, no los guardo.', { chat_id: chatId, message_id: messageId });
+      await responderCallback(cb.id, {});
       return true;
     }
 
@@ -590,6 +722,10 @@ export function crearCartolas(ctx) {
       try {
         await responderCallback(cb.id, {});
         await importarItem(lote, item, cuenta);
+        if (item.estado === 'importado') {
+          const candidato = candidatoDigitos(item.ultimos4, cuenta, lote.cuentas);
+          if (candidato) lote.digitosPorPreguntar.push({ cuenta, candidato });
+        }
         await editar(
           item.estado === 'importado'
             ? `Importé ${item.importados} movimientos en <b>${esc(cuenta.nombre)}</b>.`

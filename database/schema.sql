@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS cuentas (
   banco VARCHAR(100),
   numero_cuenta VARCHAR(50),
   ultimos4 VARCHAR(4) NULL,
+  ultimos4_cuenta VARCHAR(4) NULL,
   titular VARCHAR(150) NULL,
   cupo_total DECIMAL(15,2) DEFAULT NULL,
   dia_facturacion INT DEFAULT NULL,

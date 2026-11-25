@@ -85,6 +85,20 @@ if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
   }
 
   /**
+   * Migración idempotente (MariaDB): agrega ultimos4_cuenta a cuentas, los últimos 4 dígitos del
+   * número de cuenta (ultimos4 es el de la tarjeta). Nunca se guardan números completos.
+   */
+  async function migrarUltimos4Cuenta(connection) {
+    const [existe] = await connection.query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'cuentas' AND COLUMN_NAME = 'ultimos4_cuenta'`
+    );
+    if (existe.length === 0) {
+      await connection.query('ALTER TABLE cuentas ADD COLUMN ultimos4_cuenta VARCHAR(4) NULL AFTER ultimos4');
+    }
+  }
+
+  /**
    * Migración idempotente (MariaDB): plan_ahorro (una sola fila, id = 1) y gastos_fijos.
    */
   async function migrarPlanAhorro(connection) {
@@ -227,6 +241,7 @@ if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
         await migrarTipoMovimiento(connection);
         await migrarDatosCuenta(connection);
         await migrarTipoEfectivo(connection);
+        await migrarUltimos4Cuenta(connection);
         await migrarDatosTransferencia(connection);
         await migrarPlanAhorro(connection);
         await migrarComprasCuotas(connection);

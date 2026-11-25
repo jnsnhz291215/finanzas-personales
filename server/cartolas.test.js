@@ -9,7 +9,8 @@ import {
   movimientosDesdeTextoPDF,
   enmascararTextoCartola,
   validarMovimientosIA,
-  pdfSinTexto
+  pdfSinTexto,
+  buscarUltimos4
 } from './cartolas.js';
 import { calzarConCartola } from './telegram/cuotas.js';
 
@@ -89,6 +90,60 @@ describe('PDF: reglas sobre el texto', () => {
 
     expect(r.movimientos).toEqual([]);
     expect(r.sinTipo).toBe(1);
+  });
+});
+
+describe('buscarUltimos4', () => {
+  test('máscaras de tarjeta: **** 1234, XXXX-1234, XXXX XXXX XXXX 1234', () => {
+    expect(buscarUltimos4('Tarjeta **** 1234')).toEqual([{ digitos: '1234', tipo: 'tarjeta' }]);
+    expect(buscarUltimos4('Tarjeta XXXX-5678')).toEqual([{ digitos: '5678', tipo: 'tarjeta' }]);
+    expect(buscarUltimos4('XXXX XXXX XXXX 6958')).toEqual([{ digitos: '6958', tipo: 'tarjeta' }]);
+    expect(buscarUltimos4('Tarjeta ••••4321')).toEqual([{ digitos: '4321', tipo: 'tarjeta' }]);
+  });
+
+  test('"terminada en 1234" es de tarjeta y "cuenta terminada en 1234" es de cuenta', () => {
+    expect(buscarUltimos4('Tarjeta terminada en 6958')).toEqual([{ digitos: '6958', tipo: 'tarjeta' }]);
+    expect(buscarUltimos4('Cuenta terminada en 4321')).toEqual([{ digitos: '4321', tipo: 'cuenta' }]);
+  });
+
+  test('N° de cuenta: solo los últimos 4 dígitos, nunca el número completo', () => {
+    const a = buscarUltimos4('N° cuenta 00-123-45678');
+    const b = buscarUltimos4('Cuenta corriente N° 00123456789');
+
+    expect(a).toEqual([{ digitos: '5678', tipo: 'cuenta' }]);
+    expect(b).toEqual([{ digitos: '6789', tipo: 'cuenta' }]);
+    expect(JSON.stringify([a, b])).not.toContain('00123456789');
+    expect(JSON.stringify([a, b])).not.toContain('123');
+  });
+
+  test('una máscara con "cuenta" delante se cuenta como cuenta, una sola vez', () => {
+    expect(buscarUltimos4('N° cuenta XXXX-5678')).toEqual([{ digitos: '5678', tipo: 'cuenta' }]);
+  });
+
+  test('tarjeta y cuenta en el mismo encabezado', () => {
+    expect(buscarUltimos4('Cuenta corriente N° 00123456789\nTarjeta **** 1234')).toEqual([
+      { digitos: '6789', tipo: 'cuenta' },
+      { digitos: '1234', tipo: 'tarjeta' }
+    ]);
+  });
+
+  test('no confunde fechas, montos ni números largos sin máscara', () => {
+    expect(buscarUltimos4('Cuenta corriente 15-11-2026')).toEqual([]);
+    expect(buscarUltimos4('15/11/2026 Compra Jumbo 23.450')).toEqual([]);
+    expect(buscarUltimos4('4111111111111111')).toEqual([]);
+    expect(buscarUltimos4('')).toEqual([]);
+  });
+
+  test('solo revisa el comienzo del archivo y sin repetidos', () => {
+    expect(buscarUltimos4(`Tarjeta **** 1234\n${'x'.repeat(7000)}\n**** 9999`)).toEqual([{ digitos: '1234', tipo: 'tarjeta' }]);
+    expect(buscarUltimos4('**** 1234 y otra vez **** 1234')).toEqual([{ digitos: '1234', tipo: 'tarjeta' }]);
+  });
+
+  test('un CSV con encabezado de cuenta entrega solo los 4 dígitos', async () => {
+    const csv = Buffer.from('Cuenta N° 00-123-45678\nFecha,Descripcion,Cargo,Abono\n15/11/2026,Compra,1.000,\n');
+    const r = await analizarCartola(csv, '.csv').catch(() => ({ ultimos4: [] }));
+
+    expect(r.ultimos4.every(u => /^\d{4}$/.test(u.digitos))).toBe(true);
   });
 });
 

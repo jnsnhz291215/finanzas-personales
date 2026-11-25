@@ -164,7 +164,7 @@ function valorTitular(valor) {
  * Interpreta el texto de /savecard (con o sin el comando delante).
  * @returns {{
  *   tipo: string|null, banco: string|null, nombre: string|null, ultimos4: string|null,
- *   titular: string|null, cupo: number|null, diaPago: number|null,
+ *   ultimos4Cuenta: string|null, titular: string|null, cupo: number|null, diaPago: number|null,
  *   numeroCompletoRechazado: boolean
  * }}
  */
@@ -185,6 +185,7 @@ export function parsearCuenta(texto) {
     banco: null,
     nombre: null,
     ultimos4: null,
+    ultimos4Cuenta: null,
     titular: null,
     cupo: null,
     diaPago: null,
@@ -198,7 +199,16 @@ export function parsearCuenta(texto) {
     quitar(largo.index, largo.index + largo[0].length);
   }
 
-  // 2. Últimos 4: "terminada en 1234", "termina en 1234", "final 1234", "**** 1234"
+  // 2a. Últimos 4 del NÚMERO DE CUENTA: "cuenta terminada en 1234", "cuenta corriente final 1234".
+  //     Solo se quita lo que sigue a "cuenta ..." para que el tipo (corriente, vista...) se siga detectando.
+  const cuentaTerminada = /\b(cuenta(?:\s+(?:corriente|vista|rut|de\s+ahorro))?\s+)((?:termina(?:d[ao]s?)?|final)\s+(?:en\s+)?(\d{4})(?!\d))/.exec(norm);
+  if (cuentaTerminada) {
+    resultado.ultimos4Cuenta = cuentaTerminada[3];
+    const inicio = cuentaTerminada.index + cuentaTerminada[1].length;
+    quitar(inicio, inicio + cuentaTerminada[2].length);
+  }
+
+  // 2b. Últimos 4 de la TARJETA: "terminada en 1234", "termina en 1234", "final 1234", "**** 1234"
   const ult = /(?:termina(?:d[ao]s?)?|final)\s+(?:en\s+)?(\d{4})(?!\d)|\*{2,}\s*(\d{4})(?!\d)/.exec(norm);
   if (ult) {
     resultado.ultimos4 = ult[1] ?? ult[2];

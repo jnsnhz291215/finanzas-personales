@@ -533,6 +533,12 @@ El bot se usa casi sin comandos: escribe como hablas o manda un archivo. Un enru
   traer algo así, ni siquiera se consulta. Guardar cuentas y datos de transferencia sigue siendo solo con `/savecard` y `/savetrans`.
 - **Archivos:** un PDF, CSV o Excel va directo a importar la cartola. Una foto sin texto pregunta si es el comprobante de una
   cuota, de otro gasto, o solo guardarla.
+- **Reconocer la cuenta por los dígitos:** al leer una cartola (CSV, Excel o PDF) el bot busca en el encabezado los últimos 4
+  dígitos de la tarjeta o de la cuenta (`**** 1234`, `XXXX-1234`, `terminada en 1234`, `N° cuenta ...1234`) y los compara con
+  `ultimos4` (tarjeta) y `ultimos4_cuenta` (número de cuenta) de tus cuentas; si coinciden, lo dice en el resumen ("Cuenta
+  detectada: Falabella débito •6958") y la sugiere antes que el banco. Si trae dígitos que no son de ninguna cuenta y eliges la
+  cuenta a mano, el bot pregunta con botones si guardas esa terminación para reconocerla la próxima vez. Solo se leen y se guardan
+  4 dígitos: nunca el número completo, y no se registran en consola. En `/savecard` puedes indicar `cuenta terminada en 1234`.
 - **Varias cartolas seguidas:** los archivos de un álbum de Telegram, o con menos de 10 segundos entre sí, se agrupan en una cola
   por chat. Se analiza cada uno, se descartan los duplicados (mismo hash) y se muestra un solo resumen con una línea por archivo
   (formato o banco, fechas, movimientos y totales). Con *Importar todo* se usa la cuenta sugerida según el contenido (por ejemplo

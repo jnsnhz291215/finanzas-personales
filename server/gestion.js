@@ -109,8 +109,27 @@ const SELECT_MOVIMIENTO = `
 /** Cuentas activas con banco y tipo (para sugerir en qué cuenta importar una cartola) */
 export async function listarCuentasConBanco() {
   const query = await consulta();
-  const [filas] = await query('SELECT id, nombre, banco, tipo FROM cuentas WHERE activa = 1 ORDER BY nombre');
+  const [filas] = await query(
+    'SELECT id, nombre, banco, tipo, ultimos4, ultimos4_cuenta FROM cuentas WHERE activa = 1 ORDER BY nombre'
+  );
   return filas;
+}
+
+/**
+ * Guarda los últimos 4 dígitos de una tarjeta ('tarjeta' -> ultimos4) o de una cuenta
+ * ('cuenta' -> ultimos4_cuenta) para reconocer la cuenta la próxima vez que llegue una cartola.
+ * Solo acepta exactamente 4 dígitos. Devuelve true si guardó.
+ */
+export async function guardarDigitosCuenta(cuentaId, tipo, digitos) {
+  const columna = tipo === 'cuenta' ? 'ultimos4_cuenta' : tipo === 'tarjeta' ? 'ultimos4' : null;
+  if (!columna || !/^\d{4}$/.test(String(digitos))) return false;
+
+  const query = await consulta();
+  const [resultado] = await query(
+    `UPDATE cuentas SET ${columna} = ?, actualizado_en = CURRENT_TIMESTAMP WHERE id = ? AND activa = 1`,
+    [String(digitos), cuentaId]
+  );
+  return resultado.affectedRows > 0;
 }
 
 /** Cuentas activas (id y nombre) para elegir una en un botón */
