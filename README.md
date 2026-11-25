@@ -629,14 +629,16 @@ Solo para los chats de `TELEGRAM_ALLOWED_CHAT_IDS` y solo con `NODE_ENV=producti
   4. Si cambió `package.json` o `package-lock.json`, ejecuta `npm ci --omit=dev` (si falla, no reinicia).
   5. **Resumen con IA:** a Gemini solo viajan los títulos de los commits nuevos (hasta 30, sin los que parezcan traer datos
      sensibles) y los nombres de los archivos cambiados, nunca su contenido ni el diff. Devuelve 3 a 6 viñetas en español. Sin
-     clave, con error o al pasar el límite por chat, se muestran los títulos tal cual.
+     clave o con error, se muestran los títulos tal cual.
   6. Guarda en `tmp/reinicio.json` el hash esperado y reinicia como `/reboot`. Al volver, el mensaje "Listo, volví a estar en línea"
      incluye la versión y dice "Actualización confirmada" si coincide con el hash esperado, o "Algo no calzó" si no.
-  - **`update.sh` (opcional):** si existe en la raíz del repositorio, `/update` lo ejecuta (`bash update.sh`) en vez de hacer el
-    `git pull` y el `npm ci` por su cuenta, y muestra sus últimas líneas de salida. Las verificaciones del bot se hacen igual antes
-    de correrlo; las mismas comprobaciones (versiones, remoto, rama) conviene imprimirlas también en el script. El bot compara
-    los hashes antes y después, así que el script no tiene que reportarlos. Si el script reinicia PM2 por su cuenta, el aviso de
-    "volví" igual funciona. Hoy el repositorio no trae un `update.sh`.
+  - **`update.sh`:** está en la raíz del repositorio y `/update` lo usa en vez de hacer el `git pull` y el `npm ci` por su cuenta. Imprime
+    las mismas verificaciones (git, node y npm con su versión, rama, remoto), hace `git pull --ff-only`, muestra el hash anterior y el
+    nuevo, ejecuta `npm ci --omit=dev` solo si cambió `package.json` o `package-lock.json`, y recarga con
+    `pm2 reload ecosystem.config.cjs --update-env` y `pm2 save`. A mano: `bash update.sh`. El bot lo llama en dos partes
+    (`--sin-reinicio` al comienzo y `--solo-reiniciar` al final) para poder mandar antes la prueba del cambio y el resumen con IA; al
+    volver, compara el hash con el esperado. Si `pm2 reload` falla, el bot reinicia el proceso directamente y PM2 lo levanta.
+  - La llamada a Gemini del resumen de `/update` no cuenta para el límite de 30 por hora por chat.
 
 Los comandos del sistema se ejecutan con `execFile` (sin shell) y con tiempo máximo, y ningún argumento viene de texto escrito por
 el usuario. El usuario que corre PM2 necesita permiso para `git pull` (con credenciales sin contraseña, por ejemplo una deploy key)

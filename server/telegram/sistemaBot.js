@@ -8,8 +8,10 @@
  *    argumento viene de texto del usuario: son valores fijos o hashes que devuelve git.
  *  - /update verifica primero el entorno (git, node, npm, remoto y rama), edita un solo mensaje con
  *    el avance, muestra la prueba del cambio (hash anterior y nuevo, último commit, archivos) y un
- *    resumen con Gemini hecho solo con títulos de commits y nombres de archivos. Si existe
- *    update.sh en la raíz del repositorio, lo usa en lugar de hacer pull e instalar por su cuenta.
+ *    resumen con Gemini hecho solo con títulos de commits y nombres de archivos (esa llamada no
+ *    cuenta para el límite por hora). Si existe update.sh en la raíz del repositorio, lo usa en lugar
+ *    de hacer pull e instalar por su cuenta: `--sin-reinicio` antes de la prueba y `--solo-reiniciar`
+ *    (pm2 reload y pm2 save) al final.
  *  - Antes de salir se escribe tmp/reinicio.json (en la raíz de storage) con el chat, el motivo y el
  *    hash esperado; al arrancar, el bot avisa que volvió, compara el hash y borra ese archivo.
  *  - Los errores que se muestran en el chat se limpian: sin rutas del servidor, sin líneas que
@@ -23,7 +25,6 @@ import { fileURLToPath } from 'url';
 import { carpetaTmp } from '../storage.js';
 import { resumirCambios, geminiDisponible } from './gemini.js';
 import { puedeEnviarseAGemini } from './intenciones.js';
-import { limitadorGemini } from './limiteGemini.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // server/telegram -> raíz del repositorio
@@ -189,8 +190,6 @@ export function crearSistema(ctx) {
   let enProceso = false;
 
   const esProduccion = () => process.env.NODE_ENV === 'production';
-  // Límite de llamadas a Gemini por chat; se puede inyectar en pruebas
-  const limitador = ctx.limitador ?? limitadorGemini;
 
   async function hashActual(corto = false) {
     const r = await ejecutar('git', ['rev-parse', ...(corto ? ['--short'] : []), 'HEAD'], { timeoutMs: 10000 });
@@ -233,7 +232,7 @@ export function crearSistema(ctx) {
    * el proceso (PM2 lo vuelve a levantar). `progreso` es el mensaje de avance; sin él, el mensaje de
    * confirmación pasa a decir "Reiniciando...".
    */
-  async function reiniciar(chatId, mensajeId, motivo, { esperado = null, anterior = null, progreso = null } = {}) {
+  async function reiniciar(chatId, mensajeId, motivo, { esperado = null, anterior = null, progreso = null, conScript = false } = {}) {
     if (progreso) await progreso.paso('Reiniciando');
     else await editar('Reiniciando...', { chat_id: chatId, message_id: mensajeId });
     try {
@@ -244,6 +243,15 @@ export function crearSistema(ctx) {
       );
     } catch (error) {
       console.error(`[sistema] no se pudo escribir el aviso de reinicio: error_code=${error.code ?? 'desconocido'}`);
+    }
+    // Con update.sh, el script recarga PM2 (reload y save); si falla o el proceso sigue vivo, se sale
+    // igual y PM2 (autorestart) lo levanta
+    if (conScript) {
+      await new Promise(resolve => setTimeout(resolve, RETRASO_SALIDA_MS));
+      const r = await ejecutar('bash', [NOMBRE_SCRIPT, '--solo-reiniciar'], { timeoutMs: TIMEOUT_GIT_MS });
+      if (!r.ok) await enviar(chatId, `No pude recargar PM2 con ${NOMBRE_SCRIPT}; reinicio el proceso directamente.`);
+      setTimeout(() => process.exit(0), RETRASO_SALIDA_MS * 2);
+      return;
     }
     // Margen para que el mensaje alcance a salir
     setTimeout(() => process.exit(0), RETRASO_SALIDA_MS);
@@ -365,13 +373,16 @@ export function crearSistema(ctx) {
     return { texto, archivos, titulos };
   }
 
-  /** Resumen en viñetas con Gemini (solo títulos y nombres de archivos); si no se puede, los títulos tal cual */
-  async function resumenDeCambios(chatId, titulos, archivos) {
+  /**
+   * Resumen en viñetas con Gemini (solo títulos y nombres de archivos); si no se puede, los títulos
+   * tal cual. No cuenta para el límite de llamadas por hora: es una llamada que pide el usuario.
+   */
+  async function resumenDeCambios(titulos, archivos) {
     if (titulos.length === 0) return null;
 
     let puntos = null;
     const seguros = titulosParaIA(titulos);
-    if (geminiDisponible() && seguros.length > 0 && limitador.consumir(chatId)) {
+    if (geminiDisponible() && seguros.length > 0) {
       puntos = await resumirCambios(seguros, archivos.slice(0, MAX_ARCHIVOS_IA));
     }
     if (puntos) return `<b>Qué cambió</b>\n${puntos.map(p => `• ${esc(p)}`).join('\n')}`;
@@ -407,7 +418,8 @@ export function crearSistema(ctx) {
     const conScript = await hayScript();
     await progreso.paso(conScript ? `Ejecutando ${NOMBRE_SCRIPT}` : 'Descargando cambios');
     if (conScript) {
-      const r = await ejecutar('bash', [NOMBRE_SCRIPT], { timeoutMs: TIMEOUT_SCRIPT_MS });
+      // --sin-reinicio: el script verifica, descarga e instala; PM2 se recarga al final, después de la prueba y el resumen
+      const r = await ejecutar('bash', [NOMBRE_SCRIPT, '--sin-reinicio'], { timeoutMs: TIMEOUT_SCRIPT_MS });
       const salida = limpiarSalida(r.ok ? r.salida : (r.error || r.salida), 12);
       if (!r.ok) {
         const motivo = r.timeout ? 'Se agotó el tiempo de espera.' : salida;
@@ -455,10 +467,10 @@ export function crearSistema(ctx) {
     }
 
     // 6. Resumen de lo nuevo
-    const resumen = await resumenDeCambios(chatId, prueba.titulos, prueba.archivos);
+    const resumen = await resumenDeCambios(prueba.titulos, prueba.archivos);
     if (resumen) await enviar(chatId, resumen);
 
-    return { reiniciar: true, esperado: nuevo, anterior, progreso };
+    return { reiniciar: true, esperado: nuevo, anterior, progreso, conScript };
   }
 
   // -------------------------------------------------------------------------
@@ -524,7 +536,7 @@ export function crearSistema(ctx) {
 
       const r = await actualizar(chatId, messageId);
       if (r.reiniciar) {
-        await reiniciar(chatId, messageId, 'update', { esperado: r.esperado, anterior: r.anterior, progreso: r.progreso });
+        await reiniciar(chatId, messageId, 'update', { esperado: r.esperado, anterior: r.anterior, progreso: r.progreso, conScript: r.conScript });
         return true;
       }
     } catch (error) {
