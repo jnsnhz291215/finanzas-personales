@@ -29,6 +29,7 @@ import { crearCuotas } from './cuotasBot.js';
 import { crearCartolas } from './cartolasBot.js';
 import { crearRegistros } from './registrosBot.js';
 import { crearReset } from './resetBot.js';
+import { crearStatus } from './statusBot.js';
 import { crearSistema } from './sistemaBot.js';
 import { crearIntenciones, clasificarPorReglas } from './intenciones.js';
 import { limitadorGemini } from './limiteGemini.js';
@@ -79,6 +80,8 @@ let sistema = null;
 let registros = null;
 // Reinicio total de los datos y restauración de respaldos (resetBot.js); se crea al iniciar el bot
 let reset = null;
+// Chequeo de estado de la app, /status (statusBot.js); se crea al iniciar el bot
+let status = null;
 // Enrutador de intenciones para mensajes libres (intenciones.js); se crea al iniciar el bot
 let intenciones = null;
 // Foto que espera el texto de un gasto para quedar como su respaldo: chatId -> { fileId, nombre, hasta }
@@ -227,6 +230,9 @@ export async function iniciarBot() {
     reset = crearReset({ bot, enviar, editar, responderCallback, esc, esChatAutorizado });
     reset.configurarComandos();
 
+    status = crearStatus({ bot, enviar, editar, esc, esChatAutorizado, chatIds: () => allowedChatIds });
+    status.configurarComandos();
+
     intenciones = crearIntenciones({
       enviar,
       editar,
@@ -243,6 +249,7 @@ export async function iniciarBot() {
       ayuda: (chatId) => enviar(chatId, textoAyuda()),
       eliminarUltimo: (chatId) => registros.eliminarUltimo(chatId),
       asignarDigitos: (chatId, datos) => cartolas.proponerDigitos(chatId, datos),
+      estado: (chatId) => status.responder(chatId),
       reset: (chatId) => reset.pedirReset(chatId),
       restaurarRespaldo: (chatId) => reset.pedirRestaurar(chatId)
     });
@@ -256,6 +263,9 @@ export async function iniciarBot() {
 
     // Si el servidor se reinició con /reboot o /update, avisa que ya volvió
     sistema.notificarReinicioPendiente();
+
+    // En producción, un rato después de arrancar revisa todo y avisa solo si algo no funciona
+    setTimeout(() => status.revisarAlArrancar(), 15000).unref();
 
     console.log('✓ Bot de Telegram iniciado (long polling)');
     if (allowedChatIds.length > 0) {
@@ -315,6 +325,8 @@ function textoAyuda() {
     '• busca uber de octubre\n' +
     '• qué cuentas tengo\n' +
     '• pásame los datos de la mercado pago\n\n' +
+    '<b>Estado de la app</b>\n' +
+    '• /status, «estado» o «todo bien?»: revisa servidor, base de datos, Gemini, Telegram, storage y más\n\n' +
     '<b>Empezar de cero</b>\n' +
     '• /reset o «empezar de cero»: muestra qué borraría, hace un respaldo y pide escribir BORRAR TODO\n' +
     '• restaurar último respaldo\n\n' +
@@ -333,6 +345,7 @@ function textoAyuda() {
     '/help - Esta ayuda\n' +
     '/plan - Tu plan de ahorro del mes\n' +
     '/cuotas - Tus compras en cuotas\n' +
+    '/status - Estado de la app\n' +
     '/update - Actualizar y reiniciar la app (solo en el servidor)\n\n' +
     'Por seguridad, las cuentas y tus datos de transferencia se guardan solo con comandos: ' +
     '/savecard (por ejemplo: /savecard efectivo) y /savetrans. ' +
@@ -345,6 +358,7 @@ const COMANDOS_MENU = [
   { command: 'help', description: 'Qué puedo hacer y ejemplos' },
   { command: 'plan', description: 'Mi plan de ahorro del mes' },
   { command: 'cuotas', description: 'Mis compras en cuotas' },
+  { command: 'status', description: 'Estado de la app' },
   { command: 'update', description: 'Actualizar y reiniciar la app' }
 ];
 

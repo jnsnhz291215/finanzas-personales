@@ -568,7 +568,7 @@ El bot se usa casi sin comandos: escribe como hablas o manda un archivo. Un enru
   respaldo; con un pago de cuota, como respaldo de esa cuota.
 - **Límite de Gemini:** máximo 30 llamadas por hora por chat, contadas en memoria (se reinician al reiniciar el servidor). Al pasarlo,
   el bot responde que no entendió y muestra ejemplos; los gastos con monto siguen funcionando solo con las reglas.
-- El menú `/` de Telegram solo muestra `/help`, `/plan`, `/cuotas` y `/update`; el resto de los comandos funciona igual si los escribes.
+- El menú `/` de Telegram solo muestra `/help`, `/plan`, `/cuotas`, `/status` y `/update`; el resto de los comandos funciona igual si los escribes.
 
 ### Eliminar o corregir un registro respondiéndole
 
@@ -621,6 +621,29 @@ o "borrar todo".
 **Restaurar:** escribe "restaurar último respaldo". Muestra qué respaldo es y pide la misma doble confirmación (botón y luego
 `RESTAURAR RESPALDO`). Antes de restaurar hace otro respaldo del estado actual (`respaldos/antes-de-restaurar-...`). Con MariaDB
 necesita el cliente `mysql` en el PATH.
+
+### Estado de la app: /status
+
+`/status` (o escribir "estado", "status" o "todo bien?") revisa cada parte y responde **en un solo mensaje**, por secciones, con ✅ lo
+que funciona, ❌ lo que no (con el motivo en lenguaje simple) y "Aviso:" lo que conviene mirar pero no es un problema. La última línea
+es "Todo en orden" o "Hay N problemas". Solo para los chats de `TELEGRAM_ALLOWED_CHAT_IDS`. Cada chequeo corre en paralelo con un
+máximo de 8 segundos; si se pasa, esa sección sale como "No respondió".
+
+| Sección | Qué revisa |
+| --- | --- |
+| Servidor | sistema operativo y versión, equipo, tiempo encendido (equipo y app), Node y `NODE_ENV`, memoria libre y disco de la partición del storage |
+| App | versión (hash corto y título), rama, cambios locales sin commit y si el remoto tiene commits nuevos (`git fetch` con 6 s y `GIT_TERMINAL_PROMPT=0`) |
+| PM2 | si corre bajo PM2 (variable `pm_id`), nombre y reinicios |
+| Base de datos | motor, conexión, usuario conectado, nombre y versión (con SQLite, tamaño del archivo), tablas principales y conteo de movimientos, cuentas y cuotas activas |
+| Gemini | si hay `GEMINI_API_KEY`, una llamada mínima con su latencia; si falla, el motivo (clave, cuota, red). **No cuenta para el límite de 30 por hora** |
+| Telegram | `getMe` (usuario del bot) y si el menú de comandos está registrado |
+| Storage | si la ruta es `FINANZAS_STORAGE` o la de por defecto, que exista, que se pueda escribir (archivo de prueba en `tmp/`) y tamaño total y por carpeta |
+| Herramientas | `git`, `node`, `npm`, `tar` y, con MariaDB, `mysqldump` y `mysql` en el PATH del proceso |
+| Respaldos | el último respaldo en `storage/respaldos/` |
+| Variables | solo los **nombres** de las requeridas que faltan (nunca valores) y de las opcionales sin definir |
+
+Nunca se imprimen secretos, valores de variables, contraseñas, tokens ni rutas de `.env`. **Al arrancar en producción** el servidor corre
+el mismo chequeo (15 segundos después de iniciar el bot) y lo manda a los chats autorizados **solo si hay algún ❌**.
 
 ### Reiniciar y actualizar desde el bot
 

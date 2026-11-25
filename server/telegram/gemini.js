@@ -566,3 +566,40 @@ export async function resumirCambios(titulos, archivos = []) {
     return null;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Prueba de funcionamiento (/status)
+// ---------------------------------------------------------------------------
+
+/** Motivo corto y en lenguaje simple de un fallo de Gemini (sin claves ni mensajes completos) */
+export function motivoFalloGemini(err) {
+  const codigo = err?.codigo;
+  const texto = String(err?.message ?? '').toLowerCase();
+  if (err?.name === 'TimeoutError' || err?.name === 'AbortError' || /timeout|aborted/.test(texto)) return 'no respondió a tiempo';
+  if (err instanceof TypeError || /fetch failed|enotfound|econnrefused|network/.test(texto)) return 'sin conexión a internet';
+  if (codigo === 429 || /quota|resource_exhausted|rate limit/.test(texto)) return 'se agotó la cuota';
+  if ([400, 401, 403].includes(Number(codigo)) || /api key|permission/.test(texto)) return 'la clave no es válida o no tiene permiso';
+  if (Number(codigo) === 404) return 'el modelo no existe (revisa GEMINI_MODEL)';
+  if (Number(codigo) >= 500) return 'el servicio de Gemini está fallando';
+  return `error ${codigo ?? 'desconocido'}`;
+}
+
+/**
+ * Llamada mínima ("responde OK") para saber si Gemini funciona. No pasa por el límite por hora.
+ * Devuelve { ok: true, ms } o { ok: false, motivo }; sin clave, { ok: false, sinClave: true }.
+ */
+export async function probarGemini() {
+  if (!geminiDisponible()) return { ok: false, sinClave: true, motivo: 'sin clave' };
+  const inicio = Date.now();
+  try {
+    await llamarGemini(
+      'Responde solo con un JSON que tenga la clave "respuesta".',
+      'Responde OK',
+      { type: 'OBJECT', properties: { respuesta: { type: 'STRING' } }, required: ['respuesta'] },
+      { timeoutMs: 7000 }
+    );
+    return { ok: true, ms: Date.now() - inicio };
+  } catch (err) {
+    return { ok: false, motivo: motivoFalloGemini(err) };
+  }
+}

@@ -4,7 +4,7 @@
  * prompt corto. Los comandos siguen funcionando como respaldo.
  *
  * Intenciones: registrar, pagar_cuota, nueva_compra_cuotas, consultar_gastos, plan,
- * datos_transferencia, cuentas, cuotas_pendientes, buscar, ayuda, eliminar_ultimo, asignar_digitos, reset y restaurar_respaldo.
+ * datos_transferencia, cuentas, cuotas_pendientes, buscar, ayuda, eliminar_ultimo, asignar_digitos, estado, reset y restaurar_respaldo.
  *
  * También entiende las respuestas (reply de Telegram) a un mensaje que creó un registro: eliminar,
  * corregir o deshacer (clasificarReply; la ejecución está en registrosBot.js).
@@ -78,6 +78,12 @@ export function limpiarBusqueda(texto) {
 
 const VERBO_ELIMINAR = /\b(?:elimin\w*|borr\w*|sac(?:a|alo|ala|ar)|quit(?:a|alo|ala|ar)|anul\w*)\b/;
 const VERBO_DESHACER = /\b(?:deshac\w*|deshaz\w*|revert\w*|restaur\w*|recuper\w*|vuelve atras|volver atras)\b/;
+
+/** "estado", "status", "todo bien?": pide el chequeo de /status. Solo calza el mensaje completo. */
+export function detectarEstado(texto) {
+  const norm = normalizar(texto).replace(/[¿?¡!.,;:]/g, ' ').replace(/\s+/g, ' ').trim();
+  return /^(?:estado|status|todo bien|todo ok|esta todo bien|como esta todo|como va todo|estado de la app)$/.test(norm);
+}
 
 /**
  * "empezar de cero", "borrar todo", "resetear" -> 'reset'; "restaurar último respaldo" ->
@@ -335,6 +341,9 @@ export function clasificarPorReglas(texto) {
   // "elimina el último gasto" sin responder a ningún mensaje
   if (detectarEliminarUltimo(original)) return resultado('eliminar_ultimo');
 
+  // "estado", "todo bien?": el chequeo de /status
+  if (detectarEstado(original)) return resultado('estado');
+
   // Reinicio total y restauración: solo abren la confirmación (botones y frase escrita)
   const reinicio = detectarReset(original);
   if (reinicio) return resultado(reinicio);
@@ -523,6 +532,13 @@ export function crearIntenciones(ctx) {
       case 'ayuda':
         await ctx.ayuda(chatId);
         return true;
+
+      case 'estado':
+        if (ctx.estado) {
+          await ctx.estado(chatId);
+          return true;
+        }
+        return preguntarIntencion(chatId, texto);
 
       case 'reset':
         if (ctx.reset) {
