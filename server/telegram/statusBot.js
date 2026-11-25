@@ -58,6 +58,11 @@ export function formatearTamano(bytes) {
   return `${i === 0 ? valor : valor.toFixed(1).replace('.', ',')} ${unidades[i]}`;
 }
 
+/** "1,5 KB", o "más de 1,5 KB" si el conteo quedó incompleto */
+export function textoTamano(bytes, parcial = false) {
+  return `${parcial ? 'más de ' : ''}${formatearTamano(bytes)}`;
+}
+
 /** 93784 s -> "1 d 2 h 3 min" */
 export function formatearDuracion(segundos) {
   let resto = Math.max(0, Math.floor(Number(segundos) || 0));
@@ -110,7 +115,7 @@ export function formatearEstado(secciones, esc = (t) => t) {
  * motor de BD. Devuelve elementos { estado, texto }.
  */
 export function revisarVariables(env, motor) {
-  const requeridas = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_ALLOWED_CHAT_IDS', 'SESSION_SECRET'];
+  const requeridas = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_ALLOWED_CHAT_IDS'];
   if (motor === 'mariadb') requeridas.push(...['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME']);
   const definida = (nombre) => env[nombre] !== undefined && (nombre === 'DB_PASSWORD' || String(env[nombre]).trim() !== '');
 
@@ -119,7 +124,9 @@ export function revisarVariables(env, motor) {
   if (faltan.length > 0) items.push({ estado: 'fallo', texto: `Faltan variables requeridas: ${faltan.join(', ')}` });
   else items.push({ estado: 'ok', texto: `Variables requeridas presentes (${requeridas.length})` });
 
+  // SESSION_SECRET solo sirve a la web: es opcional (y se avisa solo si se sirve el frontend)
   const recomendadas = ['FINANZAS_STORAGE', 'GEMINI_API_KEY'];
+  if (env.SERVIR_FRONTEND === 'true') recomendadas.push('SESSION_SECRET');
   if (env.NODE_ENV === 'production') recomendadas.push('DB_ENGINE');
   const sinDefinir = recomendadas.filter(n => !definida(n));
   if (sinDefinir.length > 0) items.push({ estado: 'aviso', texto: `Sin definir (opcionales): ${sinDefinir.join(', ')}` });
@@ -146,7 +153,13 @@ function ejecutar(programa, argumentos, { timeoutMs = 5000, cwd = RAIZ_REPO } = 
   });
 }
 
-async function tamanoDeCarpeta(carpeta) {
+const TOPE_TAMANO_MS = 5000;
+
+/**
+ * Suma el tamaño de una carpeta hasta que se acabe el tiempo (`limite.hasta`). Si se pasa, marca
+ * `limite.truncado` y devuelve lo contado hasta ahí (el tamaño real es mayor).
+ */
+async function tamanoDeCarpeta(carpeta, limite = { hasta: Date.now() + TOPE_TAMANO_MS, truncado: false }) {
   let total = 0;
   let entradas;
   try {
@@ -155,8 +168,12 @@ async function tamanoDeCarpeta(carpeta) {
     return 0;
   }
   for (const e of entradas) {
+    if (Date.now() > limite.hasta) {
+      limite.truncado = true;
+      break;
+    }
     const ruta = path.join(carpeta, e.name);
-    if (e.isDirectory()) total += await tamanoDeCarpeta(ruta);
+    if (e.isDirectory()) total += await tamanoDeCarpeta(ruta, limite);
     else if (e.isFile()) {
       try {
         total += (await fs.stat(ruta)).size;
@@ -236,7 +253,7 @@ async function chequeoApp() {
 
   const fetch = await ejecutar('git', ['fetch', '--quiet', 'origin'], { timeoutMs: TIMEOUT_FETCH_MS });
   if (!fetch.ok) {
-    items.push({ estado: 'fallo', texto: `El repositorio remoto no responde: ${explicarFalloRemoto({ error: fetch.error, timeout: fetch.timeout })}` });
+    items.push({ estado: 'aviso', texto: `No pude consultar el repositorio remoto: ${explicarFalloRemoto({ error: fetch.error, timeout: fetch.timeout })}` });
   } else {
     const nuevos = await ejecutar('git', ['rev-list', '--count', 'HEAD..@{u}']);
     if (!nuevos.ok) items.push({ estado: 'aviso', texto: 'La rama no tiene una rama remota asociada para comparar' });
@@ -384,12 +401,16 @@ async function chequeoStorage() {
     archivos: carpetaBase('archivos'),
     respaldos: path.join(raiz, 'respaldos')
   };
+  // Un solo tope de tiempo para todo el conteo: si se pasa, se muestra "más de X"
+  const limite = { hasta: Date.now() + TOPE_TAMANO_MS, truncado: false };
   const tamanos = {};
-  for (const [nombre, ruta] of Object.entries(carpetas)) tamanos[nombre] = await tamanoDeCarpeta(ruta);
-  const total = Object.values(tamanos).reduce((a, b) => a + b, 0);
+  for (const [nombre, ruta] of Object.entries(carpetas)) {
+    tamanos[nombre] = { bytes: await tamanoDeCarpeta(ruta, limite), parcial: limite.truncado };
+  }
+  const total = Object.values(tamanos).reduce((a, t) => a + t.bytes, 0);
   items.push({
     estado: 'ok',
-    texto: `Tamaño: ${formatearTamano(total)} (${Object.entries(tamanos).map(([n, t]) => `${n} ${formatearTamano(t)}`).join(', ')})`
+    texto: `Tamaño: ${textoTamano(total, limite.truncado)} (${Object.entries(tamanos).map(([n, t]) => `${n} ${textoTamano(t.bytes, t.parcial)}`).join(', ')})`
   });
   return items;
 }

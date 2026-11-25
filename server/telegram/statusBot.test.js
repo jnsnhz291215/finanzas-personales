@@ -1,6 +1,7 @@
 import {
   conTimeout,
   formatearTamano,
+  textoTamano,
   formatearDuracion,
   contarProblemas,
   lineaFinal,
@@ -54,7 +55,7 @@ describe('formatos', () => {
 
 describe('variables de entorno', () => {
   test('solo muestra nombres, nunca valores', () => {
-    const items = revisarVariables({ TELEGRAM_BOT_TOKEN: 'secreto-123', SESSION_SECRET: 'otro-secreto', NODE_ENV: 'production' }, 'sqlite');
+    const items = revisarVariables({ TELEGRAM_BOT_TOKEN: 'secreto-123', GEMINI_API_KEY: 'otro-secreto', NODE_ENV: 'production' }, 'sqlite');
     const texto = JSON.stringify(items);
     expect(texto).toContain('TELEGRAM_ALLOWED_CHAT_IDS');
     expect(texto).not.toContain('secreto');
@@ -62,10 +63,27 @@ describe('variables de entorno', () => {
   });
 
   test('con mariadb exige las variables de la base; todo presente es ok', () => {
-    const base = { TELEGRAM_BOT_TOKEN: 'a', TELEGRAM_ALLOWED_CHAT_IDS: '1', SESSION_SECRET: 'b' };
+    const base = { TELEGRAM_BOT_TOKEN: 'a', TELEGRAM_ALLOWED_CHAT_IDS: '1' };
     expect(revisarVariables(base, 'mariadb')[0].texto).toMatch(/DB_HOST/);
     const completo = { ...base, DB_HOST: 'h', DB_USER: 'u', DB_PASSWORD: '', DB_NAME: 'n' };
     expect(revisarVariables(completo, 'mariadb')[0].estado).toBe('ok');
+  });
+});
+
+describe('SESSION_SECRET y tamaños', () => {
+  test('SESSION_SECRET es opcional y solo se avisa si se sirve la web', () => {
+    const base = { TELEGRAM_BOT_TOKEN: 'a', TELEGRAM_ALLOWED_CHAT_IDS: '1', FINANZAS_STORAGE: 'x', GEMINI_API_KEY: 'g' };
+    const sinWeb = revisarVariables(base, 'sqlite');
+    expect(sinWeb[0].estado).toBe('ok');
+    expect(JSON.stringify(sinWeb)).not.toContain('SESSION_SECRET');
+    const conWeb = revisarVariables({ ...base, SERVIR_FRONTEND: 'true' }, 'sqlite');
+    expect(conWeb[0].estado).toBe('ok');
+    expect(JSON.stringify(conWeb)).toContain('SESSION_SECRET');
+  });
+
+  test('un conteo incompleto dice "más de"', () => {
+    expect(textoTamano(1536)).toBe('1,5 KB');
+    expect(textoTamano(1536, true)).toBe('más de 1,5 KB');
   });
 });
 

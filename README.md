@@ -632,15 +632,15 @@ máximo de 8 segundos; si se pasa, esa sección sale como "No respondió".
 | Sección | Qué revisa |
 | --- | --- |
 | Servidor | sistema operativo y versión, equipo, tiempo encendido (equipo y app), Node y `NODE_ENV`, memoria libre y disco de la partición del storage |
-| App | versión (hash corto y título), rama, cambios locales sin commit y si el remoto tiene commits nuevos (`git fetch` con 6 s y `GIT_TERMINAL_PROMPT=0`) |
+| App | versión (hash corto y título), rama, cambios locales sin commit y si el remoto tiene commits nuevos (`git fetch` con 6 s y `GIT_TERMINAL_PROMPT=0`; si el fetch falla es un Aviso, no un error) |
 | PM2 | si corre bajo PM2 (variable `pm_id`), nombre y reinicios |
 | Base de datos | motor, conexión, usuario conectado, nombre y versión (con SQLite, tamaño del archivo), tablas principales y conteo de movimientos, cuentas y cuotas activas |
 | Gemini | si hay `GEMINI_API_KEY`, una llamada mínima con su latencia; si falla, el motivo (clave, cuota, red). **No cuenta para el límite de 30 por hora** |
 | Telegram | `getMe` (usuario del bot) y si el menú de comandos está registrado |
-| Storage | si la ruta es `FINANZAS_STORAGE` o la de por defecto, que exista, que se pueda escribir (archivo de prueba en `tmp/`) y tamaño total y por carpeta |
+| Storage | si la ruta es `FINANZAS_STORAGE` o la de por defecto, que exista, que se pueda escribir (archivo de prueba en `tmp/`) y tamaño total y por carpeta (con un tope de 5 s: si se pasa, muestra "más de X") |
 | Herramientas | `git`, `node`, `npm`, `tar` y, con MariaDB, `mysqldump` y `mysql` en el PATH del proceso |
 | Respaldos | el último respaldo en `storage/respaldos/` |
-| Variables | solo los **nombres** de las requeridas que faltan (nunca valores) y de las opcionales sin definir |
+| Variables | solo los **nombres** de las requeridas que faltan (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_IDS` y, con MariaDB, las `DB_*`) y de las opcionales sin definir; `SESSION_SECRET` es opcional (solo la usa la web) |
 
 Nunca se imprimen secretos, valores de variables, contraseñas, tokens ni rutas de `.env`. **Al arrancar en producción** el servidor corre
 el mismo chequeo (15 segundos después de iniciar el bot) y lo manda a los chats autorizados **solo si hay algún ❌**.
