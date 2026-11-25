@@ -4,7 +4,7 @@
  * prompt corto. Los comandos siguen funcionando como respaldo.
  *
  * Intenciones: registrar, pagar_cuota, nueva_compra_cuotas, consultar_gastos, plan,
- * datos_transferencia, cuentas, cuotas_pendientes, buscar, ayuda, eliminar_ultimo y asignar_digitos.
+ * datos_transferencia, cuentas, cuotas_pendientes, buscar, ayuda, eliminar_ultimo, asignar_digitos, reset y restaurar_respaldo.
  *
  * También entiende las respuestas (reply de Telegram) a un mensaje que creó un registro: eliminar,
  * corregir o deshacer (clasificarReply; la ejecución está en registrosBot.js).
@@ -78,6 +78,20 @@ export function limpiarBusqueda(texto) {
 
 const VERBO_ELIMINAR = /\b(?:elimin\w*|borr\w*|sac(?:a|alo|ala|ar)|quit(?:a|alo|ala|ar)|anul\w*)\b/;
 const VERBO_DESHACER = /\b(?:deshac\w*|deshaz\w*|revert\w*|restaur\w*|recuper\w*|vuelve atras|volver atras)\b/;
+
+/**
+ * "empezar de cero", "borrar todo", "resetear" -> 'reset'; "restaurar último respaldo" ->
+ * 'restaurar_respaldo'; otra cosa -> null. Solo calzan mensajes que son exactamente eso, y el bot
+ * igual pide botones y una frase escrita antes de tocar nada.
+ */
+export function detectarReset(texto) {
+  const norm = normalizar(texto).replace(/[¿?¡!.,;:]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (/^(?:quiero\s+)?(?:empezar|comenzar|partir)\s+de\s+cero$/.test(norm)) return 'reset';
+  if (/^(?:borra(?:r)?|elimina(?:r)?)\s+todo(?:\s+(?:los\s+|mis\s+)?(?:datos|movimientos))?$/.test(norm)) return 'reset';
+  if (/^reset(?:ea(?:r)?)?(?:\s+(?:todo|(?:los\s+|mis\s+)?datos))?$/.test(norm)) return 'reset';
+  if (/^restaura(?:r)?\s+(?:el\s+)?(?:ultimo\s+)?respaldo$/.test(norm)) return 'restaurar_respaldo';
+  return null;
+}
 
 /**
  * "la FAN termina en 6958", "la cuenta de la falabella termina en 1234": asigna los últimos 4 dígitos
@@ -321,6 +335,10 @@ export function clasificarPorReglas(texto) {
   // "elimina el último gasto" sin responder a ningún mensaje
   if (detectarEliminarUltimo(original)) return resultado('eliminar_ultimo');
 
+  // Reinicio total y restauración: solo abren la confirmación (botones y frase escrita)
+  const reinicio = detectarReset(original);
+  if (reinicio) return resultado(reinicio);
+
   // "la FAN termina en 6958": asignar los últimos 4 dígitos a una cuenta (siempre con confirmación)
   const digitos = detectarAsignarDigitos(original);
   if (digitos) return resultado('asignar_digitos', digitos);
@@ -505,6 +523,20 @@ export function crearIntenciones(ctx) {
       case 'ayuda':
         await ctx.ayuda(chatId);
         return true;
+
+      case 'reset':
+        if (ctx.reset) {
+          await ctx.reset(chatId);
+          return true;
+        }
+        return preguntarIntencion(chatId, texto);
+
+      case 'restaurar_respaldo':
+        if (ctx.restaurarRespaldo) {
+          await ctx.restaurarRespaldo(chatId);
+          return true;
+        }
+        return preguntarIntencion(chatId, texto);
 
       case 'asignar_digitos':
         if (ctx.asignarDigitos && datos.digitos) {

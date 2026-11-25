@@ -584,6 +584,32 @@ ingresos, pagos de cuota, compras en cuotas, cuentas e importaciones de cartola.
   (se crean solas al arrancar). Los registros anteriores a esta función no tienen mensaje asociado: se pueden eliminar con
   `/ultimos` o la web, no respondiéndoles.
 
+### Empezar de cero: /reset y restaurar un respaldo
+
+Solo para los chats de `TELEGRAM_ALLOWED_CHAT_IDS`. `/reset` no aparece en el menú `/`; también funciona escribiendo "empezar de cero"
+o "borrar todo".
+
+1. El bot muestra lo que hay (movimientos, cuentas, cuotas, plan de ahorro, gastos fijos, datos de transferencia, reglas, categorías
+   personalizadas y archivos en storage) y ofrece tres botones:
+   - **Borrar movimientos y archivos:** borra movimientos, pagos de préstamos, importaciones de cartolas, los vínculos mensaje-registro,
+     el historial de cambios y los archivos de `cartolas/`, `comprobantes/` y `archivos/`. Mantiene cuentas, datos de transferencia,
+     plan, cuotas (con su contador de cuotas pagadas) y categorías.
+   - **Borrar todo:** además borra cuentas, cuotas, plan (vuelve a 50/30/20 sin ingreso), gastos fijos, datos de transferencia, reglas y
+     categorías, y vuelve a crear las categorías base y la cuenta Efectivo. El usuario de la web no se toca.
+   - **Cancelar.**
+2. **Segunda confirmación:** hay que escribir exactamente `BORRAR TODO` (o `BORRAR MOVIMIENTOS`, según el botón) en 2 minutos.
+   Cualquier otro texto cancela.
+3. **Respaldo automático antes de borrar**, en `<FINANZAS_STORAGE>/respaldos/reset-AAAA-MM-DD_HHMMSS/` (hora de Chile):
+   la BD (SQLite: copia de `finanzas.db` con la API de respaldo; MariaDB: `mysqldump` con un archivo de opciones temporal de permisos
+   600, sin la contraseña en los argumentos) y `storage.tar.gz` con los archivos (sin `respaldos/` ni `tmp/`). Si el respaldo falla,
+   no se borra nada. El reset nunca borra `respaldos/`. Requiere `tar` (y `mysqldump` si usas MariaDB) en el PATH del proceso.
+4. El borrado de la BD es una sola transacción (hijos antes que padres), reinicia los autoincrementos y deja una fila `reset` en
+   `historial_cambios`. Al terminar, el bot resume lo borrado y la ruta relativa del respaldo.
+
+**Restaurar:** escribe "restaurar último respaldo". Muestra qué respaldo es y pide la misma doble confirmación (botón y luego
+`RESTAURAR RESPALDO`). Antes de restaurar hace otro respaldo del estado actual (`respaldos/antes-de-restaurar-...`). Con MariaDB
+necesita el cliente `mysql` en el PATH.
+
 ### Reiniciar y actualizar desde el bot
 
 Solo para los chats de `TELEGRAM_ALLOWED_CHAT_IDS` y solo con `NODE_ENV=production` (en desarrollo se bloquean para no cerrar

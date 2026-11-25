@@ -28,6 +28,7 @@ import { crearAdmin } from './admin.js';
 import { crearCuotas } from './cuotasBot.js';
 import { crearCartolas } from './cartolasBot.js';
 import { crearRegistros } from './registrosBot.js';
+import { crearReset } from './resetBot.js';
 import { crearSistema } from './sistemaBot.js';
 import { crearIntenciones, clasificarPorReglas } from './intenciones.js';
 import { limitadorGemini } from './limiteGemini.js';
@@ -76,6 +77,8 @@ let cartolas = null;
 let sistema = null;
 // Eliminar/corregir/deshacer respondiendo a un mensaje (registrosBot.js); se crea al iniciar el bot
 let registros = null;
+// Reinicio total de los datos y restauración de respaldos (resetBot.js); se crea al iniciar el bot
+let reset = null;
 // Enrutador de intenciones para mensajes libres (intenciones.js); se crea al iniciar el bot
 let intenciones = null;
 // Foto que espera el texto de un gasto para quedar como su respaldo: chatId -> { fileId, nombre, hasta }
@@ -221,6 +224,9 @@ export async function iniciarBot() {
 
     registros = crearRegistros({ enviar, editar, responderCallback, esc });
 
+    reset = crearReset({ bot, enviar, editar, responderCallback, esc, esChatAutorizado });
+    reset.configurarComandos();
+
     intenciones = crearIntenciones({
       enviar,
       editar,
@@ -236,7 +242,9 @@ export async function iniciarBot() {
       buscar: (chatId, texto) => admin.buscar(chatId, texto),
       ayuda: (chatId) => enviar(chatId, textoAyuda()),
       eliminarUltimo: (chatId) => registros.eliminarUltimo(chatId),
-      asignarDigitos: (chatId, datos) => cartolas.proponerDigitos(chatId, datos)
+      asignarDigitos: (chatId, datos) => cartolas.proponerDigitos(chatId, datos),
+      reset: (chatId) => reset.pedirReset(chatId),
+      restaurarRespaldo: (chatId) => reset.pedirRestaurar(chatId)
     });
 
     sistema = crearSistema({ bot, enviar, editar, responderCallback, esc, esChatAutorizado });
@@ -307,6 +315,9 @@ function textoAyuda() {
     '• busca uber de octubre\n' +
     '• qué cuentas tengo\n' +
     '• pásame los datos de la mercado pago\n\n' +
+    '<b>Empezar de cero</b>\n' +
+    '• /reset o «empezar de cero»: muestra qué borraría, hace un respaldo y pide escribir BORRAR TODO\n' +
+    '• restaurar último respaldo\n\n' +
     '<b>Reconocer cuentas en las cartolas</b>\n' +
     '• la FAN termina en 6958\n' +
     '• la cuenta de la falabella termina en 1234\n\n' +
@@ -551,6 +562,11 @@ function configurarManejadores() {
       return;
     }
 
+    // Frase de confirmación de /reset o de la restauración de un respaldo
+    if (msg.text && reset && await reset.manejarTexto(msg)) {
+      return;
+    }
+
     // Respuesta (reply) a un mensaje que creó un registro: eliminar, corregir o deshacer
     if (msg.text && msg.reply_to_message && registros && await registros.manejarReply(msg)) {
       return;
@@ -620,6 +636,11 @@ function configurarManejadores() {
 
     // Botones de /reboot y /update
     if (sistema && await sistema.manejarCallback(cb, chatId, data)) {
+      return;
+    }
+
+    // Botones de /reset y de restaurar un respaldo
+    if (reset && await reset.manejarCallback(cb, chatId, data)) {
       return;
     }
 

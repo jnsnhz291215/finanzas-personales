@@ -1,4 +1,4 @@
-import { clasificarPorReglas, puedeEnviarseAGemini, limpiarBusqueda, clasificarReply, detectarEliminarUltimo, replyDesdeGemini, detectarAsignarDigitos } from './intenciones.js';
+import { clasificarPorReglas, puedeEnviarseAGemini, limpiarBusqueda, clasificarReply, detectarEliminarUltimo, replyDesdeGemini, detectarAsignarDigitos, detectarReset } from './intenciones.js';
 
 const intencion = (texto) => clasificarPorReglas(texto)?.intencion ?? null;
 
@@ -179,5 +179,16 @@ describe('asignar los últimos 4 dígitos en lenguaje natural', () => {
   test('un número largo o un gasto normal no calzan', () => {
     expect(detectarAsignarDigitos('la FAN termina en 12345')).toBeNull();
     expect(detectarAsignarDigitos('almuerzo 5500 débito')).toBeNull();
+  });
+});
+
+describe('reset y restauración en lenguaje natural', () => {
+  test('solo calzan mensajes que son exactamente eso', () => {
+    expect(detectarReset('empezar de cero')).toBe('reset');
+    expect(detectarReset('borrar todo')).toBe('reset');
+    expect(detectarReset('restaurar último respaldo')).toBe('restaurar_respaldo');
+    expect(detectarReset('almuerzo 5500')).toBeNull();
+    expect(detectarReset('borra todo lo del mes pasado')).toBeNull();
+    expect(intencion('empezar de cero')).toBe('reset');
   });
 });

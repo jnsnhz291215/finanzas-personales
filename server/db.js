@@ -5,6 +5,8 @@ dotenv.config();
 const USE_SQLITE = true; // Cambiar a false cuando tengas MariaDB configurado
 
 let dbModule;
+// Motor de BD en uso: 'sqlite' o 'mariadb' (lo usa el reset del bot para respaldar y borrar)
+let motor = 'sqlite';
 
 if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
   // Usar MySQL en producción
@@ -258,6 +260,7 @@ if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
     );
   }
 
+  motor = 'mariadb';
   dbModule = {
     getConnection: async function() {
       if (!pool) {
@@ -311,3 +314,4 @@ if (!USE_SQLITE && process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
 }
 
 export const { getConnection, inicializarDB, query } = dbModule;
+export const motorDB = motor;
