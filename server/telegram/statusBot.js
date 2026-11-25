@@ -20,6 +20,7 @@ import { fileURLToPath } from 'url';
 import { rutaRaiz, carpetaBase, carpetaTmp } from '../storage.js';
 import { probarGemini, geminiDisponible } from './gemini.js';
 import { elegirMotor } from '../motorDB.js';
+import { decidirWeb, direccionEscuchando, esLoopback } from '../web.js';
 import { explicarFalloRemoto } from './sistemaBot.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -336,6 +337,21 @@ async function chequeoBaseDeDatos() {
   return items;
 }
 
+/** Estado de la web a partir de la decisión (env) y de la dirección en que escucha de verdad */
+export function revisarWeb(decision, escucha) {
+  if (!decision.habilitada) return [{ estado: 'ok', texto: 'Deshabilitada (no se escucha ningún puerto)' }];
+  if (decision.bloqueo) return [{ estado: 'fallo', texto: `Habilitada pero bloqueada: ${decision.bloqueo}` }];
+  if (!escucha) return [{ estado: 'fallo', texto: `Habilitada pero no está escuchando en ${decision.host}:${decision.puerto}` }];
+  if (!esLoopback(escucha.host)) {
+    return [{ estado: 'fallo', texto: `Escucha fuera de localhost (${escucha.host}:${escucha.puerto}): cualquiera en la red podría entrar` }];
+  }
+  return [{ estado: 'ok', texto: `Escuchando en ${escucha.host}:${escucha.puerto}` }];
+}
+
+async function chequeoWeb() {
+  return revisarWeb(decidirWeb(process.env), direccionEscuchando());
+}
+
 async function chequeoGemini() {
   if (!geminiDisponible()) {
     return [{ estado: 'aviso', texto: 'Sin GEMINI_API_KEY: el bot funciona solo con reglas' }];
@@ -494,6 +510,7 @@ export function crearStatus(ctx) {
       ['Servidor', chequeoServidor],
       ['App', chequeoApp],
       ['PM2', chequeoPM2],
+      ['Web', chequeoWeb],
       ['Base de datos', chequeoBaseDeDatos],
       ['Gemini', chequeoGemini],
       ['Telegram', () => chequeoTelegram({ bot, chatIds: ctx.chatIds })],

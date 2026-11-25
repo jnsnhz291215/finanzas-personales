@@ -7,6 +7,7 @@ import {
   lineaFinal,
   formatearEstado,
   revisarVariables,
+  revisarWeb,
   ejecutarChequeo
 } from './statusBot.js';
 import { motivoFalloGemini } from './gemini.js';
@@ -121,5 +122,22 @@ describe('estado en lenguaje natural', () => {
     for (const t of ['estado', 'status', 'todo bien?', '¿Está todo bien?']) expect(detectarEstado(t)).toBe(true);
     expect(detectarEstado('estado de cuenta')).toBe(false);
     expect(detectarEstado('almuerzo 5500')).toBe(false);
+  });
+});
+
+describe('sección Web', () => {
+  const deshabilitada = { habilitada: false, host: '127.0.0.1', puerto: 3005, bloqueo: null };
+  const habilitada = { habilitada: true, host: '127.0.0.1', puerto: 3005, bloqueo: null };
+
+  test('deshabilitada funciona; escuchando en localhost funciona', () => {
+    expect(revisarWeb(deshabilitada, null)[0]).toMatchObject({ estado: 'ok', texto: expect.stringMatching(/Deshabilitada/) });
+    expect(revisarWeb(habilitada, { host: '127.0.0.1', puerto: 3005 })[0].texto).toBe('Escuchando en 127.0.0.1:3005');
+  });
+
+  test('escuchar fuera de localhost, estar bloqueada o no escuchar es un error', () => {
+    expect(revisarWeb(habilitada, { host: '::', puerto: 3005 })[0].estado).toBe('fallo');
+    expect(revisarWeb(habilitada, { host: '192.168.1.5', puerto: 3005 })[0].texto).toMatch(/fuera de localhost/);
+    expect(revisarWeb({ ...habilitada, bloqueo: 'falta ADMIN_PASSWORD' }, null)[0].estado).toBe('fallo');
+    expect(revisarWeb(habilitada, null)[0].estado).toBe('fallo');
   });
 });

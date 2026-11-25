@@ -136,6 +136,10 @@ Configurar:
 NODE_ENV=production
 PORT=3005
 
+# Web: por defecto no se expone nada por HTTP (solo el bot). Ver la nota "La web está deshabilitada" más abajo
+WEB_HABILITADA=false
+HOST=127.0.0.1
+
 # Motor de base de datos: sqlite (por defecto) o mariadb. En el servidor: mariadb
 DB_ENGINE=mariadb
 
@@ -164,6 +168,14 @@ FINANZAS_STORAGE=/home/basalto/apps/finanzas-juan/storage
 > usuario ni contraseña. Los datos de SQLite y de MariaDB son independientes: cambiar de motor no copia los datos.
 > `/reset` y `/update` además esperan `tar` (y, con MariaDB, `mysqldump` y `mysql`) en el PATH del proceso; `/update` y `update.sh`
 > avisan si PM2 no los ve.
+
+> **La web está deshabilitada por defecto.** Con `WEB_HABILITADA=false` (o sin la variable) el servidor no levanta Express ni escucha
+> ningún puerto: solo corren el bot de Telegram y las tareas internas (limpieza de `tmp/`, chequeo de arranque). Con
+> `WEB_HABILITADA=true` Express escucha **solo en `HOST`** (por defecto `127.0.0.1`, nunca `0.0.0.0` ni `::`; si los pones, la web no
+> arranca) en el puerto `PORT`. La web tampoco arranca si falta `ADMIN_PASSWORD` o sigue siendo `cambiar123`; el motivo queda en el
+> log. `/status` muestra una sección **Web** ("Deshabilitada" o "Escuchando en 127.0.0.1:3005") y marca error si algo escucha fuera de
+> localhost. `SERVIR_FRONTEND` solo importa cuando la web está habilitada. Si necesitas la web desde internet, ponla detrás de un túnel
+> (Cloudflare Tunnel) que apunte a `http://127.0.0.1:PUERTO` en el mismo equipo.
 
 ### 5. Instalar Dependencias
 
@@ -214,7 +226,9 @@ pm2 status
 pm2 logs finanzas-personales
 ```
 
-### 8. Configurar Cloudflare Tunnel
+### 8. Configurar Cloudflare Tunnel (solo si habilitas la web)
+
+Con `WEB_HABILITADA=false` (por defecto) no hay nada que exponer y este paso no hace falta.
 
 Agregar la ruta al túnel existente:
 
@@ -240,7 +254,7 @@ sudo systemctl restart cloudflared
 pm2 restart cloudflare-tunnel
 ```
 
-### 9. Primer Acceso
+### 9. Primer Acceso (solo con la web habilitada)
 
 1. Abrir en el navegador: `https://finanzas.tudominio.cl`
 2. Iniciar sesión con:
@@ -633,6 +647,7 @@ máximo de 8 segundos; si se pasa, esa sección sale como "No respondió".
 | --- | --- |
 | Servidor | sistema operativo y versión, equipo, tiempo encendido (equipo y app), Node y `NODE_ENV`, memoria libre y disco de la partición del storage |
 | App | versión (hash corto y título), rama, cambios locales sin commit y si el remoto tiene commits nuevos (`git fetch` con 6 s y `GIT_TERMINAL_PROMPT=0`; si el fetch falla es un Aviso, no un error) |
+| Web | "Deshabilitada" o "Escuchando en 127.0.0.1:PUERTO"; error si la web está bloqueada, no escucha o escucha fuera de localhost |
 | PM2 | si corre bajo PM2 (variable `pm_id`), nombre y reinicios |
 | Base de datos | motor, conexión, usuario conectado, nombre y versión (con SQLite, tamaño del archivo), tablas principales y conteo de movimientos, cuentas y cuotas activas |
 | Gemini | si hay `GEMINI_API_KEY`, una llamada mínima con su latencia; si falla, el motivo (clave, cuota, red). **No cuenta para el límite de 30 por hora** |
