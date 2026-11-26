@@ -639,8 +639,9 @@ El bot se usa casi sin comandos: escribe como hablas o manda un archivo. Un enru
     (nunca lo cambia sin que toques el botón).
   Si la cuenta tiene otro titular, la cartola sigue el flujo de tarjeta ajena (marcas cuáles cargos son tuyos); varias cartolas ajenas
   en un mismo envío se atienden de a una. Las **fotos** de cartola se leen con OCR local: las tablas salen peor que en un PDF, así que
-  se muestra una vista previa antes de importar, y una foto sin caption solo se toma como cartola si es del mismo álbum o va justo
-  después de un texto que lo diga. Al importar, los movimientos que ya estaban en la cuenta (misma fecha, tipo, monto y descripción,
+  se muestra una vista previa antes de importar, y en un álbum el bot espera unos segundos a tener todas las fotos y el caption vale para todas, también para las que llegaron antes
+  de la que lo trae; una foto suelta sin caption solo se toma como cartola si va justo después de un texto que lo diga. Si la cuenta no
+  tiene titular y el texto menciona uno, ofrece completarlo con un botón. Al importar, los movimientos que ya estaban en la cuenta (misma fecha, tipo, monto y descripción,
   por ejemplo de una cartola que se traslapa con otra) se descartan y el bot indica cuántos fueron.
 - **Cuenta:** el gasto usa la cuenta que mencionas (por ejemplo "débito"); si no mencionas ninguna, la última cuenta con que
   registraste un gasto a mano, y si no hay, la cuenta activa más antigua. No se pregunta antes: el botón *Cambiar cuenta* de la

@@ -596,8 +596,50 @@ function configurarComandos() {
  * Configura los manejadores de mensajes y callbacks
  */
 function configurarManejadores() {
+  // Álbumes de fotos que se están juntando: "chatId_grupo" -> { mensajes, timer }
+  const albumesEnCurso = new Map();
+  const ESPERA_ALBUM_MS = 3000;
+
+  /**
+   * Junta las fotos de un álbum (llegan como mensajes sueltos y el caption solo viene en una). Pasados unos segundos desde
+   * la última, si algún caption habla de cartolas el caption vale para todas, también para las que llegaron antes; si no,
+   * cada foto sigue su camino de siempre. Devuelve true si tomó el mensaje.
+   */
+  function juntarAlbum(msg) {
+    const clave = `${msg.chat.id}_${msg.media_group_id}`;
+    let album = albumesEnCurso.get(clave);
+    if (!album) {
+      album = { mensajes: [], timer: null };
+      albumesEnCurso.set(clave, album);
+    }
+    album.mensajes.push(msg);
+    clearTimeout(album.timer);
+    album.timer = setTimeout(async () => {
+      albumesEnCurso.delete(clave);
+      const mensajes = album.mensajes.sort((a, b) => a.message_id - b.message_id);
+      const caption = mensajes.find(m => m.caption)?.caption ?? null;
+      const esCartola = cartolas?.esFotoDeCartola(msg.chat.id, { caption, mediaGroupId: msg.media_group_id });
+      for (const m of mensajes) {
+        try {
+          await procesarMensaje(esCartola ? { ...m, caption } : m);
+        } catch (error) {
+          console.error('Error en el manejador de mensajes:', error.code ?? error.name);
+          try {
+            await enviar(m.chat.id, 'Ocurrió un error al procesar ese mensaje. Inténtalo de nuevo.');
+          } catch {
+            // si ni el aviso sale, no hay más que hacer
+          }
+        }
+      }
+    }, ESPERA_ALBUM_MS);
+    return true;
+  }
+
   // Manejador de mensajes de texto (registro de transacciones)
   bot.on('message', async (msg) => {
+    // Fotos de un álbum: se junta el álbum completo antes de decidir si son cartolas o comprobantes
+    if (msg.photo && msg.media_group_id && esChatAutorizado(msg.chat.id) && juntarAlbum(msg)) return;
+
     const hasta = secuenciaPreguntas;
     try {
       await procesarMensaje(msg);

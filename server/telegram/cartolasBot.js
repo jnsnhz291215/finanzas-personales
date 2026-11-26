@@ -17,6 +17,7 @@
 
 import { analizarCartola, analizarPDF, analizarTexto, calcularHashBuffer, cartolaYaImportada, registrarImportacion } from '../cartolas.js';
 import { listarCuentasConBanco, guardarDigitosCuenta } from '../gestion.js';
+import { fijarTitular } from '../resumenDatos.js';
 import { listarCompras } from '../cuotas.js';
 import { calzarConCartola, normalizar } from './cuotas.js';
 import { guardarTemporal, confirmarTemporal, borrarTemporal } from '../storage.js';
@@ -496,6 +497,8 @@ export function crearCartolas(ctx) {
       item.notaContexto = cruce.estado === 'coincide'
         ? `Cartola de ${cuenta.nombre}${digitos ? ` ****${digitos}` : ''}, los dígitos coinciden`
         : `Cartola de ${cuenta.nombre}${digitos ? ` ****${digitos}` : ''}, según tu mensaje`;
+      // La cuenta no tiene titular y el texto menciona uno: se ofrece completarlo
+      if (item.contexto.titular && !cuenta.titular) return (item.duda = { tipo: 'titular', cruce: { cuenta } });
       return null;
     }
     if (cruce.estado === 'no_coincide') return (item.duda = { tipo: 'conflicto', cruce });
@@ -513,7 +516,13 @@ export function crearCartolas(ctx) {
 
     const botones = [];
     let texto;
-    if (tipo === 'conflicto') {
+    if (tipo === 'titular') {
+      texto = `<b>${esc(cruce.cuenta.nombre)}</b> no tiene titular y dices que es de <b>${esc(c.titular)}</b>. ¿Se lo agrego?`;
+      botones.push([
+        { text: `Sí, titular ${c.titular}`.slice(0, 50), callback_data: `cxh_${key}` },
+        { text: 'No', callback_data: `cxk_${key}` }
+      ]);
+    } else if (tipo === 'conflicto') {
       texto =
         `Dices que la cartola es de <b>${esc(cruce.cuenta.nombre)}</b> (****${esc(c.digitos ?? cruce.cuenta.ultimos4 ?? '')}), ` +
         `pero el archivo trae ****${esc(delArchivo ?? '')}${cruce.otraCuenta ? ` (${esc(cruce.otraCuenta.nombre)})` : ''}. ¿Cuál uso?`;
@@ -595,6 +604,13 @@ export function crearCartolas(ctx) {
         const cuenta = await crearCuentaDeContexto(item, cuentas);
         fijarCuentaDeContexto(item, cuenta, 'texto');
         cierre = `Creé la cuenta <b>${esc(cuenta.nombre)}</b>${cuenta.titular ? ` (titular ${esc(cuenta.titular)})` : ''}.`;
+      } else if (accion === 'h') {
+        const cuenta = cruce.cuenta;
+        const guardado = await fijarTitular(cuenta.id, item.contexto.titular);
+        if (guardado) cuenta.titular = item.contexto.titular;
+        cierre = guardado ? `Listo: ${esc(cuenta.nombre)} ahora tiene titular ${esc(item.contexto.titular)}.` : 'No pude guardar el titular.';
+      } else if (accion === 'k') {
+        cierre = 'Entendido, dejo la cuenta como está.';
       } else if (accion === 'v') {
         const cuenta = item.deteccion?.cuenta;
         const guardado = cuenta ? await guardarDigitosCuenta(cuenta.id, 'cuenta', item.contexto.digitos) : false;
@@ -995,7 +1011,7 @@ export function crearCartolas(ctx) {
 
     // ---- Cruce del texto con las cuentas ----
 
-    if ((m = data.match(/^cx([tcnuvo])_(.+)$/))) {
+    if ((m = data.match(/^cx([tcnuvohk])_(.+)$/))) {
       await resolverContexto(cb, chatId, m[1], m[2]);
       return true;
     }
