@@ -1,0 +1,736 @@
+/**
+ * Lote de una tarjeta ajena: la cartola de la tarjeta de crédito de otra persona (por ejemplo la tía
+ * Valeska, con la que Juan paga un Mac en 12 cuotas) y la captura del comprobante de la transferencia
+ * que Juan le hace cada mes. El bot lo entiende sin comandos:
+ *
+ *  1. La cartola se asocia a la cuenta con ese titular (por los 4 dígitos o el banco); si no existe,
+ *     pregunta si la crea con el titular de la compra en cuotas.
+ *  2. En la cartola se reconoce la cuota activa (número "06/12", descripción o monto) y solo se avanza
+ *     el contador si corresponde: una cuota que ya estaba registrada no se duplica.
+ *  3. Los demás cargos son de la otra persona. Se listan en UN mensaje y Juan marca cuáles son suyos
+ *     (botones o "el 2 y el 5 son míos"). Solo esos se guardan como gastos suyos, en esa tarjeta; los
+ *     demás NO se guardan (se ignoran), así no cuentan en sus totales.
+ *  4. La captura del comprobante se lee con OCR local y se registra como el pago de la cuota (monto,
+ *     fecha), ligado a la compra y a la cuenta de Juan de la que salió. Es el único registro del gasto:
+ *     el cargo de la cartola no se guarda aparte, así que no se cuenta dos veces.
+ *  5. Si el monto del comprobante no calza con la cuota, avisa y pregunta.
+ *  6. Al final, un resumen corto.
+ *
+ * Privacidad: el OCR es local y el texto leído no se guarda ni se manda a ningún servicio. Nada de la
+ * cartola va a Gemini desde aquí.
+ */
+
+import { listarCompras, obtenerCompra, registrarPagoCuota } from '../cuotas.js';
+import { registrarImportacion, buscarUltimos4 } from '../cartolas.js';
+import { confirmarTemporal, borrarTemporal } from '../storage.js';
+import { leerTextoDeImagen } from '../ocr.js';
+import { parsearComprobante, mencionaNombre } from './comprobante.js';
+import {
+  esTitularPropio,
+  comprasDeTitular,
+  acreedoresDe,
+  reconocerCuota,
+  evaluarNumeroCuota,
+  montosCalzan,
+  parsearSeleccion,
+  lineaCargo,
+  textoResumenLote
+} from './terceros.js';
+import { fechaHoySantiago, formatearFechaCL } from './fechas.js';
+
+const ESPERA_CARTOLA_SOLO_FOTO_MS = 25 * 1000;
+const ESPERA_CARTOLA_CON_ARCHIVO_MS = 110 * 1000;
+const VIDA_LOTE_MS = 30 * 60 * 1000;
+const MAX_BOTONES = 24;
+
+async function consulta() {
+  return (await import('../db.js')).query;
+}
+
+/** Cuentas activas con titular (para reconocer la tarjeta ajena y la cuenta de origen de un pago) */
+async function cuentasActivas() {
+  const query = await consulta();
+  const [filas] = await query(
+    'SELECT id, nombre, banco, tipo, ultimos4, ultimos4_cuenta, titular FROM cuentas WHERE activa = 1 ORDER BY nombre'
+  );
+  return filas.map(c => ({ ...c, id: Number(c.id) }));
+}
+
+export function crearLoteTerceros(ctx) {
+  const { bot, enviar, editar, responderCallback, esc, formatearMonto, guardarRespaldo, eliminarRespaldo, descargarBuffer, resolverCuentaPago } = ctx;
+  const vincular = ctx.vincularRegistro ?? (async () => {});
+
+  const dinero = (n) => `$${formatearMonto(n)}`;
+  // Un lote por chat: lo que llegó (cartola, comprobante) y en qué paso va cada parte
+  const lotes = new Map();
+  // Cartolas que esperan saber de quién son: clave -> { chatId, item, cuentas, candidato }
+  const preguntas = new Map();
+  let contador = 0;
+
+  function nuevoLote(chatId) {
+    const anterior = lotes.get(chatId);
+    if (anterior) {
+      clearTimeout(anterior.timerEspera);
+      clearTimeout(anterior.timerVida);
+    }
+    const lote = {
+      chatId,
+      titular: null,
+      cuenta: null,
+      compra: null,
+      item: null,
+      cuota: null,           // { alias, total, numero, accion, montoCargo, fechaCargo, estado }
+      comprobante: null,     // { archivo, monto, fecha, compraId, cuentaId, mensajeUsuarioId }
+      confirmacion: null,    // pago esperando "Guardar"
+      pagoEstado: 'sin',     // sin | esperando | confirmando | registrado | cancelado | duplicada
+      seleccionEstado: 'sin',// sin | pendiente | listo
+      lista: null,           // { messageId, otros: [{ mov }], elegidos: Set }
+      gastos: 0,
+      archivoVisto: anterior?.archivoVisto ?? 0,
+      comprobanteEn: 0,
+      timerEspera: null,
+      timerVida: null
+    };
+    lote.timerVida = setTimeout(() => descartarLote(chatId), VIDA_LOTE_MS);
+    lote.timerVida.unref?.();
+    lotes.set(chatId, lote);
+    return lote;
+  }
+
+  /** El lote vence: lo que quedó sin guardar se limpia (archivo temporal de la cartola y respaldo del comprobante) */
+  async function descartarLote(chatId) {
+    const lote = lotes.get(chatId);
+    if (!lote) return;
+    lotes.delete(chatId);
+    clearTimeout(lote.timerEspera);
+    if (lote.seleccionEstado === 'pendiente' && lote.item?.tmp) await borrarTemporal(lote.item.tmp);
+    if (lote.comprobante?.archivo && ['esperando', 'confirmando'].includes(lote.pagoEstado)) {
+      await eliminarRespaldo(lote.comprobante.archivo);
+    }
+  }
+
+  const obtenerLote = (chatId) => lotes.get(chatId) ?? null;
+
+  /** cartolasBot avisa cuando llega un archivo: así el comprobante espera a que la cartola se analice */
+  function avisarArchivo(chatId) {
+    const lote = obtenerLote(chatId) ?? nuevoLote(chatId);
+    lote.archivoVisto = Date.now();
+  }
+
+  // -------------------------------------------------------------------------
+  // Cartola
+  // -------------------------------------------------------------------------
+
+  /**
+   * cartolasBot ofrece aquí cada cartola analizada antes de preguntar la cuenta. Devuelve true si la
+   * tomó (es de otra persona) y false si es una cartola normal de Juan.
+   * `ofrecerNormal(item)` devuelve la cartola al flujo de siempre.
+   */
+  async function procesarCartola(chatId, item, cuentas, ofrecerNormal) {
+    try {
+      const compras = await listarCompras();
+      const todas = await cuentasActivas();
+      const detectada = item.cuentaSugerida ? todas.find(c => c.id === Number(item.cuentaSugerida.id)) : null;
+
+      // a) La cuenta detectada por los 4 dígitos o el banco tiene otro titular: es de esa persona
+      if (detectada) {
+        if (esTitularPropio(detectada.titular)) return false;
+        const compra = comprasDeTitular(compras, detectada.titular)[0] ?? null;
+        await iniciarSeleccion(chatId, item, detectada, compra, detectada.titular);
+        return true;
+      }
+
+      // b) Sin cuenta conocida: solo se interviene si en la cartola está la cuota de una compra en cuotas
+      let mejor = null;
+      for (const compra of compras) {
+        const r = reconocerCuota(item.movimientos, compra);
+        if (r && (!mejor || r.puntaje > mejor.r.puntaje)) mejor = { compra, r };
+      }
+      if (!mejor) return false;
+
+      const key = `${chatId}_${Date.now()}_${contador++}`;
+      preguntas.set(key, { chatId, item, cuentas, compra: mejor.compra, ofrecerNormal });
+      setTimeout(() => preguntas.delete(key), 10 * 60 * 1000).unref?.();
+      const cuotaTxt = mejor.r.numero ? ` (cuota ${mejor.r.numero} de ${mejor.compra.total_cuotas})` : '';
+      await enviar(chatId,
+        `Esta cartola trae la cuota de <b>${esc(mejor.compra.alias)}</b>${cuotaTxt}, que le pagas a <b>${esc(mejor.compra.acreedor)}</b>. ` +
+        `¿Es la tarjeta de ${esc(mejor.compra.acreedor)}? Si es así, creo una cuenta con titular ${esc(mejor.compra.acreedor)} ` +
+        'para guardar ahí los cargos que sean tuyos.',
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: `Sí, crear cuenta de ${mejor.compra.acreedor}`.slice(0, 60), callback_data: `lcs_${key}` }],
+              [{ text: 'Es mía', callback_data: `lcn_${key}` }, { text: 'Cancelar', callback_data: `lcx_${key}` }]
+            ]
+          }
+        }
+      );
+      return true;
+    } catch (error) {
+      console.error('Error en la cartola de una tarjeta ajena:', error.code ?? error.name);
+      return false;
+    }
+  }
+
+  /** Crea la cuenta de la tarjeta ajena (crédito, con el titular) y sigue con la cartola */
+  async function crearCuentaYSeguir(chatId, pregunta) {
+    const { item, compra } = pregunta;
+    const query = await consulta();
+    const digitos = (item.ultimos4 ?? []).find(u => u.tipo === 'tarjeta')?.digitos ?? null;
+    const [r] = await query(
+      `INSERT INTO cuentas (nombre, tipo, banco, ultimos4, titular) VALUES (?, 'tarjeta_credito', ?, ?, ?)`,
+      [`Tarjeta de ${compra.acreedor}`.slice(0, 150), item.banco ?? null, digitos, compra.acreedor]
+    );
+    const cuenta = { id: Number(r.insertId), nombre: `Tarjeta de ${compra.acreedor}`, titular: compra.acreedor };
+    await iniciarSeleccion(chatId, item, cuenta, compra, compra.acreedor);
+  }
+
+  /** Reconoce la cuota, arma la lista de los demás cargos y la manda en un solo mensaje */
+  async function iniciarSeleccion(chatId, item, cuenta, compra, titular) {
+    const previo = obtenerLote(chatId);
+    const comprobante = previo?.comprobante ?? null;
+    const lote = nuevoLote(chatId);
+    Object.assign(lote, { titular, cuenta, compra, item });
+    if (comprobante) {
+      lote.comprobante = comprobante;
+      lote.pagoEstado = previo.pagoEstado;
+      lote.comprobanteEn = previo.comprobanteEn;
+    }
+
+    // La cuota de la compra dentro de la cartola
+    let indiceCuota = null;
+    if (compra) {
+      const r = reconocerCuota(item.movimientos, compra);
+      if (r) {
+        const mov = item.movimientos[r.indice];
+        const eva = evaluarNumeroCuota(compra, r.numero);
+        indiceCuota = r.indice;
+        lote.cuota = {
+          alias: compra.alias,
+          total: Number(compra.total_cuotas),
+          numero: eva.numero,
+          accion: eva.accion,
+          esperada: eva.esperada ?? null,
+          montoCargo: Number(mov.monto),
+          fechaCargo: String(mov.fecha).slice(0, 10),
+          estado: eva.accion === 'duplicada' ? 'duplicada' : 'pendiente'
+        };
+      }
+    }
+
+    // Los demás cargos (los abonos no son gastos de nadie)
+    const otros = item.movimientos
+      .map((mov, i) => ({ mov, i }))
+      .filter(({ mov, i }) => mov.tipo === 'cargo' && i !== indiceCuota);
+    lote.lista = { messageId: null, otros, elegidos: new Set() };
+
+    const encabezado = [`<b>Cartola de ${esc(titular)}</b>`];
+    if (lote.cuota) {
+      encabezado.push(
+        `Reconocí la cuota de <b>${esc(lote.cuota.alias)}</b>: cuota ${lote.cuota.numero} de ${lote.cuota.total} ` +
+        `(${dinero(lote.cuota.montoCargo)}, ${formatearFechaCL(lote.cuota.fechaCargo)}). ` +
+        (lote.cuota.accion === 'duplicada'
+          ? 'Esa cuota ya estaba registrada: no la duplico.'
+          : lote.cuota.accion === 'salto'
+            ? `Ojo: llevas ${compra.cuotas_pagadas} pagadas, así que la que toca es la ${lote.cuota.esperada}.`
+            : 'Se registra con tu transferencia, no como gasto aparte.')
+      );
+    } else if (compra) {
+      encabezado.push(`No encontré la cuota de ${esc(compra.alias)} en esta cartola.`);
+    }
+
+    if (otros.length === 0) {
+      await enviar(chatId, encabezado.join('\n') + '\n\nNo hay otros cargos que revisar.');
+      await finalizarCartola(chatId, []);
+    } else {
+      lote.seleccionEstado = 'pendiente';
+      await enviar(chatId, encabezado.join('\n')); // el detalle va en el mensaje de la lista
+      // Telegram acepta ~4.000 caracteres: si la lista es muy larga se corta (los que no se ven no se pueden marcar)
+      const lineas = otros.map(({ mov }, n) => esc(lineaCargo(n + 1, mov)));
+      let cuerpo = '';
+      let mostrados = 0;
+      for (const linea of lineas) {
+        if (cuerpo.length + linea.length > 3000) break;
+        cuerpo += `${linea}\n`;
+        mostrados++;
+      }
+      if (mostrados < lineas.length) cuerpo += `... y ${lineas.length - mostrados} más que no se muestran (se tratan como de ${esc(titular)}).`;
+      lote.lista.otros = otros.slice(0, mostrados);
+      const texto =
+        `Estos cargos son de <b>${esc(titular)}</b> por defecto. ¿Cuáles son tuyos?\n` +
+        `Toca los números${otros.length > MAX_BOTONES ? ' (los primeros ' + MAX_BOTONES + ')' : ''} o responde a este mensaje, por ejemplo «el 2 y el 5 son míos». ` +
+        'Solo los que marques se guardan como gastos tuyos en esa tarjeta; los demás no se guardan y no cuentan en tus totales.\n\n' +
+        cuerpo;
+      const enviado = await enviar(chatId, texto, tecladoLista(lote));
+      lote.lista.messageId = enviado?.message_id ?? null;
+    }
+
+    if (lote.comprobante && lote.pagoEstado === 'esperando') await resolverPago(chatId);
+  }
+
+  function tecladoLista(lote) {
+    const { otros, elegidos } = lote.lista;
+    const botones = otros.slice(0, MAX_BOTONES).map((_, n) => ({
+      text: elegidos.has(n + 1) ? `${n + 1} mío` : `${n + 1}`,
+      callback_data: `lct_${n + 1}`
+    }));
+    const filas = [];
+    for (let i = 0; i < botones.length; i += 4) filas.push(botones.slice(i, i + 4));
+    filas.push([
+      { text: `Guardar mi selección (${elegidos.size})`, callback_data: 'lcg_s' },
+      { text: 'Ninguno es mío', callback_data: 'lc0_s' }
+    ]);
+    return { reply_markup: { inline_keyboard: filas } };
+  }
+
+  /** Guarda como gastos de Juan solo los cargos elegidos (números de la lista) y registra la importación */
+  async function finalizarCartola(chatId, elegidos) {
+    const lote = obtenerLote(chatId);
+    if (!lote?.item) return;
+    const { item, cuenta, lista } = lote;
+
+    try {
+      const movimientos = elegidos.map(n => lista.otros[n - 1].mov);
+      const ruta = await confirmarTemporal(item.tmp, 'cartolas', { prefijo: 'telegram_' });
+      const { importados, archivoId } = await registrarImportacion({
+        archivo: ruta,
+        hash: item.hash,
+        cuentaId: cuenta.id,
+        movimientos
+      });
+      await vincular(chatId, [item.mensajeUsuarioId, lista?.messageId], 'importacion', archivoId);
+      lote.gastos = importados;
+      lote.seleccionEstado = 'listo';
+    } catch (error) {
+      console.error('Error al guardar la cartola de una tarjeta ajena:', error.code ?? error.name);
+      lote.seleccionEstado = 'listo';
+      await enviar(chatId, 'No pude guardar esa cartola. El archivo sigue pendiente; envíalo de nuevo.');
+      return cerrarSiListo(chatId);
+    }
+
+    // Sin comprobante: se ofrece registrar la cuota con el monto de la cartola
+    if (lote.cuota && lote.cuota.accion !== 'duplicada' && !lote.comprobante && lote.pagoEstado === 'sin') {
+      lote.pagoEstado = 'confirmando';
+      lote.confirmacion = { tipo: 'sin_comprobante' };
+      const numero = lote.cuota.accion === 'salto' ? lote.cuota.esperada : lote.cuota.numero;
+      await enviar(chatId,
+        `No recibí el comprobante de tu transferencia a ${esc(lote.titular)}. ¿Registro la cuota ${numero} de ${lote.cuota.total} ` +
+        `de ${esc(lote.cuota.alias)} (${dinero(lote.cuota.montoCargo)}) ahora?`,
+        {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: 'Sí, registrar', callback_data: 'lcr_s' },
+              { text: 'No ahora', callback_data: 'lcr_n' }
+            ]]
+          }
+        }
+      );
+    }
+    await cerrarSiListo(chatId);
+  }
+
+  // -------------------------------------------------------------------------
+  // Comprobante (captura de la transferencia)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Foto sin texto: se lee con OCR local. Si es el comprobante de una transferencia a la persona de una
+   * compra en cuotas, queda como el pago de la cuota. Devuelve true si la atendió; false deja el flujo
+   * normal de fotos.
+   */
+  async function manejarFoto(msg) {
+    const chatId = msg.chat.id;
+    if (!msg.photo || msg.caption) return false;
+
+    try {
+      const compras = await listarCompras();
+      if (compras.length === 0) return false;
+
+      const foto = msg.photo[msg.photo.length - 1];
+      const texto = await leerTextoDeImagen(await descargarBuffer(foto.file_id));
+      const lectura = parsearComprobante(texto);
+      if (!lectura.esTransferencia) return false;
+
+      // A qué compra corresponde: la persona nombrada en el comprobante; si no, la cuota con ese monto
+      let candidatas = compras.filter(c => mencionaNombre(texto, c.acreedor));
+      if (candidatas.length === 0) candidatas = compras.filter(c => montosCalzan(c.monto_cuota, lectura.monto));
+      if (candidatas.length > 1) candidatas = candidatas.filter(c => montosCalzan(c.monto_cuota, lectura.monto));
+      // Si no se puede decidir, el flujo normal pregunta de cuál compra es
+      if (candidatas.length !== 1) return false;
+      const compra = candidatas[0];
+
+      // Cuenta de Juan de la que salió: por los dígitos o el banco que muestra el comprobante
+      const cuentas = await cuentasActivas();
+      const digitos = buscarUltimos4(texto).map(u => u.digitos);
+      const origen = cuentas.find(c => digitos.includes(c.ultimos4) || digitos.includes(c.ultimos4_cuenta)) ?? null;
+
+      const archivo = await guardarRespaldo(foto.file_id, `comprobante_${Date.now()}.jpg`, 'respaldo_cuota_');
+
+      const lote = obtenerLote(chatId) ?? nuevoLote(chatId);
+      lote.comprobante = {
+        archivo,
+        monto: lectura.monto,
+        fecha: lectura.fecha ?? fechaHoySantiago(),
+        fechaLeida: Boolean(lectura.fecha),
+        compraId: Number(compra.id),
+        cuentaId: origen?.id ?? null,
+        mensajeUsuarioId: msg.message_id
+      };
+      lote.pagoEstado = 'esperando';
+      lote.comprobanteEn = Date.now();
+
+      await enviar(chatId,
+        `Leí el comprobante: transferencia de ${dinero(lectura.monto)} para ${esc(compra.acreedor)} (${esc(compra.alias)}).` +
+        (lote.cuota && lote.item ? '' : ' Espero un momento por si mandaste también la cartola.')
+      );
+
+      if (lote.cuota) await resolverPago(chatId);
+      else armarEspera(chatId);
+      return true;
+    } catch (error) {
+      console.error('Error al leer un comprobante:', error.code ?? error.name);
+      return false;
+    }
+  }
+
+  /** Espera a que llegue y se analice la cartola; si no llega, el pago se confirma con lo que se leyó */
+  function armarEspera(chatId) {
+    const lote = obtenerLote(chatId);
+    if (!lote) return;
+    clearTimeout(lote.timerEspera);
+    lote.timerEspera = setTimeout(async () => {
+      const l = obtenerLote(chatId);
+      if (!l || l.pagoEstado !== 'esperando') return;
+      const hayArchivo = l.archivoVisto && Date.now() - l.archivoVisto < ESPERA_CARTOLA_CON_ARCHIVO_MS;
+      if (!l.cuota && hayArchivo && Date.now() - l.comprobanteEn < ESPERA_CARTOLA_CON_ARCHIVO_MS) {
+        armarEspera(chatId);
+        return;
+      }
+      await resolverPago(chatId);
+    }, ESPERA_CARTOLA_SOLO_FOTO_MS);
+    lote.timerEspera.unref?.();
+  }
+
+  /** Presenta el pago de la cuota para confirmar (o avisa del descuadre de montos y pregunta) */
+  async function resolverPago(chatId) {
+    const lote = obtenerLote(chatId);
+    if (!lote?.comprobante || lote.pagoEstado !== 'esperando') return;
+    clearTimeout(lote.timerEspera);
+
+    const c = lote.comprobante;
+    const compra = await obtenerCompra(c.compraId);
+    if (!compra || compra.terminada || Number(compra.activa) === 0) {
+      lote.pagoEstado = 'cancelado';
+      await eliminarRespaldo(c.archivo);
+      await enviar(chatId, 'Esa compra en cuotas ya no está en curso, así que no registré el pago.');
+      return cerrarSiListo(chatId);
+    }
+
+    // Qué cuota es: la de la cartola si la hay; si no, la siguiente a la última pagada
+    const delLote = lote.cuota && lote.cuota.alias === compra.alias ? lote.cuota.numero : null;
+    const eva = evaluarNumeroCuota(compra, delLote);
+    if (eva.accion === 'duplicada') {
+      lote.pagoEstado = 'duplicada';
+      if (lote.cuota) lote.cuota.estado = 'duplicada';
+      await eliminarRespaldo(c.archivo);
+      await enviar(chatId,
+        `La cuota ${eva.numero} de ${esc(compra.alias)} ya estaba registrada: no la dupliqué ni la conté otra vez como gasto.`
+      );
+      return cerrarSiListo(chatId);
+    }
+    const numero = eva.accion === 'salto' ? eva.esperada : eva.numero;
+    if (numero > Number(compra.total_cuotas)) {
+      lote.pagoEstado = 'cancelado';
+      await eliminarRespaldo(c.archivo);
+      await enviar(chatId, `${esc(compra.alias)} ya tiene pagadas todas sus cuotas.`);
+      return cerrarSiListo(chatId);
+    }
+
+    // Cuenta de la que salió el dinero
+    const cuentas = await cuentasActivas();
+    let origen = cuentas.find(x => x.id === c.cuentaId) ?? null;
+    const porDefecto = !origen;
+    if (!origen) {
+      const def = await resolverCuentaPago(null);
+      origen = def ? cuentas.find(x => x.id === Number(def.id)) ?? def : null;
+    }
+    if (!origen) {
+      lote.pagoEstado = 'cancelado';
+      await eliminarRespaldo(c.archivo);
+      await enviar(chatId, 'No tienes cuentas activas desde las que registrar el pago. Crea una con /savecard.');
+      return cerrarSiListo(chatId);
+    }
+
+    const montoCuota = Number(compra.monto_cuota);
+    const montoCargo = lote.cuota?.montoCargo ?? null;
+    const descuadre = !montosCalzan(c.monto, montoCuota) || (montoCargo !== null && !montosCalzan(c.monto, montoCargo));
+
+    lote.confirmacion = { tipo: 'pago', numero, compraId: compra.id, cuentaId: Number(origen.id), montoCuota, montoComprobante: c.monto };
+    lote.pagoEstado = 'confirmando';
+
+    const lineas = [
+      `<b>Pago a ${esc(compra.acreedor)}</b>`,
+      `Cuota ${numero} de ${compra.total_cuotas} de <b>${esc(compra.alias)}</b>`,
+      `Comprobante: ${dinero(c.monto)} el ${formatearFechaCL(c.fecha)}${c.fechaLeida ? '' : ' (no pude leer la fecha: pongo hoy)'}`,
+      `Sale de: ${esc(origen.nombre)}${porDefecto ? ' (tu cuenta por defecto: el comprobante no la mostraba)' : ''}`
+    ];
+    if (eva.accion === 'salto') lineas.push(`La cartola muestra otra cuota, pero llevas ${compra.cuotas_pagadas} pagadas: registro la ${numero}.`);
+    if (descuadre) {
+      lineas.push(
+        `<b>El monto no calza:</b> el comprobante dice ${dinero(c.monto)}, la cuota de ${esc(compra.alias)} es de ${dinero(montoCuota)}` +
+        (montoCargo !== null && !montosCalzan(montoCargo, montoCuota) ? ` y la cartola muestra ${dinero(montoCargo)}` : '') +
+        '. ¿Con cuál monto lo registro?'
+      );
+    }
+    lineas.push('Es el único registro del gasto: no se cuenta otra vez.');
+
+    const botones = descuadre
+      ? [
+          [{ text: `Registrar ${dinero(c.monto)} (comprobante)`.slice(0, 60), callback_data: 'lcp_c' }],
+          ...(montosCalzan(c.monto, montoCuota) ? [] : [[{ text: `Registrar ${dinero(montoCuota)} (la cuota)`.slice(0, 60), callback_data: 'lcp_q' }]]),
+          [{ text: 'Cancelar', callback_data: 'lcp_x' }]
+        ]
+      : [[{ text: 'Guardar', callback_data: 'lcp_c' }, { text: 'Cancelar', callback_data: 'lcp_x' }]];
+    await enviar(chatId, lineas.join('\n'), { reply_markup: { inline_keyboard: botones } });
+  }
+
+  /** Registra el pago: movimiento de la transferencia ligado a la compra, y avanza el contador una vez */
+  async function guardarPago(chatId, usarMonto, messageId = null) {
+    const lote = obtenerLote(chatId);
+    const conf = lote?.confirmacion;
+    if (!conf || conf.tipo !== 'pago') return false;
+
+    const compra = await obtenerCompra(conf.compraId);
+    if (!compra) return false;
+    // Revisión final contra duplicados: si mientras tanto se registró esa cuota, no se vuelve a sumar
+    if (evaluarNumeroCuota(compra, conf.numero).accion === 'duplicada') {
+      lote.pagoEstado = 'duplicada';
+      await eliminarRespaldo(lote.comprobante.archivo);
+      await enviar(chatId, `La cuota ${conf.numero} de ${esc(compra.alias)} ya estaba registrada: no la dupliqué.`);
+      await cerrarSiListo(chatId);
+      return true;
+    }
+
+    const monto = usarMonto === 'q' ? conf.montoCuota : conf.montoComprobante;
+    const { movimientoId } = await registrarPagoCuota({
+      compraId: compra.id,
+      numero: conf.numero,
+      monto,
+      cuentaId: conf.cuentaId,
+      fecha: lote.comprobante.fecha,
+      descripcion: `Cuota ${conf.numero}/${compra.total_cuotas} ${compra.alias} (${compra.acreedor})`,
+      archivoRespaldo: lote.comprobante.archivo
+    });
+    await vincular(chatId, [lote.comprobante.mensajeUsuarioId], 'pago_cuota', movimientoId);
+
+    lote.pagoEstado = 'registrado';
+    lote.confirmacion = null;
+    lote.cuotaRegistrada = { numero: conf.numero, total: Number(compra.total_cuotas), alias: compra.alias };
+    if (lote.cuota) lote.cuota.estado = 'registrada';
+    if (messageId) {
+      await editar(
+        `Pago registrado: cuota ${conf.numero} de ${compra.total_cuotas} de <b>${esc(compra.alias)}</b> ` +
+        `(${dinero(monto)} a ${esc(compra.acreedor)}). Respaldo adjunto.`,
+        { chat_id: chatId, message_id: messageId }
+      );
+    }
+    await cerrarSiListo(chatId);
+    return true;
+  }
+
+  /** Registra la cuota con el monto de la cartola cuando no hubo comprobante */
+  async function guardarPagoSinComprobante(chatId, messageId = null) {
+    const lote = obtenerLote(chatId);
+    if (!lote?.cuota || lote.confirmacion?.tipo !== 'sin_comprobante') return false;
+    const compra = await obtenerCompra(lote.compra.id);
+    const cuenta = await resolverCuentaPago(null);
+    if (!compra || !cuenta) return false;
+
+    const eva = evaluarNumeroCuota(compra, lote.cuota.accion === 'salto' ? lote.cuota.esperada : lote.cuota.numero);
+    if (eva.accion === 'duplicada') {
+      lote.pagoEstado = 'duplicada';
+      await enviar(chatId, `La cuota ${eva.numero} de ${esc(compra.alias)} ya estaba registrada: no la dupliqué.`);
+      return cerrarSiListo(chatId);
+    }
+    const { movimientoId } = await registrarPagoCuota({
+      compraId: compra.id,
+      numero: eva.numero,
+      monto: lote.cuota.montoCargo,
+      cuentaId: Number(cuenta.id),
+      fecha: fechaHoySantiago(),
+      descripcion: `Cuota ${eva.numero}/${compra.total_cuotas} ${compra.alias} (${compra.acreedor})`,
+      archivoRespaldo: null
+    });
+    await vincular(chatId, [], 'pago_cuota', movimientoId);
+    lote.pagoEstado = 'registrado';
+    lote.confirmacion = null;
+    lote.cuotaRegistrada = { numero: eva.numero, total: Number(compra.total_cuotas), alias: compra.alias };
+    lote.cuota.estado = 'registrada';
+    if (messageId) {
+      await editar(
+        `Cuota ${eva.numero} de ${compra.total_cuotas} de <b>${esc(compra.alias)}</b> registrada (${dinero(lote.cuota.montoCargo)}).`,
+        { chat_id: chatId, message_id: messageId }
+      );
+    }
+    await cerrarSiListo(chatId);
+    return true;
+  }
+
+  // -------------------------------------------------------------------------
+  // Resumen
+  // -------------------------------------------------------------------------
+
+  /** Cuando no queda nada pendiente, un resumen corto del lote (solo si hubo cartola) */
+  async function cerrarSiListo(chatId) {
+    const lote = obtenerLote(chatId);
+    if (!lote) return;
+    const pendiente = lote.seleccionEstado === 'pendiente' || ['esperando', 'confirmando'].includes(lote.pagoEstado);
+    if (pendiente) return;
+
+    if (lote.item) {
+      const cuota = lote.cuotaRegistrada
+        ? { estado: 'registrada', ...lote.cuotaRegistrada }
+        : lote.cuota
+          ? { estado: lote.cuota.estado, numero: lote.cuota.numero, total: lote.cuota.total, alias: lote.cuota.alias }
+          : null;
+      const pago = lote.pagoEstado === 'registrado' ? 'registrado' : lote.pagoEstado === 'cancelado' ? 'cancelado' : lote.comprobante ? 'cancelado' : 'sin';
+      await enviar(chatId, esc(textoResumenLote({ titular: lote.titular, cuota, gastos: lote.gastos, pago })));
+    }
+    clearTimeout(lote.timerVida);
+    clearTimeout(lote.timerEspera);
+    lotes.delete(chatId);
+  }
+
+  // -------------------------------------------------------------------------
+  // Respuestas y botones
+  // -------------------------------------------------------------------------
+
+  /** Responder a la lista de cargos: "el 2 y el 5 son míos", "todos", "ninguno" */
+  async function manejarReply(msg) {
+    const chatId = msg.chat.id;
+    const lote = obtenerLote(chatId);
+    if (!lote?.lista || lote.seleccionEstado !== 'pendiente' || typeof msg.text !== 'string') return false;
+    if (msg.reply_to_message?.message_id !== lote.lista.messageId) return false;
+
+    const total = lote.lista.otros.length;
+    const sel = parsearSeleccion(msg.text, total);
+    if (!sel) {
+      await enviar(chatId, 'No entendí cuáles son tuyos. Responde, por ejemplo: «el 2 y el 5 son míos», «todos» o «ninguno».');
+      return true;
+    }
+    if (sel.error) {
+      await enviar(chatId, esc(sel.error));
+      return true;
+    }
+    const elegidos = sel.todos ? lote.lista.otros.map((_, n) => n + 1) : sel.ninguno ? [] : sel.indices;
+    await aplicarSeleccion(chatId, elegidos);
+    return true;
+  }
+
+  async function aplicarSeleccion(chatId, elegidos) {
+    const lote = obtenerLote(chatId);
+    if (!lote?.lista) return;
+    const { messageId } = lote.lista;
+    await finalizarCartola(chatId, elegidos);
+    if (messageId) {
+      await editar(
+        `Listo: guardé ${elegidos.length} ${elegidos.length === 1 ? 'cargo' : 'cargos'} como tuyos. ` +
+        `Los demás son de ${esc(lote.titular ?? 'la otra persona')}: no se guardaron y no cuentan en tus totales.`,
+        { chat_id: chatId, message_id: messageId }
+      );
+    }
+  }
+
+  /** Botones de este módulo. Devuelve true si el callback era suyo. */
+  async function manejarCallback(cb, chatId, data) {
+    const m = data.match(/^lc([a-z0-9])_(.+)$/);
+    if (!m) return false;
+    const tipo = m[1];
+    const valor = m[2];
+    const messageId = cb.message.message_id;
+
+    try {
+      // ¿De quién es la cartola?
+      if (['s', 'n', 'x'].includes(tipo) && preguntas.has(valor)) {
+        const pregunta = preguntas.get(valor);
+        preguntas.delete(valor);
+        if (tipo === 's') {
+          await editar('Creando la cuenta...', { chat_id: chatId, message_id: messageId });
+          await responderCallback(cb.id, {});
+          await crearCuentaYSeguir(chatId, pregunta);
+        } else if (tipo === 'n') {
+          await editar('Entendido: es tuya.', { chat_id: chatId, message_id: messageId });
+          await responderCallback(cb.id, {});
+          await pregunta.ofrecerNormal(pregunta.item);
+        } else {
+          await borrarTemporal(pregunta.item.tmp);
+          await editar('Cancelado. Descarté el archivo.', { chat_id: chatId, message_id: messageId });
+          await responderCallback(cb.id, { text: 'Cancelado' });
+        }
+        return true;
+      }
+
+      const lote = obtenerLote(chatId);
+      if (!lote) {
+        await responderCallback(cb.id, { text: 'Solicitud expirada' });
+        return true;
+      }
+
+      // Marcar o desmarcar un cargo
+      if (tipo === 't' && lote.lista && lote.seleccionEstado === 'pendiente') {
+        const n = Number(valor);
+        if (lote.lista.elegidos.has(n)) lote.lista.elegidos.delete(n);
+        else lote.lista.elegidos.add(n);
+        // Solo se cambian los botones (no el texto, que ya perdió su formato al volver de Telegram)
+        await bot.editMessageReplyMarkup(tecladoLista(lote).reply_markup, { chat_id: chatId, message_id: messageId }).catch(() => {});
+        await responderCallback(cb.id, {});
+        return true;
+      }
+      if ((tipo === 'g' || tipo === '0') && lote.lista && lote.seleccionEstado === 'pendiente') {
+        await responderCallback(cb.id, {});
+        await aplicarSeleccion(chatId, tipo === '0' ? [] : [...lote.lista.elegidos].sort((a, b) => a - b));
+        return true;
+      }
+
+      // Pago con comprobante: Guardar / otro monto / Cancelar
+      if (tipo === 'p' && lote.confirmacion?.tipo === 'pago') {
+        await responderCallback(cb.id, {});
+        if (valor === 'x') {
+          lote.pagoEstado = 'cancelado';
+          lote.confirmacion = null;
+          await eliminarRespaldo(lote.comprobante.archivo);
+          await editar('Cancelado: no registré el pago.', { chat_id: chatId, message_id: messageId });
+          await cerrarSiListo(chatId);
+        } else {
+          await editar('Registrando el pago...', { chat_id: chatId, message_id: messageId });
+          await guardarPago(chatId, valor, messageId);
+        }
+        return true;
+      }
+
+      // Pago sin comprobante
+      if (tipo === 'r' && lote.confirmacion?.tipo === 'sin_comprobante') {
+        await responderCallback(cb.id, {});
+        if (valor === 's') {
+          await editar('Registrando la cuota...', { chat_id: chatId, message_id: messageId });
+          await guardarPagoSinComprobante(chatId, messageId);
+        } else {
+          lote.pagoEstado = 'sin';
+          lote.confirmacion = null;
+          await editar('Entendido: la cuota queda sin registrar.', { chat_id: chatId, message_id: messageId });
+          await cerrarSiListo(chatId);
+        }
+        return true;
+      }
+
+      await responderCallback(cb.id, { text: 'Solicitud expirada' });
+      return true;
+    } catch (error) {
+      console.error('Error en un botón de la tarjeta ajena:', error.code ?? error.name);
+      await responderCallback(cb.id, { text: 'Error' });
+      return true;
+    }
+  }
+
+  return { avisarArchivo, procesarCartola, manejarFoto, manejarReply, manejarCallback, acreedoresDe };
+}

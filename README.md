@@ -648,6 +648,34 @@ o "borrar todo".
 `RESTAURAR RESPALDO`). Antes de restaurar hace otro respaldo del estado actual (`respaldos/antes-de-restaurar-...`). Con MariaDB
 necesita el cliente `mysql` en el PATH.
 
+### Compra en cuotas con la tarjeta de otra persona (cartola + comprobante)
+
+Caso: pagas un Mac en 12 cuotas con la tarjeta de crédito de la tía Valeska y le transfieres cada mes. Puedes mandar juntos, sin comandos, la
+**cartola de su tarjeta** (PDF, CSV o Excel) y la **captura del comprobante** de tu transferencia:
+
+1. **La cartola se asocia a la cuenta de Valeska** (titular Valeska) por los 4 dígitos o el banco, como cualquier cartola. Si no existe una
+   cuenta así pero la cartola trae la cuota de una compra en cuotas, pregunta si la creas como tarjeta de crédito con titular Valeska
+   (botones: crear, "es mía" o cancelar).
+2. **Reconoce la cuota** en la cartola: por el número ("06/12", "cuota 6 de 12"), por la descripción (alias de la compra) o por el monto;
+   hace falta el número o dos de las otras señales. Solo avanza el contador si corresponde: la cuota siguiente a la última pagada. Una cuota
+   que ya estaba registrada **no se duplica**.
+3. **Los demás cargos no se guardan solos.** Son de Valeska por defecto. El bot los lista **en un solo mensaje** y preguntas cuáles son tuyos:
+   toca los números (o "Ninguno es mío") o responde al mensaje, por ejemplo «el 2 y el 5 son míos», «todos» o «ninguno». Solo los que marques
+   se guardan como gastos tuyos, en la cuenta de esa tarjeta. **Los demás se ignoran** (no se guardan, así no cuentan en tus totales); la
+   cartola queda registrada como importada para no volver a procesarla. Decisión: ignorarlos en vez de guardarlos "marcados como de Valeska",
+   porque eso exigiría una columna nueva en `movimientos` y filtrarla en todos los totales.
+4. **El comprobante** se lee con **OCR local** (`tesseract.js` con los datos de español de `@tesseract.js-data/spa`, sin descargar nada y sin
+   enviar la imagen a ningún servicio) y se registra como **el pago de la cuota** del mes (monto y fecha del comprobante), ligado a la
+   compra y a la cuenta tuya de la que salió (la que muestre el comprobante por sus 4 dígitos; si no, tu cuenta por defecto). Ese pago es el
+   **único** registro del gasto: el cargo de la cartola no se guarda aparte, así que no se cuenta dos veces. Siempre pide confirmar.
+   El OCR de capturas de apps no es perfecto: si no puede leer algo, el bot lo dice y usa la fecha de hoy o te lo pregunta.
+5. **Si el monto del comprobante no calza** con el de la cuota (o con el cargo de la cartola), avisa y pregunta con cuál lo registra.
+6. **Resumen del lote** al final: cartola de quién, cuota N de 12 registrada, cuántos gastos tuyos se agregaron y si se registró el pago.
+
+Si el comprobante llega antes que la cartola espera hasta 25 segundos (110 si ya llegó un archivo) para combinarlos; si manda solo el
+comprobante, lo registra como pago de la siguiente cuota; si manda solo la cartola, al final ofrece registrar la cuota con el monto del
+cargo. Una foto que no parece un comprobante de transferencia sigue el flujo de siempre. A Gemini no viaja nada de esto.
+
 ### Cuentas, vínculos y datos guardados: /cuentas
 
 `/cuentas` (alias `/datosguardados`; también "qué cuentas tengo", "muéstrame mis cuentas" y "qué datos tienes guardados", siempre por reglas,

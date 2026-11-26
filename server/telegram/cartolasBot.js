@@ -233,6 +233,8 @@ export function crearCartolas(ctx) {
       colas.set(chatId, cola);
     }
     cola.items.push({ nombre, buffer, ext, mediaGroupId, mensajeId });
+    // Un comprobante que llegue junto con la cartola espera a que se analice (ver loteTerceros.js)
+    ctx.terceros?.avisarArchivo(chatId);
 
     clearTimeout(cola.timer);
     const esAlbum = cola.items.every(i => i.mediaGroupId && i.mediaGroupId === cola.items[0].mediaGroupId);
@@ -330,13 +332,28 @@ export function crearCartolas(ctx) {
       item.cuentaSugerida = item.deteccion?.cuenta ?? null;
     }
 
-    if (validos.length === 1) {
+    // Cartolas de la tarjeta de otra persona (por ejemplo la tía Valeska): flujo propio, sin importarlas
+    // como gastos de Juan (loteTerceros.js). Las demás siguen el flujo de siempre.
+    let propios = validos;
+    if (ctx.terceros) {
+      propios = [];
+      for (const item of validos) {
+        const tomada = await ctx.terceros.procesarCartola(chatId, item, cuentas, (it) => ofrecerUno(chatId, it, cuentas));
+        if (!tomada) propios.push(item);
+      }
+      if (propios.length === 0) {
+        if (avisos.length > 0) await enviar(chatId, avisos.map(a => esc(a)).join('\n'));
+        return;
+      }
+    }
+
+    if (propios.length === 1) {
       if (avisos.length > 0) await enviar(chatId, avisos.map(a => esc(a)).join('\n'));
-      await ofrecerUno(chatId, validos[0], cuentas);
+      await ofrecerUno(chatId, propios[0], cuentas);
       return;
     }
 
-    await ofrecerLote(chatId, validos, avisos, cuentas);
+    await ofrecerLote(chatId, propios, avisos, cuentas);
   }
 
   // -------------------------------------------------------------------------

@@ -31,6 +31,7 @@ import { crearRegistros } from './registrosBot.js';
 import { crearReset } from './resetBot.js';
 import { crearStatus } from './statusBot.js';
 import { crearVistaCuentas } from './vistaCuentasBot.js';
+import { crearLoteTerceros } from './loteTerceros.js';
 import { crearSistema } from './sistemaBot.js';
 import { crearIntenciones, clasificarPorReglas } from './intenciones.js';
 import { limitadorGemini } from './limiteGemini.js';
@@ -85,6 +86,8 @@ let reset = null;
 let status = null;
 // Vista de cuentas con vínculos, /cuentas (vistaCuentasBot.js); se crea al iniciar el bot
 let vistaCuentas = null;
+// Cartola de una tarjeta ajena + comprobante de la transferencia (loteTerceros.js); se crea al iniciar el bot
+let terceros = null;
 // Enrutador de intenciones para mensajes libres (intenciones.js); se crea al iniciar el bot
 let intenciones = null;
 // Foto que espera el texto de un gasto para quedar como su respaldo: chatId -> { fileId, nombre, hasta }
@@ -216,7 +219,22 @@ export async function iniciarBot() {
     });
     cuotas.configurarComandos();
 
+    terceros = crearLoteTerceros({
+      bot,
+      enviar,
+      editar,
+      responderCallback,
+      esc,
+      formatearMonto,
+      guardarRespaldo: guardarRespaldoCuota,
+      eliminarRespaldo: eliminarRespaldoCuota,
+      descargarBuffer,
+      resolverCuentaPago,
+      vincularRegistro: vincularMensajes
+    });
+
     cartolas = crearCartolas({
+      terceros,
       enviar,
       editar,
       responderCallback,
@@ -573,6 +591,11 @@ function configurarManejadores() {
     }
 
     // Foto o documento con un pago de cuota (caption) o foto sin caption con compras en cuotas
+    // Captura del comprobante de una transferencia a quien le pagas una compra en cuotas (OCR local)
+    if (msg.photo && terceros && await terceros.manejarFoto(msg)) {
+      return;
+    }
+
     if ((msg.document || msg.photo) && cuotas && await cuotas.manejarEnvio(msg)) {
       return;
     }
@@ -592,6 +615,11 @@ function configurarManejadores() {
 
     // Frase de confirmación de /reset o de la restauración de un respaldo
     if (msg.text && reset && await reset.manejarTexto(msg)) {
+      return;
+    }
+
+    // Respuesta a la lista de cargos de la cartola de una tarjeta ajena: "el 2 y el 5 son míos"
+    if (msg.text && msg.reply_to_message && terceros && await terceros.manejarReply(msg)) {
       return;
     }
 
@@ -669,6 +697,11 @@ function configurarManejadores() {
 
     // Botones de /reboot y /update
     if (sistema && await sistema.manejarCallback(cb, chatId, data)) {
+      return;
+    }
+
+    // Botones del lote de una tarjeta ajena (cartola y comprobante)
+    if (terceros && await terceros.manejarCallback(cb, chatId, data)) {
       return;
     }
 
@@ -1491,6 +1524,14 @@ async function guardarRespaldoCuota(fileId, nombreSugerido, prefijo = 'respaldo_
     prefijo: `${prefijo}${Date.now()}_`
   });
   return guardado.ruta;
+}
+
+/** Descarga un archivo de Telegram a memoria (para leer una captura con OCR local) */
+async function descargarBuffer(fileId) {
+  const fileLink = await bot.getFileLink(fileId);
+  const respuesta = await fetch(fileLink);
+  if (!respuesta.ok) throw new Error('la descarga del archivo falló');
+  return Buffer.from(await respuesta.arrayBuffer());
 }
 
 /**
