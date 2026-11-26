@@ -127,6 +127,7 @@ export async function inicializarDB() {
     migrarUltimos4Cuenta(database);
     migrarPeriodoArchivos(database);
     migrarCargosCartola(database);
+    migrarBotonesTemporales(database);
     migrarRegistros(database);
     migrarDestinatarios(database);
 
@@ -313,6 +314,24 @@ function migrarComprasCuotas(database) {
  * Migración idempotente (SQLite): agrega ultimos4_cuenta a cuentas, los últimos 4 dígitos del
  * número de cuenta (ultimos4 es el de la tarjeta). Nunca se guardan números completos.
  */
+/** Migración idempotente (SQLite): botones con vencimiento (el bot los quita solos al vencer, también tras reiniciar) */
+function migrarBotonesTemporales(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS botones_temporales (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id INTEGER NOT NULL,
+      message_id INTEGER NOT NULL,
+      vence_en INTEGER NOT NULL,
+      texto TEXT,
+      aviso TEXT NOT NULL,
+      acciones TEXT,
+      permanentes TEXT,
+      UNIQUE (chat_id, message_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_botones_temporales_vence ON botones_temporales(vence_en);
+  `);
+}
+
 /** Migración idempotente (SQLite): período, cargos leídos, marcados como míos e ignorados de cada cartola importada */
 function migrarCargosCartola(database) {
   database.exec(`

@@ -26,6 +26,7 @@ const VIDA_DESHACER_MS = 10 * 60 * 1000;
 
 export function crearResetCuenta(ctx) {
   const { bot, enviar, editar, responderCallback, esc, esChatAutorizado } = ctx;
+  const botonesTemporales = ctx.botonesTemporales ?? null;
 
   // sesión -> { chatId, cuenta, periodo, anio, modo, respaldo, hasta }
   const sesiones = new Map();
@@ -47,9 +48,10 @@ export function crearResetCuenta(ctx) {
     const opciones = { reply_markup: { inline_keyboard: teclado } };
     if (messageId) {
       const editado = await editar(texto, { chat_id: chatId, message_id: messageId, ...opciones });
-      if (editado) return;
+      if (editado) return messageId;
     }
-    await enviar(chatId, texto, opciones);
+    const enviado = await enviar(chatId, texto, opciones);
+    return enviado?.message_id ?? null;
   }
 
   async function cuentasActivas() {
@@ -187,13 +189,17 @@ export function crearResetCuenta(ctx) {
       if (!s.periodo && ctx.descartarPendientes) await ctx.descartarPendientes(s.cuenta.id);
 
       const cuotas = sel.compras.map(c => `${esc(c.alias)}: ${c.antes} → ${c.despues} de ${c.total} cuotas pagadas`);
-      await mostrar(chatId, messageId,
+      const textoListo =
         `<b>Listo</b>: borré ${conteos.movimientos} movimientos y ${conteos.archivos} registros de importación de ${esc(s.cuenta.nombre)} (${esc(etiquetaPeriodo(s.periodo, s.anio))}).` +
         (cuotas.length > 0 ? `\n\nCuotas que cambiaron:\n${cuotas.join('\n')}` : '') +
         (sel.archivosFisicos.length > 0 ? `\n\nMoví ${sel.archivosFisicos.length} archivos a la carpeta papelera/ (no se eliminaron).` : '') +
-        '\n\nGuardé un respaldo en la carpeta respaldos/.' + (sel.modo === 'todo_archivos' ? '' : ' Los PDF originales siguen guardados.'),
-        [[{ text: 'Deshacer (10 min)', callback_data: `rcz_${sesionId}` }]]
-      );
+        '\n\nGuardé un respaldo en la carpeta respaldos/.' + (sel.modo === 'todo_archivos' ? '' : ' Los PDF originales siguen guardados.');
+      const idMensaje = await mostrar(chatId, messageId, textoListo, [[{ text: 'Deshacer (10 min)', callback_data: `rcz_${sesionId}` }]]);
+      // El botón Deshacer desaparece solo a los 10 minutos (también tras un reinicio del bot)
+      botonesTemporales?.registrar({
+        chatId, messageId: idMensaje, venceEn: s.deshacerHasta, texto: textoListo,
+        aviso: 'Deshacer ya no está disponible.', acciones: [`rcz_${sesionId}`]
+      });
     } catch (error) {
       console.error('Error en /resetcuenta:', error.code ?? error.name);
       await mostrar(chatId, messageId, `${describirError(error, 'borrar', 'los datos de la cuenta').usuario} No se cambió nada.`, []);
@@ -283,7 +289,8 @@ export function crearResetCuenta(ctx) {
     try {
       const s = vigente(sesionId, chatId);
       if (!s || (tipo !== 'z' && Date.now() > s.hasta)) {
-        await responderCallback(cb.id, { text: 'Solicitud expirada' });
+        // Un botón vencido: se responde y responderCallback le quita el teclado al mensaje
+        await responderCallback(cb.id, { text: 'Este botón ya expiró' });
         return true;
       }
       await responderCallback(cb.id, {});

@@ -86,6 +86,7 @@ const FRASES = {
   vincular: (o, c) => `No pude vincular ${o}: ${c}.`,
   leer: (o, c) => `No pude leer ${o}: ${c}.`,
   ocr: (o, c) => `No pude leer el texto de ${o} con el OCR: ${c}.`,
+  mantenimiento: (o, c) => `No pude ejecutar ${o}: ${c}.`,
   gemini: (o, c) => `No pude consultar a Gemini para ${o}: ${c}. Sigo solo con las reglas locales.`
 };
 

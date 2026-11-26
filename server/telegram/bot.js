@@ -37,6 +37,8 @@ import { crearStatus } from './statusBot.js';
 import { crearVistaCuentas } from './vistaCuentasBot.js';
 import { crearEstadoCuenta } from './estadoCuentaBot.js';
 import { crearResetCuenta } from './resetCuentaBot.js';
+import { crearBotonesTemporales } from './botonesTemporales.js';
+import { crearMantenimiento } from './mantenimientoBot.js';
 import { crearEditarCuenta } from './editarCuentaBot.js';
 import { mensajesAyuda, COMANDOS_CONOCIDOS, COMANDOS_MENU } from './comandos.js';
 import { crearLoteTerceros } from './loteTerceros.js';
@@ -93,6 +95,9 @@ let cuotas = null;
 let cartolas = null;
 // Reinicio y actualización desde el bot (sistemaBot.js); se crea al iniciar el bot
 let sistema = null;
+let mantenimiento = null;
+// Botones con vencimiento: se quitan solos al vencer (botonesTemporales.js)
+let botonesTemporales = null;
 // Eliminar/corregir/deshacer respondiendo a un mensaje (registrosBot.js); se crea al iniciar el bot
 let registros = null;
 // Reinicio total de los datos y restauración de respaldos (resetBot.js); se crea al iniciar el bot
@@ -249,9 +254,16 @@ async function editar(texto, opts = {}) {
 
 // Callbacks ya respondidos (para saber si un botón quedó sin respuesta); se limpian solos
 const callbacksRespondidos = new Set();
+// callbackId -> { chatId, messageId } del botón que se está atendiendo (para quitarle el teclado si venció)
+const callbacksEnCurso = new Map();
 
 /** answerCallbackQuery; nunca lanza */
 async function responderCallback(callbackId, opts = {}) {
+  // Un botón vencido que se tocó antes de que el temporizador lo quitara: se responde igual para todos y se le quita el teclado al mensaje
+  const vencido = typeof opts.text === 'string' && /expir/i.test(opts.text);
+  if (vencido && /^solicitud expirada$/i.test(opts.text.trim())) opts = { ...opts, text: 'Este botón ya expiró' };
+  const origen = callbacksEnCurso.get(callbackId);
+  if (vencido && origen && botonesTemporales) botonesTemporales.quitarTeclado(origen.chatId, origen.messageId).catch(() => {});
   callbacksRespondidos.add(callbackId);
   setTimeout(() => callbacksRespondidos.delete(callbackId), 2 * 60 * 1000).unref?.();
   try {
@@ -351,9 +363,11 @@ export async function iniciarBot() {
         guardarEnCuenta({ cuenta: null, clase: 'cartola', fecha: fechaHoySantiago(), nombreOriginal: nombre, buffer })
     });
 
-    registros = crearRegistros({ enviar, editar, responderCallback, esc });
+    botonesTemporales = crearBotonesTemporales({ bot });
 
-    reset = crearReset({ bot, enviar, editar, responderCallback, esc, esChatAutorizado });
+    registros = crearRegistros({ enviar, editar, responderCallback, esc, botonesTemporales });
+
+    reset = crearReset({ bot, enviar, editar, responderCallback, esc, esChatAutorizado, botonesTemporales });
     reset.configurarComandos();
 
     // Cuenta por defecto al registrar un gasto: la última usada o, si no hay, la primera que no es crédito
@@ -370,7 +384,7 @@ export async function iniciarBot() {
     estadoCuenta.configurarComandos();
 
     resetCuenta = crearResetCuenta({
-      bot, enviar, editar, responderCallback, esc, esChatAutorizado,
+      bot, enviar, editar, responderCallback, esc, esChatAutorizado, botonesTemporales,
       contarPendientes: async (cuentaId) => (terceros?.pendientesDeCuenta(cuentaId) ?? 0) + (cartolas?.pendientesDeCuenta(cuentaId) ?? 0),
       descartarPendientes: async (cuentaId) => {
         await terceros?.descartarPendientes(cuentaId);
@@ -412,9 +426,14 @@ export async function iniciarBot() {
       restaurarRespaldo: (chatId) => reset.pedirRestaurar(chatId)
     });
 
-    sistema = crearSistema({ bot, enviar, editar, responderCallback, esc, esChatAutorizado });
+    sistema = crearSistema({ bot, enviar, editar, responderCallback, esc, esChatAutorizado, botonesTemporales });
     sistema.configurarComandos();
+    mantenimiento = crearMantenimiento({ bot, enviar, editar, responderCallback, esc, esChatAutorizado });
+    mantenimiento.configurarComandos();
     configurarManejadores();
+
+    // Quita los botones que vencieron mientras el bot estaba apagado y reprograma los que siguen pendientes
+    botonesTemporales.restaurar().catch(() => {});
 
     // Menú "/" de Telegram; no bloquea el arranque y no lanza
     registrarComandosMenu();
@@ -879,6 +898,9 @@ function configurarManejadores() {
   // Manejador de callbacks (botones inline)
   bot.on('callback_query', async (cb) => {
     const hasta = secuenciaPreguntas;
+    if (cb.message) callbacksEnCurso.set(cb.id, { chatId: cb.message.chat.id, messageId: cb.message.message_id });
+    // Si es un botón con vencimiento que se usa a tiempo, su temporizador ya no hace falta
+    try { botonesTemporales?.alTocar(cb); } catch { /* el temporizador es opcional */ }
     try {
       await procesarCallback(cb);
       // Al tocar un botón, las preguntas abiertas de ese mismo flujo pierden su Cancelar
@@ -888,6 +910,7 @@ function configurarManejadores() {
     } catch (error) {
       console.error('Error en el manejador de botones:', error.code ?? error.name);
     }
+    callbacksEnCurso.delete(cb.id);
     // Un botón que ningún módulo respondió (venció, o ya no tiene estado) nunca queda girando: se avisa
     if (!callbacksRespondidos.has(cb.id)) {
       await responderCallback(cb.id, { text: 'Este botón ya expiró, vuelve a intentarlo' });
@@ -924,6 +947,11 @@ function configurarManejadores() {
 
     // Botones de /reboot y /update
     if (sistema && await sistema.manejarCallback(cb, chatId, data)) {
+      return;
+    }
+
+    // Botones de /mantenimiento (lista cerrada de tareas)
+    if (mantenimiento && await mantenimiento.manejarCallback(cb, chatId, data)) {
       return;
     }
 

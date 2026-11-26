@@ -527,13 +527,15 @@ export function crearSistema(ctx) {
     const texto = accion === 'reboot'
       ? '¿Reiniciar la app? Estará unos segundos sin responder.'
       : '¿Actualizar la app? Verifico git, node, npm y el repositorio, hago git pull (o ejecuto update.sh si existe), instalo dependencias si cambiaron y reinicio siempre (aunque no haya cambios) si todo sale bien.';
-    await enviar(chatId, texto, {
-      reply_markup: {
-        inline_keyboard: [[
-          { text: accion === 'reboot' ? 'Reiniciar' : 'Actualizar', callback_data: `sys${accion === 'reboot' ? 'r' : 'u'}_${key}` },
-          { text: 'Cancelar', callback_data: `sysx_${key}` }
-        ]]
-      }
+    const teclado = [[
+      { text: accion === 'reboot' ? 'Reiniciar' : 'Actualizar', callback_data: `sys${accion === 'reboot' ? 'r' : 'u'}_${key}` },
+      { text: 'Cancelar', callback_data: `sysx_${key}` }
+    ]];
+    const enviado = await enviar(chatId, texto, { reply_markup: { inline_keyboard: teclado } });
+    // Los botones desaparecen solos cuando vence la espera (botonesTemporales.js)
+    ctx.botonesTemporales?.registrar({
+      chatId, messageId: enviado?.message_id, venceEn: Date.now() + ESPERA_MS, texto,
+      aviso: 'Estos botones ya no están disponibles.', acciones: teclado.flat().map(b => b.callback_data)
     });
   }
 

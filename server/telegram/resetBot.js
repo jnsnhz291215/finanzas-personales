@@ -35,6 +35,17 @@ export function crearReset(ctx) {
   let enProceso = false;
   let contador = 0;
 
+  /** Como enviar, pero los botones desaparecen solos cuando vence la espera (botonesTemporales.js) */
+  async function enviarConVencimiento(chatId, texto, opciones) {
+    const enviado = await enviar(chatId, texto, opciones);
+    ctx.botonesTemporales?.registrar({
+      chatId, messageId: enviado?.message_id, venceEn: Date.now() + ESPERA_BOTONES_MS, texto,
+      aviso: 'Estos botones ya no están disponibles.',
+      acciones: (opciones?.reply_markup?.inline_keyboard ?? []).flat().map(b => b.callback_data).filter(Boolean)
+    });
+    return enviado;
+  }
+
   const nuevaClave = (chatId) => `${chatId}_${Date.now()}_${contador++}`;
 
   function guardarPendiente(chatId, datos) {
@@ -56,7 +67,7 @@ export function crearReset(ctx) {
     try {
       const conteos = await contarDatos();
       const key = guardarPendiente(chatId, { tipo: 'reset' });
-      await enviar(chatId,
+      await enviarConVencimiento(chatId,
         '<b>Reiniciar los datos</b>\n\n' +
         'Esto es lo que tienes ahora:\n' +
         lineasConteos(conteos).map(l => esc(l)).join('\n') +
@@ -94,7 +105,7 @@ export function crearReset(ctx) {
         return true;
       }
       const key = guardarPendiente(chatId, { tipo: 'restaurar', nombre: respaldo.nombre });
-      await enviar(chatId,
+      await enviarConVencimiento(chatId,
         '<b>Restaurar el último respaldo</b>\n\n' +
         `Respaldo: ${esc(respaldo.ruta)}\n` +
         `Incluye: base de datos${respaldo.conArchivos ? ' y archivos' : ''}.\n\n` +

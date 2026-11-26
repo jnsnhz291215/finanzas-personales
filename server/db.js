@@ -125,6 +125,24 @@ if (MOTOR_ELEGIDO === 'mariadb') {
     );
   }
 
+  /** Migración idempotente (MariaDB): botones con vencimiento (el bot los quita solos al vencer, también tras reiniciar) */
+  async function migrarBotonesTemporales(connection) {
+    await connection.query(
+      `CREATE TABLE IF NOT EXISTS botones_temporales (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        chat_id BIGINT NOT NULL,
+        message_id BIGINT NOT NULL,
+        vence_en BIGINT NOT NULL,
+        texto TEXT NULL,
+        aviso VARCHAR(200) NOT NULL,
+        acciones TEXT NULL,
+        permanentes TEXT NULL,
+        UNIQUE KEY uq_botones_temporales_mensaje (chat_id, message_id),
+        INDEX idx_botones_temporales_vence (vence_en)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
+    );
+  }
+
   /** Migración idempotente (MariaDB): período, cargos leídos, marcados como míos e ignorados de cada cartola importada */
   async function migrarPeriodoArchivos(connection) {
     const [filas] = await connection.query(
@@ -419,6 +437,7 @@ if (MOTOR_ELEGIDO === 'mariadb') {
         await migrarUltimos4Cuenta(connection);
         await migrarPeriodoArchivos(connection);
         await migrarCargosCartola(connection);
+        await migrarBotonesTemporales(connection);
         await migrarRegistros(connection);
         await migrarDestinatarios(connection);
         await migrarDatosTransferencia(connection);

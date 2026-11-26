@@ -254,3 +254,17 @@ CREATE TABLE IF NOT EXISTS destinatarios_transferencia (
   clasificacion VARCHAR(20) NOT NULL,
   actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Botones con vencimiento (por ejemplo "Deshacer"): el bot los quita solos al vencer, también después de reiniciar
+CREATE TABLE IF NOT EXISTS botones_temporales (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  chat_id BIGINT NOT NULL,
+  message_id BIGINT NOT NULL,
+  vence_en BIGINT NOT NULL,
+  texto TEXT NULL,
+  aviso VARCHAR(200) NOT NULL,
+  acciones TEXT NULL,
+  permanentes TEXT NULL,
+  UNIQUE KEY uq_botones_temporales_mensaje (chat_id, message_id),
+  INDEX idx_botones_temporales_vence (vence_en)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

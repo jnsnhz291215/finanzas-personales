@@ -922,6 +922,18 @@ npm run reparar-fechas              # solo cuenta
 npm run reparar-fechas -- --aplicar # repara, en una transacción
 ```
 
+### Botones con vencimiento y /mantenimiento
+
+- Los botones con tiempo límite (el **Deshacer** de `/resetcuenta`, 10 min; el **Deshacer** de eliminar y corregir registros, 24 h; las
+  confirmaciones de `/reset` y `/update`) se quitan solos al vencer: el bot edita el mensaje, le agrega una línea («Deshacer ya no está
+  disponible.») y deja solo los botones permanentes. Si el mensaje ya se editó o se borró, el error de Telegram se ignora. El vencimiento se
+  guarda en la tabla `botones_temporales` (se crea sola en SQLite y MariaDB), así que al reiniciar el bot limpia los vencidos y reprograma los
+  pendientes. Si se usa el botón a tiempo, el temporizador se cancela, y un botón vencido que alguien toque responde «Este botón ya expiró» y
+  pierde el teclado. Código: `server/telegram/botonesTemporales.js`.
+- `/mantenimiento` (solo chats autorizados, como `/update`) ofrece una **lista cerrada** de tareas definida en `server/telegram/mantenimientoBot.js`
+  (`TAREAS`); nunca ejecuta texto del usuario ni usa un shell. Hoy: *Reparar fechas (solo contar)* y *Reparar fechas (aplicar)*, esta última con
+  segunda confirmación. Responde solo con números y deja en el log quién pidió qué tarea. Para agregar otra tarea, se suma una entrada a `TAREAS`.
+
 ### Estados de cuenta guardados: /estadocuenta
 
 `/estadocuenta` (alias `/cartolas` y `/historial`) sirve para revisar lo que ya está guardado de cada cuenta. Acepta `/estadocuenta 8263`

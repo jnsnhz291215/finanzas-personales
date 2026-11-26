@@ -56,6 +56,7 @@ export const COMANDOS = [
 
   // Sistema
   { seccion: 'Sistema', nombre: 'update', ejemplo: '/update', descripcion: 'Actualizar la app y reiniciarla (solo en el servidor)', menu: 6, menuDescripcion: 'Actualizar y reiniciar la app' },
+  { seccion: 'Sistema', nombre: 'mantenimiento', ejemplo: '/mantenimiento', descripcion: 'Tareas fijas de mantenimiento (por ejemplo reparar fechas) sin abrir una terminal' },
   { seccion: 'Sistema', nombre: 'reboot', ejemplo: '/reboot', descripcion: 'Reiniciar la app (solo en el servidor)' },
   { seccion: 'Sistema', nombre: 'reset', ejemplo: '/reset', descripcion: 'Empezar de cero: respaldo, doble confirmación y opción de restaurar' }
 ];

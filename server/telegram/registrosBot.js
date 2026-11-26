@@ -38,6 +38,15 @@ export function crearRegistros(ctx) {
   const { enviar, editar, responderCallback, esc } = ctx;
   const limitador = ctx.limitador ?? limitadorGemini;
 
+  // El botón Deshacer vale 24 horas; después desaparece solo (botonesTemporales.js)
+  const VIDA_DESHACER_MS = 24 * 60 * 60 * 1000;
+  function programarVencimiento(chatId, messageId, texto, historialId) {
+    ctx.botonesTemporales?.registrar({
+      chatId, messageId, venceEn: Date.now() + VIDA_DESHACER_MS, texto,
+      aviso: 'Deshacer ya no está disponible.', acciones: [`rgu_${historialId}`]
+    });
+  }
+
   // Confirmaciones pendientes: clave -> { accion, tipo, registroId, cambios }
   const pendientes = new Map();
   let contador = 0;
@@ -105,14 +114,16 @@ export function crearRegistros(ctx) {
         await responderCallback(cb.id, { text: 'No se pudo eliminar' });
         return;
       }
+      const textoEliminado = `<b>Eliminado</b>\n\n${bloque(r.resumen)}\n\nSi fue un error, responde «deshacer» a este mensaje (tienes 24 horas).`;
       await editar(
-        `<b>Eliminado</b>\n\n${bloque(r.resumen)}\n\nSi fue un error, responde «deshacer» a este mensaje (tienes 24 horas).`,
+        textoEliminado,
         {
           chat_id: chatId,
           message_id: messageId,
           reply_markup: { inline_keyboard: [[{ text: 'Deshacer', callback_data: `rgu_${r.historialId}` }]] }
         }
       );
+      programarVencimiento(chatId, messageId, textoEliminado, r.historialId);
       await vincularMensajes(chatId, [messageId], 'historial', r.historialId);
       await responderCallback(cb.id, { text: 'Eliminado' });
     } catch (error) {
@@ -171,9 +182,11 @@ export function crearRegistros(ctx) {
           ? `${c.antes.replace(/^\$/, '')} → ${c.despues.replace(/^\$/, '')}`
           : `${c.etiqueta} ${c.antes} → ${c.despues}`
       ));
-      const enviado = await enviar(chatId, `Corregido: ${esc(lineasCorregido.join('; '))}`, {
+      const textoCorregido = `Corregido: ${esc(lineasCorregido.join('; '))}`;
+      const enviado = await enviar(chatId, textoCorregido, {
         reply_markup: { inline_keyboard: [[{ text: 'Deshacer', callback_data: `rgu_${aplicada.historialId}` }]] }
       });
+      programarVencimiento(chatId, enviado?.message_id, textoCorregido, aplicada.historialId);
       // Responder «deshacer» a este mensaje también funciona
       if (enviado?.message_id) await vincularMensajes(chatId, [enviado.message_id], 'historial', aplicada.historialId);
       return true;
@@ -217,14 +230,16 @@ export function crearRegistros(ctx) {
       const lineas = vista.ok
         ? vista.cambios.map(c => `${esc(c.etiqueta)}: ${esc(c.antes)} → <b>${esc(c.despues)}</b>`).join('\n')
         : '';
+      const textoCorrecion = `<b>Corregido</b>\n\n${lineas}\n\nSi fue un error, responde «deshacer» a este mensaje (tienes 24 horas).`;
       await editar(
-        `<b>Corregido</b>\n\n${lineas}\n\nSi fue un error, responde «deshacer» a este mensaje (tienes 24 horas).`,
+        textoCorrecion,
         {
           chat_id: chatId,
           message_id: messageId,
           reply_markup: { inline_keyboard: [[{ text: 'Deshacer', callback_data: `rgu_${r.historialId}` }]] }
         }
       );
+      programarVencimiento(chatId, messageId, textoCorrecion, r.historialId);
       await vincularMensajes(chatId, [messageId], 'historial', r.historialId);
       await responderCallback(cb.id, { text: 'Corregido' });
     } catch (error) {
