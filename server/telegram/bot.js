@@ -147,10 +147,74 @@ function logErrorTelegram(contexto, err) {
   console.error(`[telegram] ${contexto}: error_code=${codigo} description=${descripcion}`);
 }
 
+// ---------------------------------------------------------------------------
+// Preguntas con un solo botón "Cancelar"
+//
+// Cuando el bot hace una pregunta que se responde escribiendo (el monto, un nombre, el valor de un campo...) deja un botón
+// Cancelar. Al recibir la respuesta, o al tocar un botón de ese mismo flujo, a la pregunta se le quitan los botones y se deja
+// escrito lo respondido, para que no quede un Cancelar viejo dando vueltas.
+// ---------------------------------------------------------------------------
+
+// chatId -> Map(messageId -> { texto, flujo, seq })
+const preguntasAbiertas = new Map();
+let secuenciaPreguntas = 0;
+
+/** callback_data del botón Cancelar si el teclado es solo ese botón; si no, null */
+function cancelarSolitario(opts) {
+  const filas = opts?.reply_markup?.inline_keyboard;
+  if (!Array.isArray(filas) || filas.length !== 1 || filas[0].length !== 1) return null;
+  const boton = filas[0][0];
+  return /^cancelar$/i.test(boton.text) ? String(boton.callback_data ?? '') : null;
+}
+
+/** El flujo de un botón: las dos primeras letras de su callback_data (ec, fj, cq, in, nc...) */
+const flujoDe = (callbackData) => String(callbackData ?? '').slice(0, 2);
+
+function recordarPregunta(chatId, messageId, texto, callbackData) {
+  if (!messageId) return;
+  if (!preguntasAbiertas.has(chatId)) preguntasAbiertas.set(chatId, new Map());
+  preguntasAbiertas.get(chatId).set(messageId, { texto, flujo: flujoDe(callbackData), seq: ++secuenciaPreguntas });
+}
+
+function olvidarPregunta(chatId, messageId) {
+  preguntasAbiertas.get(chatId)?.delete(messageId);
+}
+
+/**
+ * Quita los botones a las preguntas abiertas de un chat que se hicieron antes de la secuencia `hasta` (lo que se preguntó mientras se
+ * procesaba el mensaje actual sigue abierto). `flujo` limita a un flujo; `excepto` salta un mensaje; con `respuesta`, la deja escrita
+ * en la pregunta (salvo que traiga un número largo). Nunca lanza.
+ */
+async function limpiarPreguntas(chatId, { hasta, flujo = null, excepto = null, respuesta = null } = {}) {
+  const abiertas = preguntasAbiertas.get(chatId);
+  if (!abiertas || abiertas.size === 0) return;
+
+  const respuestaSegura = respuesta && respuesta.length <= 120 && !/\d{5,}/.test(String(respuesta).replace(/(?<=\d)[\s.-](?=\d)/g, ''))
+    ? respuesta.trim()
+    : null;
+
+  for (const [messageId, p] of [...abiertas]) {
+    if (p.seq > hasta || (flujo && p.flujo !== flujo) || messageId === excepto) continue;
+    abiertas.delete(messageId);
+    try {
+      if (respuestaSegura) {
+        await bot.editMessageText(`${p.texto}\n\n<b>Respuesta:</b> ${esc(respuestaSegura)}`, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML' });
+      } else {
+        await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
+      }
+    } catch (err) {
+      logErrorTelegram('quitar botones', err);
+    }
+  }
+}
+
 /** sendMessage con HTML por defecto; nunca lanza */
 async function enviar(chatId, texto, opts = {}) {
   try {
-    return await bot.sendMessage(chatId, texto, { parse_mode: 'HTML', ...opts });
+    const enviado = await bot.sendMessage(chatId, texto, { parse_mode: 'HTML', ...opts });
+    const cancelar = cancelarSolitario(opts);
+    if (cancelar) recordarPregunta(chatId, enviado?.message_id, texto, cancelar);
+    return enviado;
   } catch (err) {
     logErrorTelegram('sendMessage', err);
     return null;
@@ -160,7 +224,14 @@ async function enviar(chatId, texto, opts = {}) {
 /** editMessageText con HTML por defecto; nunca lanza */
 async function editar(texto, opts = {}) {
   try {
-    return await bot.editMessageText(texto, { parse_mode: 'HTML', ...opts });
+    const editado = await bot.editMessageText(texto, { parse_mode: 'HTML', ...opts });
+    // Un mensaje editado con otro teclado (o sin botones) ya no es una pregunta abierta; si quedó con solo Cancelar, sí
+    if (opts.chat_id && opts.message_id) {
+      const cancelar = cancelarSolitario(opts);
+      if (cancelar) recordarPregunta(opts.chat_id, opts.message_id, texto, cancelar);
+      else olvidarPregunta(opts.chat_id, opts.message_id);
+    }
+    return editado;
   } catch (err) {
     logErrorTelegram('editMessageText', err);
     return null;
@@ -526,8 +597,13 @@ function configurarComandos() {
 function configurarManejadores() {
   // Manejador de mensajes de texto (registro de transacciones)
   bot.on('message', async (msg) => {
+    const hasta = secuenciaPreguntas;
     try {
       await procesarMensaje(msg);
+      // Lo escrito responde a las preguntas que habían quedado abiertas: se les quitan los botones y se deja la respuesta
+      if (msg.text && !msg.text.startsWith('/') && esChatAutorizado(msg.chat.id)) {
+        await limpiarPreguntas(msg.chat.id, { hasta, respuesta: msg.text });
+      }
     } catch (error) {
       // Nunca en silencio: se registra (sin el texto, que puede traer datos personales) y se avisa
       console.error('Error en el manejador de mensajes:', error.code ?? error.name);
@@ -666,14 +742,28 @@ function configurarManejadores() {
 
   // Manejador de callbacks (botones inline)
   bot.on('callback_query', async (cb) => {
+    const hasta = secuenciaPreguntas;
     try {
       await procesarCallback(cb);
+      // Al tocar un botón, las preguntas abiertas de ese mismo flujo pierden su Cancelar
+      if (cb.message && esChatAutorizado(cb.message.chat.id)) {
+        await limpiarPreguntas(cb.message.chat.id, { hasta, flujo: flujoDe(cb.data), excepto: cb.message.message_id });
+      }
     } catch (error) {
       console.error('Error en el manejador de botones:', error.code ?? error.name);
     }
     // Un botón que ningún módulo respondió (venció, o ya no tiene estado) nunca queda girando: se avisa
     if (!callbacksRespondidos.has(cb.id)) {
       await responderCallback(cb.id, { text: 'Este botón ya expiró, vuelve a intentarlo' });
+      // Un botón muerto no se queda en el mensaje
+      if (cb.message) {
+        olvidarPregunta(cb.message.chat.id, cb.message.message_id);
+        try {
+          await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: cb.message.chat.id, message_id: cb.message.message_id });
+        } catch (err) {
+          logErrorTelegram('quitar botones', err);
+        }
+      }
     }
   });
 

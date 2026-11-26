@@ -35,6 +35,8 @@ export function crearEditarCuenta(ctx) {
   const esperando = new Map();
   // Cambios esperando Guardar o Cancelar: clave -> { cuentaId, campo, valor }
   const pendientes = new Map();
+  // Mensajes con una pregunta o resumen abiertos (su Cancelar vale); al responder, guardar o cancelar dejan de estar abiertos
+  const abiertas = new Set();
   let contador = 0;
 
   const nuevaClave = () => `${Date.now().toString(36)}${contador++}`;
@@ -96,6 +98,7 @@ export function crearEditarCuenta(ctx) {
       await enviar(chatId, 'Esa cuenta ya no está activa.');
       return true;
     }
+    if (messageId) abiertas.delete(messageId);
     const editado = messageId ? await editar(textoFicha(c), { chat_id: chatId, message_id: messageId, ...tecladoFicha(c) }) : null;
     if (!editado) await enviar(chatId, textoFicha(c), tecladoFicha(c));
     return true;
@@ -113,6 +116,7 @@ export function crearEditarCuenta(ctx) {
     }
     const cancelar = [{ text: 'Cancelar', callback_data: `ecc_${cuentaId}` }];
 
+    abiertas.add(messageId);
     if (campo === 'tipo') {
       await editar(`<b>${esc(c.nombre)}</b>\nElige el tipo nuevo (ahora: ${esc(valorActual(c, 'tipo'))}):`, {
         chat_id: chatId,
@@ -197,7 +201,11 @@ export function crearEditarCuenta(ctx) {
       }
     };
     const editado = messageId ? await editar(texto, { chat_id: chatId, message_id: messageId, ...opciones }) : null;
-    if (!editado) await enviar(chatId, texto, opciones);
+    if (editado) abiertas.add(messageId);
+    else {
+      const enviado = await enviar(chatId, texto, opciones);
+      if (enviado?.message_id) abiertas.add(enviado.message_id);
+    }
     return true;
   }
 
@@ -218,7 +226,10 @@ export function crearEditarCuenta(ctx) {
       if (v && !v.ok && v.largo) await borrarMensaje(chatId, msg.message_id);
 
       const valido = await proponerCambio(chatId, espera.cuentaId, espera.campo, msg.text, { messageId: null });
-      if (valido) esperando.delete(chatId);
+      if (valido) {
+        esperando.delete(chatId);
+        abiertas.delete(espera.messageId); // la pregunta ya se respondió (el bot le quita el Cancelar y deja la respuesta)
+      }
     } catch (error) {
       errorBD('Error al editar una cuenta', error);
       await enviar(chatId, 'No pude procesar eso. Inténtalo de nuevo.');
@@ -328,6 +339,7 @@ export function crearEditarCuenta(ctx) {
           return true;
         }
         pendientes.delete(valor);
+        abiertas.delete(messageId);
         // Se vuelve a validar al guardar: otra edición pudo dejar ese dato ocupado
         const [cuenta, todas] = await Promise.all([obtenerCuentaEditable(pendiente.cuentaId), cuentasEditables()]);
         const v = cuenta ? validarEdicion(cuenta, pendiente.campo, pendiente.entrada, todas) : null;
@@ -345,12 +357,20 @@ export function crearEditarCuenta(ctx) {
 
       // Cancelar (vuelve a la ficha) o cerrar
       if (tipo === 'c') {
+        // Un Cancelar viejo (el cambio ya se guardó o la pregunta ya se respondió) no hace nada
+        if (!abiertas.has(messageId)) {
+          await responderCallback(cb.id, { text: 'Ese cambio ya se guardó, usa /editarcuenta para modificarlo' });
+          await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId }).catch(() => {});
+          return true;
+        }
+        abiertas.delete(messageId);
         esperando.delete(chatId);
         await responderCallback(cb.id, { text: 'Cancelado' });
         await mostrarFicha(chatId, Number(valor), messageId);
         return true;
       }
       if (tipo === 'x') {
+        abiertas.delete(messageId);
         esperando.delete(chatId);
         await editar('Listo.', { chat_id: chatId, message_id: messageId });
         await responderCallback(cb.id, {});

@@ -787,6 +787,10 @@ si viene un número largo guarda solo los últimos 4 y borra tu mensaje del chat
 **Cancelar**, y pregunta lo que falte (por ejemplo el tipo si dices solo "la tarjeta"). Si ya hay una cuenta con esos 4 dígitos, en vez de duplicarla ofrece
 **actualizar su titular**. Una tarjeta de otra persona se nombra por su dueña ("Tarjeta de Valeska").
 
+**Los botones de una pregunta no se quedan colgados:** cuando el bot te hace una pregunta que respondes escribiendo (un monto, un nombre, el valor de un campo)
+deja un botón Cancelar; al responder, o al tocar un botón de ese mismo flujo, a la pregunta se le quitan los botones y queda escrita tu respuesta. Si igual tocas un
+Cancelar viejo de `/editarcuenta` cuando el cambio ya se guardó, responde "Ese cambio ya se guardó, usa /editarcuenta para modificarlo" y no hace nada.
+
 **El bot no se queda en silencio:** un mensaje que ninguna regla entiende (y que no va a Gemini, por ejemplo por traer datos sensibles) recibe "No entendí ese
 mensaje" con botones (guardar una cuenta, registrar un gasto, ver gastos, plan, cuotas, cuentas, ayuda); un comando que no existe, un sticker, una nota de voz
 o un error inesperado también reciben respuesta (los errores quedan en el log, sin el texto del mensaje). Un comando que existe pero recibe argumentos que no
