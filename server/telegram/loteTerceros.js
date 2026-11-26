@@ -41,7 +41,8 @@ import {
   textoResumenLote,
   esCargoBanco,
   tieneTasaInteres,
-  nombreSugerido
+  nombreSugerido,
+  claveCuotaDeLote
 } from './terceros.js';
 import { registrarCargosVistos, posicionesRepetidas } from '../cargosCartola.js';
 import { fechaHoySantiago, formatearFechaCL } from './fechas.js';
@@ -178,7 +179,10 @@ export function crearLoteTerceros(ctx) {
         const r = reconocerCuota(item.movimientos, compra);
         if (r && (!mejor || r.puntaje > mejor.r.puntaje)) mejor = { compra, r };
       }
-      if (!mejor) return false;
+      if (!mejor) {
+        // Un estado de cuenta de tarjeta nunca va al resumen genérico sin saber de qué tarjeta es: se pregunta
+        return item.esEstadoTarjeta ? await preguntarTarjeta(chatId, item, cuentas, todas, ofrecerNormal) : false;
+      }
 
       const key = `${chatId}_${Date.now()}_${contador++}`;
       preguntas.set(key, { chatId, item, cuentas, compra: mejor.compra, ofrecerNormal });
@@ -202,6 +206,28 @@ export function crearLoteTerceros(ctx) {
       console.error('Error en la cartola de una tarjeta ajena:', error.code ?? error.name);
       return false;
     }
+  }
+
+  /** Estado de cuenta de tarjeta sin cuenta conocida: se pregunta de cuál de las tarjetas de crédito es */
+  async function preguntarTarjeta(chatId, item, cuentas, todas, ofrecerNormal) {
+    const tarjetas = todas.filter(c => c.tipo === 'tarjeta_credito');
+    if (tarjetas.length === 0) return false;
+    const key = `${chatId}_${Date.now()}_${contador++}`;
+    preguntas.set(key, { chatId, item, cuentas, ofrecerNormal });
+    setTimeout(() => preguntas.delete(key), 10 * 60 * 1000).unref?.();
+    const etiqueta = (c) => `${c.nombre}${c.ultimos4 ? ` ****${c.ultimos4}` : ''}${c.titular ? ` (${c.titular})` : ''}`.slice(0, 60);
+    await enviar(chatId,
+      'Esta cartola es el estado de cuenta de una tarjeta de crédito, pero no pude saber de cuál. ¿De qué tarjeta es?',
+      {
+        reply_markup: {
+          inline_keyboard: [
+            ...tarjetas.map(c => [{ text: etiqueta(c), callback_data: `lcw_${key}_${c.id}` }]),
+            [{ text: 'Cancelar', callback_data: `lcx_${key}` }]
+          ]
+        }
+      }
+    );
+    return true;
   }
 
   /** Crea la cuenta de la tarjeta ajena (crédito, con el titular) y sigue con la cartola */
@@ -426,6 +452,13 @@ export function crearLoteTerceros(ctx) {
       const delTitular = comprasDeTitular(existentes, lote.titular);
       for (const { mov } of cuotas) {
         const nc = mov.cuota ? { actual: mov.cuota.actual, total: mov.cuota.total } : extraerNumeroCuota(mov.descripcion);
+        // En un lote de cartolas la misma compra aparece en varias: se atiende una sola vez, con la cuota más alta que se vio
+        const delLote = lote.item?.cuotasLote;
+        if (delLote && nc) {
+          const clave = claveCuotaDeLote(mov);
+          if (delLote.procesadas.has(clave) || nc.actual < (delLote.mejores.get(clave)?.actual ?? 0)) continue;
+          delLote.procesadas.add(clave);
+        }
         let compra = nc ? buscarCompraSimilar(delTitular, mov.descripcion, mov.monto, nc.total) : null;
         if (!compra) {
           const iguales = delTitular.filter(c => montosCalzan(c.monto_cuota, mov.monto) && (!nc || Number(c.total_cuotas) === nc.total));
@@ -992,6 +1025,25 @@ export function crearLoteTerceros(ctx) {
     const messageId = cb.message.message_id;
 
     try {
+      // Estado de cuenta de tarjeta: se eligió de cuál tarjeta es
+      if (tipo === 'w') {
+        const mw = /^(.+)_(\d+)$/.exec(valor);
+        const pregunta = mw ? preguntas.get(mw[1]) : null;
+        const cuentaElegida = pregunta ? (await cuentasActivas()).find(c => c.id === Number(mw[2])) : null;
+        if (!pregunta || !cuentaElegida) {
+          await responderCallback(cb.id, { text: 'Solicitud expirada' });
+          return true;
+        }
+        preguntas.delete(mw[1]);
+        pregunta.item.cuentaSugerida = cuentaElegida;
+        pregunta.item.deteccion = { cuenta: cuentaElegida, por: 'texto', digitos: cuentaElegida.ultimos4 ?? null };
+        await editar(`Tarjeta elegida: ${esc(cuentaElegida.nombre)}`, { chat_id: chatId, message_id: messageId });
+        await responderCallback(cb.id, {});
+        const tomada = await procesarCartola(chatId, pregunta.item, pregunta.cuentas, pregunta.ofrecerNormal);
+        if (!tomada) await pregunta.ofrecerNormal(pregunta.item);
+        return true;
+      }
+
       // ¿De quién es la cartola?
       if (['s', 'n', 'x'].includes(tipo) && preguntas.has(valor)) {
         const pregunta = preguntas.get(valor);

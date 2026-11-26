@@ -23,7 +23,9 @@ const PALABRAS_QUE_NO_SON_NOMBRE = new Set([
  * Valeska") y no solo menciona una tarjeta, y el resto es null si no se dijo. tipo: credito | debito | cuenta_corriente |
  * cuenta_vista | ahorro.
  */
-export function leerContextoCartola(texto) {
+// Con { caption: true } (el texto que acompaña a un archivo) también vale la forma corta que solo nombra la cuenta:
+// "credito 8263", "tarjeta 8263", "tarjeta credito 8263", "credito valeska 8263".
+export function leerContextoCartola(texto, { caption = false } = {}) {
   const original = String(texto ?? '').trim();
   const vacio = { esCartola: false, mencionaCartola: false, digitos: null, numeroLargo: false, tipo: null, titular: null };
   if (!original || original.startsWith('/') || original.length > 200) return vacio;
@@ -31,7 +33,8 @@ export function leerContextoCartola(texto) {
   const norm = normalizar(original).replace(/[¿?¡!,;:.]/g, ' ').replace(/\s+/g, ' ').trim();
 
   const habla = /\bcartolas?\b/.test(norm) ||
-    /^(?:(?:estas?|este|estos|esta)\s+)?(?:son|es|eran)\s+de\s+(?:la|el|mi)\s+(?:tarjeta|cuenta|credito|debito|rut|vista|corriente|\d)/.test(norm);
+    /^(?:(?:estas?|este|estos|esta)\s+)?(?:son|es|eran)\s+de\s+(?:la|el|mi)\s+(?:tarjeta|cuenta|credito|debito|rut|vista|corriente|\d)/.test(norm) ||
+    (caption && /^(?:(?:la|mi|una)\s+)?(?:tarjeta|credito|debito|cuenta(?:\s+(?:corriente|vista|rut))?)(?:\s+[a-z]+){0,3}\s+\**\d{4}$/.test(norm));
 
   // 4 a 19 dígitos (con espacios o guiones): se guardan solo los 4 últimos
   const numero = /(?<![\d$])(\d(?:[\s.-]?\d){3,18})(?!\d)(?!\s*(?:pesos|mil|lucas|luca|palos|k)\b)/.exec(original);

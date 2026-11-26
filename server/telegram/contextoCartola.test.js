@@ -107,3 +107,14 @@ describe('cartolas que se traslapan', () => {
     expect(claveMovimiento(mov('2026-05-02', 'Tienda 06/12', 1000))).not.toBe(claveMovimiento(mov('2026-05-02', 'Tienda 07/12', 1000)));
   });
 });
+
+describe('texto corto que acompaña a un archivo (caption)', () => {
+  test('"credito 8263" y "tarjeta 8263" cuentan como cartola solo cuando es el caption de un archivo', () => {
+    for (const t of ['credito 8263', 'tarjeta 8263', 'tarjeta credito 8263', 'cartolas de tarjeta 8263']) {
+      expect(leerContextoCartola(t, { caption: true })).toMatchObject({ esCartola: true, digitos: '8263' });
+    }
+    // Un texto suelto "tarjeta 8263" no se confunde con el aviso de una cartola
+    expect(leerContextoCartola('credito 8263').esCartola).toBe(false);
+    expect(leerContextoCartola('almuerzo 5500', { caption: true }).esCartola).toBe(false);
+  });
+});

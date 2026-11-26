@@ -897,6 +897,25 @@ Tipo y Predeterminada), con un resumen "antes → después" y botones **Guardar*
   "Débito Juan ****5555" (tipo, primer nombre del titular y los 4 dígitos). Una migración renombra con ese formato las cuentas que ya tenían solo dígitos
   como nombre.
 
+### Lotes de cartolas de tarjeta (álbum de PDFs)
+
+- Los documentos de un envío se juntan (álbum con el mismo `media_group_id`, o archivos seguidos del mismo chat, con una espera de 3 s desde
+  el último), se descargan de a uno (hasta 3 intentos cada uno) y salen en **un solo lote**: un aviso «Recibí N archivos, los estoy leyendo» y un
+  solo resumen. Si un archivo falla, el mensaje dice cuál y por qué, y el resto sigue. El error real (mensaje y stack, sin el token) queda en el log.
+- El texto que acompaña a un archivo vale para todo el envío. Además de «cartola de la 8263» o «son de la tarjeta 8263», sirve la forma corta
+  «credito 8263» o «tarjeta 8263» cuando es el caption de un archivo.
+- Las fechas de las filas de tarjeta (`dd/mm/aa` o `dd/mm/aaaa` con el código de la operación pegado) se leen con un año entre 2000 y el año
+  actual + 1; si no se puede leer, se usa la del período de la cartola.
+- Un estado de cuenta de tarjeta nunca va al resumen genérico sin saber de qué tarjeta es: si no se reconoce la cuenta, se pregunta.
+- La misma compra en cuotas que sale en varias cartolas del lote se pregunta una sola vez, con la cuota más alta.
+
+Reparar fechas con año inválido que ya se guardaron (idempotente; por defecto solo cuenta lo que tocaría):
+
+```bash
+npm run reparar-fechas              # solo cuenta
+npm run reparar-fechas -- --aplicar # repara, en una transacción
+```
+
 ### Estados de cuenta guardados: /estadocuenta
 
 `/estadocuenta` (alias `/cartolas` y `/historial`) sirve para revisar lo que ya está guardado de cada cuenta. Acepta `/estadocuenta 8263`

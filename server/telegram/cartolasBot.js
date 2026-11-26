@@ -19,7 +19,8 @@ import { fechaFinDeMovimientos, analizarCartola, analizarPDF, analizarTexto, cal
 import { listarCuentasConBanco, guardarDigitosCuenta } from '../gestion.js';
 import { fijarTitular } from '../resumenDatos.js';
 import { listarCompras } from '../cuotas.js';
-import { calzarConCartola, normalizar } from './cuotas.js';
+import { calzarConCartola, normalizar, partirEnMensajes } from './cuotas.js';
+import { mejoresCuotasDeLote } from './terceros.js';
 import { guardarTemporal, confirmarTemporal, borrarTemporal } from '../storage.js';
 import { interpretarMovimientosCartola } from './gemini.js';
 import { formatearFechaCL } from './fechas.js';
@@ -232,7 +233,7 @@ export function crearCartolas(ctx) {
         if (r.movimientos.length === 0) return { estado: 'ilegible' };
         return {
           estado: 'ok', movimientos: r.movimientos, origen: 'ocr', banco: r.banco,
-          ultimos4: r.ultimos4 ?? [], formato: r.banco ?? 'Foto de cartola'
+          ultimos4: r.ultimos4 ?? [], formato: r.banco ?? 'Foto de cartola', esEstadoTarjeta: Boolean(r.esEstadoTarjeta)
         };
       }
       if (ext === '.pdf') {
@@ -245,7 +246,8 @@ export function crearCartolas(ctx) {
           origen: r.origen,
           banco: r.banco,
           ultimos4: r.ultimos4 ?? [],
-          formato: r.banco ?? 'PDF sin banco reconocido'
+          formato: r.banco ?? 'PDF sin banco reconocido',
+          esEstadoTarjeta: Boolean(r.esEstadoTarjeta)
         };
       }
 
@@ -257,7 +259,9 @@ export function crearCartolas(ctx) {
         estado: 'ok', movimientos: r.movimientos, origen: null, banco: reconocido,
         ultimos4: r.ultimos4 ?? [], formato: nombre ?? 'Formato genérico'
       };
-    } catch {
+    } catch (error) {
+      // Sin el contenido del archivo: solo el tipo de error
+      console.error(`[cartolas] no pude leer un archivo (${ext}): ${error.name}: ${error.message}`);
       return { estado: 'ilegible' };
     }
   }
@@ -285,21 +289,54 @@ export function crearCartolas(ctx) {
     let cola = colas.get(chatId);
     const primero = !cola;
     if (!cola) {
-      cola = { items: [], timer: null, contextoTexto: null };
+      cola = { items: [], timer: null, contextoTexto: null, retenida: 0, avisado: false };
       colas.set(chatId, cola);
     }
-    const contexto = caption ? leerContextoCartola(caption) : null;
+    const contexto = caption ? leerContextoCartola(caption, { caption: true }) : null;
     cola.items.push({ nombre, buffer, ext, mediaGroupId, mensajeId, contexto: contextoUtil(contexto) ? contexto : null });
     // Un comprobante que llegue junto con la cartola espera a que se analice (ver loteTerceros.js)
     ctx.terceros?.avisarArchivo(chatId);
 
     clearTimeout(cola.timer);
-    const esAlbum = cola.items.every(i => i.mediaGroupId && i.mediaGroupId === cola.items[0].mediaGroupId);
-    cola.timer = setTimeout(() => cerrarCola(chatId), esAlbum ? VENTANA_ALBUM_MS : VENTANA_LOTE_MS);
-
-    if (primero) {
-      await enviar(chatId, 'Recibí el archivo. Si mandas más seguidos los agrupo en un solo resumen.');
+    // Mientras quien los junta (bot.js) sigue descargando los archivos de un envío, la cola no se cierra
+    if (!cola.retenida) {
+      const esAlbum = cola.items.every(i => i.mediaGroupId && i.mediaGroupId === cola.items[0].mediaGroupId);
+      cola.timer = setTimeout(() => cerrarCola(chatId), esAlbum ? VENTANA_ALBUM_MS : VENTANA_LOTE_MS);
     }
+
+    if (primero && !cola.avisado && !cola.retenida) {
+      await enviar(chatId, 'Recibí el archivo, lo estoy leyendo. Si mandas más seguidos los agrupo en un solo resumen.');
+    }
+  }
+
+  /**
+   * bot.js junta los archivos de un envío (álbum o seguidos) y los va descargando uno por uno: mientras tanto la cola no se cierra.
+   * `avisado` indica que ya se avisó al usuario ("Recibí N archivos, los estoy leyendo").
+   */
+  function retenerCola(chatId, { avisado = false } = {}) {
+    let cola = colas.get(chatId);
+    if (!cola) {
+      cola = { items: [], timer: null, contextoTexto: null, retenida: 0, avisado: false };
+      colas.set(chatId, cola);
+    }
+    clearTimeout(cola.timer);
+    cola.retenida++;
+    if (avisado) cola.avisado = true;
+  }
+
+  /** Termina la retención: si llegó algún archivo, la cola se cierra enseguida; si no llegó ninguno (todos fallaron), se descarta */
+  async function soltarCola(chatId) {
+    const cola = colas.get(chatId);
+    if (!cola) return;
+    cola.retenida = Math.max(0, cola.retenida - 1);
+    if (cola.retenida > 0) return;
+    clearTimeout(cola.timer);
+    if (cola.items.length === 0) {
+      colas.delete(chatId);
+      return;
+    }
+    cola.timer = setTimeout(() => cerrarCola(chatId), 800);
+    if (cola.items.length === 1 && !cola.avisado) await enviar(chatId, 'Recibí el archivo, lo estoy leyendo.');
   }
 
   /**
@@ -308,7 +345,7 @@ export function crearCartolas(ctx) {
    */
   function esFotoDeCartola(chatId, { caption = null, mediaGroupId = null } = {}) {
     const grupo = mediaGroupId ? `${chatId}_${mediaGroupId}` : null;
-    if (caption && leerContextoCartola(caption).esCartola) {
+    if (caption && leerContextoCartola(caption, { caption: true }).esCartola) {
       if (grupo) albumesCartola.add(grupo);
       return true;
     }
@@ -353,72 +390,94 @@ export function crearCartolas(ctx) {
     const vistos = new Set();
     const avisos = [];
     const validos = [];
+    // Cartolas de un lote que ya estaban importadas: sus cuotas se sincronizan después del resumen
+    const reenviadas = [];
+    const sincronizarReenviadas = async () => {
+      for (const r of reenviadas) {
+        const analisis = await analizarArchivo(r.archivo);
+        if (analisis.estado === 'ok') await ctx.terceros.sincronizarSoloCuotas(chatId, { movimientos: analisis.movimientos }, r.cuentaId).catch(() => {});
+      }
+    };
 
     for (let i = 0; i < archivos.length; i++) {
       const archivo = archivos[i];
-      const prefijo = unico ? '' : `Archivo ${i + 1}: `;
-      const hash = calcularHashBuffer(archivo.buffer);
+      const prefijo = unico ? '' : `Archivo ${i + 1} (${archivo.nombre}): `;
+      try {
+        const hash = calcularHashBuffer(archivo.buffer);
 
-      if (vistos.has(hash)) {
-        avisos.push(`${prefijo}está repetido en este envío, lo descarté.`);
-        continue;
-      }
-      vistos.add(hash);
-
-      const previa = await cartolaYaImportada(hash);
-      if (previa) {
-        // Una cartola de una tarjeta de terceros que se vuelve a mandar: no se duplica nada, solo se sincronizan las cuotas
-        let sincronizada = false;
-        if (ctx.terceros?.sincronizarSoloCuotas && previa.cuenta_id) {
-          const analisis = await analizarArchivo(archivo);
-          if (analisis.estado === 'ok') sincronizada = await ctx.terceros.sincronizarSoloCuotas(chatId, { movimientos: analisis.movimientos }, previa.cuenta_id);
+        if (vistos.has(hash)) {
+          avisos.push(`${prefijo}está repetido en este envío, lo descarté.`);
+          continue;
         }
-        if (!sincronizada) {
-          avisos.push(unico
-            ? 'Esta cartola ya fue importada antes, así que no la importé de nuevo.'
-            : `${prefijo}ya fue importada antes, la descarté.`);
+        vistos.add(hash);
+
+        const previa = await cartolaYaImportada(hash);
+        if (previa) {
+          // Una cartola de una tarjeta de terceros que se vuelve a mandar: no se duplica nada, solo se sincronizan las cuotas
+          let sincronizada = false;
+          if (!unico && ctx.terceros?.sincronizarSoloCuotas && previa.cuenta_id) {
+            // En un lote la sincronización va después del resumen único (sus preguntas de cuotas salen al final)
+            avisos.push(`${prefijo}ya estaba importada, no la dupliqué; solo sincronizo sus cuotas.`);
+            reenviadas.push({ archivo, cuentaId: previa.cuenta_id });
+            continue;
+          }
+          if (ctx.terceros?.sincronizarSoloCuotas && previa.cuenta_id) {
+            const analisis = await analizarArchivo(archivo);
+            if (analisis.estado === 'ok') sincronizada = await ctx.terceros.sincronizarSoloCuotas(chatId, { movimientos: analisis.movimientos }, previa.cuenta_id);
+          }
+          if (!sincronizada) {
+            avisos.push(unico
+              ? 'Esta cartola ya fue importada antes, así que no la importé de nuevo.'
+              : `${prefijo}ya fue importada antes, la descarté.`);
+          }
+          continue;
         }
-        continue;
-      }
 
-      const analisis = await analizarArchivo(archivo);
-      if (analisis.estado !== 'ok') {
-        // No se pudo leer de ninguna forma: queda guardada en cartolas/{YYYY-MM}/
-        await guardarNoLeido(archivo.nombre, archivo.buffer);
-        const esFoto = EXT_IMAGEN.includes(archivo.ext);
-        avisos.push(
-          analisis.estado === 'escaneado'
-            ? `${prefijo}este PDF parece escaneado y no tiene texto, mándame la cartola descargada desde el banco. Dejé el archivo guardado.`
-            : esFoto
-              ? `${prefijo}no pude leer los movimientos de esta foto (las tablas se leen mal en una imagen). Mándame el PDF de la cartola. Dejé la foto guardada.`
-              : `${prefijo}no pude leer los movimientos${archivo.ext === '.pdf' ? ' de este PDF (no reconozco su formato)' : ''}. Dejé el archivo guardado.`
-        );
-        continue;
-      }
+        const analisis = await analizarArchivo(archivo);
+        if (analisis.estado !== 'ok') {
+          // No se pudo leer de ninguna forma: queda guardada en cartolas/{YYYY-MM}/
+          await guardarNoLeido(archivo.nombre, archivo.buffer);
+          const esFoto = EXT_IMAGEN.includes(archivo.ext);
+          avisos.push(
+            analisis.estado === 'escaneado'
+              ? `${prefijo}este PDF parece escaneado y no tiene texto, mándame la cartola descargada desde el banco. Dejé el archivo guardado.`
+              : esFoto
+                ? `${prefijo}no pude leer los movimientos de esta foto (las tablas se leen mal en una imagen). Mándame el PDF de la cartola. Dejé la foto guardada.`
+                : `${prefijo}no pude leer los movimientos${archivo.ext === '.pdf' ? ' de este PDF (no reconozco su formato)' : ''}. Dejé el archivo guardado.`
+          );
+          continue;
+        }
 
-      const tmp = await guardarTemporal(archivo.nombre, archivo.buffer);
-      validos.push({
-        tmp: tmp.ruta,
-        hash,
-        ext: archivo.ext,
-        esPDF: archivo.ext === '.pdf' || EXT_IMAGEN.includes(archivo.ext),
-        origen: analisis.origen,
-        banco: analisis.banco,
-        ultimos4: analisis.ultimos4 ?? [],
-        formato: analisis.formato,
-        movimientos: analisis.movimientos,
-        estado: 'pendiente',
-        importados: 0,
-        duplicados: 0,
-        cuentaNombre: null,
-        contexto: archivo.contexto ?? null,
-        mensajeUsuarioId: archivo.mensajeId ?? null,
-        archivoId: null
-      });
+        const tmp = await guardarTemporal(archivo.nombre, archivo.buffer);
+        validos.push({
+          tmp: tmp.ruta,
+          hash,
+          ext: archivo.ext,
+          esPDF: archivo.ext === '.pdf' || EXT_IMAGEN.includes(archivo.ext),
+          origen: analisis.origen,
+          banco: analisis.banco,
+          ultimos4: analisis.ultimos4 ?? [],
+          formato: analisis.formato,
+          esEstadoTarjeta: Boolean(analisis.esEstadoTarjeta),
+          movimientos: analisis.movimientos,
+          estado: 'pendiente',
+          importados: 0,
+          duplicados: 0,
+          cuentaNombre: null,
+          contexto: archivo.contexto ?? null,
+          mensajeUsuarioId: archivo.mensajeId ?? null,
+          archivoId: null
+        });
+      } catch (error) {
+        // Un archivo que falla no detiene al resto del lote: se dice cuál y por qué
+        console.error(`[cartolas] error al procesar "${archivo.nombre}": ${error.name}: ${error.message}\n${error.stack}`);
+        avisos.push(`${prefijo}no pude procesarlo (${motivoCorto(error)}). Los demás siguen.`);
+      }
     }
 
     if (validos.length === 0) {
       if (avisos.length > 0) await enviar(chatId, avisos.map(a => esc(a)).join('\n'));
+      await sincronizarReenviadas();
       return;
     }
 
@@ -436,7 +495,12 @@ export function crearCartolas(ctx) {
     // El texto que acompañó a las cartolas se cruza con las cuentas y con lo que trae cada archivo. Si algo no calza
     // se pregunta con botones y el envío sigue cuando todo está respondido.
     const dudas = validos.filter(item => evaluarContexto(item, cuentas));
-    const seguir = () => continuarLote(chatId, validos, avisos, cuentas);
+    // Un lote de varios archivos tiene un solo resumen; los avisos de los archivos descartados van dentro de él
+    if (archivos.length > 1) await enviarResumenLote(chatId, archivos.length, validos, avisos);
+    const seguir = async () => {
+      await continuarLote(chatId, validos, archivos.length > 1 ? [] : avisos, cuentas);
+      await sincronizarReenviadas();
+    };
     if (dudas.length === 0) {
       await seguir();
       return;
@@ -452,8 +516,34 @@ export function crearCartolas(ctx) {
     for (const item of dudas) await preguntarContexto(chatId, item, cuentas, espera);
   }
 
+  /** Motivo corto (sin datos personales) de un error al procesar un archivo */
+  function motivoCorto(error) {
+    const texto = `${error?.code ?? ''} ${error?.message ?? ''}`.toLowerCase();
+    if (/enospc|espacio/.test(texto)) return 'no hay espacio para guardarlo';
+    if (/eacces|eperm/.test(texto)) return 'no tengo permiso para guardarlo';
+    if (/duplicate|er_dup|unique|constraint/.test(texto)) return 'ya existía un registro igual';
+    if (/timeout|econn|fetch|network|socket/.test(texto)) return 'falló la conexión';
+    return 'error interno, quedó en el registro';
+  }
+
+  /** Un solo resumen para todo el envío: qué se leyó de cada archivo y lo que se descartó */
+  async function enviarResumenLote(chatId, recibidos, validos, avisos) {
+    const lineas = [`<b>Lote de ${recibidos} archivos</b>`, `Leí ${validos.length} de ${recibidos}.`, ''];
+    validos.forEach((item, i) => lineas.push(lineaArchivo(i + 1, item)));
+    if (avisos.length > 0) lineas.push('', ...avisos.map(a => esc(a)));
+    const tarjetas = validos.filter(i => i.esEstadoTarjeta).length;
+    if (tarjetas > 0) lineas.push('', 'Reviso una por una las cartolas de tarjeta; las cuotas que no calcen con ninguna compra te las pregunto al final.');
+    for (const mensaje of partirEnMensajes(lineas)) await enviar(chatId, mensaje);
+  }
+
   /** Lo que sigue una vez resuelta la cuenta de cada cartola: las de otra persona, y el resto al flujo de siempre */
   async function continuarLote(chatId, validos, avisos, cuentas) {
+    // Las cuotas de la misma compra que aparecen en varias cartolas del lote se preguntan una sola vez, con la cuota más alta
+    if (validos.length > 1) {
+      const cuotasLote = { mejores: mejoresCuotasDeLote(validos), procesadas: new Set() };
+      for (const item of validos) item.cuotasLote = cuotasLote;
+    }
+
     // Cuenta con un vínculo distinto al de la cartola: se ofrece actualizarlo (nunca se cambia sin confirmar)
     for (const item of validos) {
       const cuenta = item.cuentaSugerida;
@@ -1265,5 +1355,5 @@ export function crearCartolas(ctx) {
     }
   }
 
-  return { pendientesDeCuenta, descartarPendientes, recibirArchivo, recibirFoto, esFotoDeCartola, manejarTexto, manejarCallback, proponerDigitos };
+  return { pendientesDeCuenta, descartarPendientes, recibirArchivo, retenerCola, soltarCola, recibirFoto, esFotoDeCartola, manejarTexto, manejarCallback, proponerDigitos };
 }

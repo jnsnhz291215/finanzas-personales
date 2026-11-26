@@ -393,19 +393,54 @@ const PALABRAS_CARGO = /\b(cargo|compra|pago|giro|comisi[oó]n|retiro|impuesto|t
  * `monto` es el valor de la cuota (lo que se cobra ese mes); `cuota` = { actual, total, valorCuota, montoOperacion, tasa }.
  * Una fila 01/01 es una compra a una sola cuota: sin `cuota`.
  */
-const FILA_TARJETA = /(\d{2}[/-]\d{2}[/-]\d{4})\d{0,14}\s+(.+?)\s+\$\s*(-?\d{1,3}(?:\.\d{3})*)\s*\$\s*(-?\d{1,3}(?:\.\d{3})*)(\d{2})\/(\d{2})\s*\$\s*(-?\d{1,3}(?:\.\d{3})*)\s*$/;
+const FILA_TARJETA = /(?<!\d)(\d{2})[/-](\d{2})[/-](\d{2,18})\s+(.+?)\s+\$\s*(-?\d{1,3}(?:\.\d{3})*)\s*\$\s*(-?\d{1,3}(?:\.\d{3})*)(\d{2})\/(\d{2})\s*\$\s*(-?\d{1,3}(?:\.\d{3})*)\s*$/;
 
-export function parsearFilaTarjeta(linea) {
+/** ¿La fecha YYYY-MM-DD existe y tiene un año entre 2000 y el año actual + 1? */
+export function fechaPlausible(fecha, anioActual = new Date().getFullYear()) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(fecha ?? ''));
+  if (!m) return false;
+  const [anio, mes, dia] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (anio < 2000 || anio > anioActual + 1 || mes < 1 || mes > 12 || dia < 1 || dia > 31) return false;
+  const d = new Date(Date.UTC(anio, mes - 1, dia));
+  return d.getUTCMonth() === mes - 1 && d.getUTCDate() === dia;
+}
+
+/**
+ * La fecha de una fila de tarjeta viene como dd/mm/aa o dd/mm/aaaa y el código de la operación pegado justo después
+ * ("02/09/26" + "0212345678" = "02/09/260212345678"). `resto` son los dígitos que siguen a "dd/mm/". Se prueba con un año de 4 dígitos y,
+ * si no queda entre 2000 y el año actual + 1, con uno de 2; el largo de lo pegado ayuda a elegir (2 + 10 de código = 12, 4 + 10 = 14).
+ * Devuelve YYYY-MM-DD o null si ninguna de las dos lecturas es una fecha razonable.
+ */
+export function fechaDeFilaTarjeta(dia, mes, resto, anioActual = new Date().getFullYear()) {
+  const con4 = `${resto.slice(0, 4)}-${mes}-${dia}`;
+  const con2 = `20${resto.slice(0, 2)}-${mes}-${dia}`;
+  const ok4 = resto.length >= 4 && fechaPlausible(con4, anioActual);
+  const ok2 = fechaPlausible(con2, anioActual);
+  if (ok4 && ok2) {
+    // Las dos sirven: el largo de lo pegado decide (12 = año de 2 dígitos + código de 10; 14 = año de 4 + código de 10)
+    if (resto.length === 12) return con2;
+    return con4;
+  }
+  if (ok4) return con4;
+  if (ok2) return con2;
+  return null;
+}
+
+/**
+ * `fechaRespaldo`: fecha que se usa (la del período de la cartola) cuando la de la fila no es una fecha razonable; sin ella, esa fila se descarta.
+ */
+export function parsearFilaTarjeta(linea, { fechaRespaldo = null, anioActual = new Date().getFullYear() } = {}) {
   const m = FILA_TARJETA.exec(String(linea));
   if (!m) return null;
-  const fecha = normalizarFecha(m[1]);
-  const actual = Number(m[5]);
-  const total = Number(m[6]);
+  const fecha = fechaDeFilaTarjeta(m[1], m[2], m[3], anioActual) ?? (fechaPlausible(fechaRespaldo, anioActual) ? fechaRespaldo : null);
+  const [, , , , descripcionCruda, textoOperacion, , textoActual, textoTotal, textoCuota] = m;
+  const actual = Number(textoActual);
+  const total = Number(textoTotal);
   // Un monto negativo (por ejemplo "MONTO CANCELADO") es un abono
-  const abono = m[7].startsWith('-');
-  const valorCuota = Math.abs(normalizarMonto(m[7].replace('-', '')));
-  const montoOperacion = Math.abs(normalizarMonto(m[3].replace('-', '')));
-  let descripcion = m[2].replace(/\s+/g, ' ').trim();
+  const abono = textoCuota.startsWith('-');
+  const valorCuota = Math.abs(normalizarMonto(textoCuota.replace('-', '')));
+  const montoOperacion = Math.abs(normalizarMonto(textoOperacion.replace('-', '')));
+  const descripcion = descripcionCruda.replace(/\s+/g, ' ').trim();
   // Cuota 00/NN: la compra se hizo pero todavía no se cobra ninguna cuota; no es un cargo de este mes
   if (!fecha || !(valorCuota > 0) || !descripcion || !(total >= 1) || actual < 1 || actual > total) return null;
 
@@ -418,23 +453,61 @@ export function parsearFilaTarjeta(linea) {
   return movimiento;
 }
 
-export function movimientosDesdeTextoPDF(texto) {
+/**
+ * Fecha del período de una cartola de tarjeta ("PERÍODO ... 02/09/26 ... 17/09/26"): la última fecha razonable de las líneas que
+ * hablan de período o de facturación. Sirve de respaldo para una fila cuya fecha no se pudo leer. null si no la encuentra.
+ */
+export function fechaDePeriodoEnTexto(texto, anioActual = new Date().getFullYear()) {
+  let ultima = null;
+  for (const linea of String(texto).split('\n')) {
+    if (!/per[ií]odo|factura|vencimiento|emisi[oó]n|estado\s+de\s+cuenta/i.test(linea) || FILA_TARJETA.test(linea)) continue;
+    for (const m of linea.matchAll(/(?<!\d)(\d{2})[/-](\d{2})[/-](\d{4}|\d{2})(?!\d)/g)) {
+      const fecha = `${m[3].length === 2 ? `20${m[3]}` : m[3]}-${m[2]}-${m[1]}`;
+      if (fechaPlausible(fecha, anioActual) && (!ultima || fecha > ultima)) ultima = fecha;
+    }
+  }
+  return ultima;
+}
+
+/** ¿El texto es el de un estado de cuenta de tarjeta de crédito? Filas con cuota NN/TT y tasa, o sus encabezados típicos */
+export function esTextoDeEstadoTarjeta(texto, filasTarjeta = 0) {
+  if (filasTarjeta > 0) return true;
+  const t = String(texto);
+  return /tasa\s+int/i.test(t) && /\d{2}\/\d{2}\s*\$/.test(t) ||
+    /(?:pago\s+m[ií]nimo|cupo\s+(?:utilizado|total|disponible)|monto\s+(?:total\s+)?facturado)/i.test(t) && /tarjeta/i.test(t);
+}
+
+export function movimientosDesdeTextoPDF(texto, { anioActual = new Date().getFullYear() } = {}) {
   const movimientos = [];
   let lineasCandidatas = 0;
   let sinTipo = 0;
   let filasTarjeta = 0;
+  // Una fila de tarjeta sin fecha legible usa la del período de la cartola (o, si no se encuentra, la última fecha legible de sus filas)
+  const respaldoPeriodo = fechaDePeriodoEnTexto(texto, anioActual);
+  const sinFecha = [];
 
   const patronFecha = /(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})/;
   const patronMonto = /([-+(]?)\s*\$?\s*(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d{4,})\)?(\s*-)?/g;
 
   for (const linea of String(texto).split('\n')) {
     // Estado de cuenta de tarjeta: la fila trae la cuota y varios montos
-    const fila = parsearFilaTarjeta(linea);
+    const fila = parsearFilaTarjeta(linea, { fechaRespaldo: respaldoPeriodo, anioActual });
     if (fila) {
       lineasCandidatas++;
       filasTarjeta++;
       movimientos.push(fila);
       continue;
+    }
+    // Una fila de tarjeta cuya fecha no se pudo leer y sin período: se resuelve al final con las demás filas
+    if (!respaldoPeriodo) {
+      const sinRespaldo = parsearFilaTarjeta(linea, { fechaRespaldo: '2000-01-01', anioActual });
+      if (sinRespaldo && sinRespaldo.fecha === '2000-01-01') {
+        lineasCandidatas++;
+        filasTarjeta++;
+        sinFecha.push(sinRespaldo);
+        movimientos.push(sinRespaldo);
+        continue;
+      }
     }
 
     const matchFecha = linea.match(patronFecha);
@@ -450,7 +523,7 @@ export function movimientosDesdeTextoPDF(texto) {
     const monto = Math.abs(normalizarMonto(numero));
     const fecha = normalizarFecha(matchFecha[1]);
     const descripcion = resto.replace(textoMonto, ' ').replace(/\s+/g, ' ').trim();
-    if (!fecha || !(monto > 0) || !descripcion) continue;
+    if (!fecha || !fechaPlausible(fecha, anioActual) || !(monto > 0) || !descripcion) continue;
 
     let tipo = null;
     if (signoPrevio === '-' || signoPrevio === '(' || signoFinal) tipo = 'cargo';
@@ -465,7 +538,15 @@ export function movimientosDesdeTextoPDF(texto) {
     movimientos.push({ fecha, descripcion, monto, tipo });
   }
 
-  return { movimientos, lineasCandidatas, sinTipo, filasTarjeta };
+  if (sinFecha.length > 0) {
+    const legibles = movimientos.filter(m => !sinFecha.includes(m)).map(m => m.fecha).sort();
+    const ultima = legibles[legibles.length - 1] ?? null;
+    for (const m of sinFecha) m.fecha = ultima;
+    // Sin ninguna fecha legible en toda la cartola esas filas no se pueden ubicar: se descartan
+    if (!ultima) for (const m of sinFecha) movimientos.splice(movimientos.indexOf(m), 1);
+  }
+
+  return { movimientos, lineasCandidatas, sinTipo, filasTarjeta, esEstadoTarjeta: esTextoDeEstadoTarjeta(texto, filasTarjeta) };
 }
 
 /**
@@ -544,7 +625,7 @@ export async function analizarPDF(buffer, { interpretarConIA = null } = {}) {
   const reglas = movimientosDesdeTextoPDF(texto);
   // En un estado de cuenta de tarjeta las líneas sin tipo son encabezados con fechas (el período), no movimientos
   if (reglas.movimientos.length >= MIN_MOVIMIENTOS_REGLAS && (reglas.sinTipo === 0 || reglas.filasTarjeta > 0)) {
-    return { movimientos: reglas.movimientos, origen: 'reglas', legible: true, banco, ultimos4 };
+    return { movimientos: reglas.movimientos, origen: 'reglas', legible: true, banco, ultimos4, esEstadoTarjeta: reglas.esEstadoTarjeta };
   }
 
   if (interpretarConIA) {
@@ -553,14 +634,14 @@ export async function analizarPDF(buffer, { interpretarConIA = null } = {}) {
     if (movimientos.length > 0) return { movimientos, origen: 'ia', legible: true, banco, ultimos4 };
   }
 
-  return { movimientos: [], origen: null, legible: true, banco, ultimos4 };
+  return { movimientos: [], origen: null, legible: true, banco, ultimos4, esEstadoTarjeta: reglas.esEstadoTarjeta };
 }
 
 /** Lee el texto de una cartola ya extraído (por ejemplo el OCR de una foto): solo reglas, sin IA. */
 export function analizarTexto(texto) {
   const banco = buscarBanco(normalizar(texto))?.nombre ?? null;
   const reglas = movimientosDesdeTextoPDF(texto);
-  return { movimientos: reglas.movimientos, banco, ultimos4: buscarUltimos4(texto), sinTipo: reglas.sinTipo };
+  return { movimientos: reglas.movimientos, banco, ultimos4: buscarUltimos4(texto), sinTipo: reglas.sinTipo, esEstadoTarjeta: reglas.esEstadoTarjeta };
 }
 
 // ---------------------------------------------------------------------------

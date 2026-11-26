@@ -10,6 +10,7 @@
     "build:client": "cd client && npm run build",
     "install:all": "npm install && cd client && npm install",
     "migrar-storage": "node server/migrarStorage.js",
+    "reparar-fechas": "node server/repararFechas.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "test:telegram": "node --experimental-vm-modules node_modules/jest/bin/jest.js server/telegram/parser.test.js"
   },

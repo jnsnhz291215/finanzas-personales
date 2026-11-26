@@ -29,6 +29,7 @@ import {
 import { crearAdmin } from './admin.js';
 import { crearCuotas } from './cuotasBot.js';
 import { crearCartolas } from './cartolasBot.js';
+import { leerContextoCartola } from './contextoCartola.js';
 import { crearRegistros } from './registrosBot.js';
 import { crearReset } from './resetBot.js';
 import { crearStatus } from './statusBot.js';
@@ -656,8 +657,58 @@ function configurarManejadores() {
     return true;
   }
 
+  // Documentos de un envío que se están juntando (álbum o archivos seguidos): "chatId_grupo" -> { mensajes, timer }
+  const enviosDocumentos = new Map();
+
+  /**
+   * Junta los documentos de un envío: los de un álbum (mismo media_group_id) o los que llegan seguidos sin álbum (ventana por chat).
+   * Pasados unos segundos desde el último, los descarga y procesa de a uno, en orden, y el texto que acompañó a uno ("credito 8263")
+   * vale para todos si habla de cartolas. Devuelve true si tomó el mensaje.
+   */
+  function juntarDocumentos(msg) {
+    const clave = `${msg.chat.id}_${msg.media_group_id ?? 'seguidos'}`;
+    let envio = enviosDocumentos.get(clave);
+    if (!envio) {
+      envio = { mensajes: [], timer: null };
+      enviosDocumentos.set(clave, envio);
+    }
+    envio.mensajes.push(msg);
+    clearTimeout(envio.timer);
+    envio.timer = setTimeout(() => {
+      enviosDocumentos.delete(clave);
+      procesarEnvioDocumentos(msg.chat.id, envio.mensajes).catch(error => console.error('Error en un envío de documentos:', error.code ?? error.name));
+    }, ESPERA_ALBUM_MS);
+    return true;
+  }
+
+  async function procesarEnvioDocumentos(chatId, recibidos) {
+    const mensajes = [...recibidos].sort((a, b) => a.message_id - b.message_id);
+    const caption = mensajes.find(m => m.caption)?.caption ?? null;
+    const compartir = caption && leerContextoCartola(caption, { caption: true }).esCartola;
+    const varios = mensajes.length > 1;
+
+    // La cola de cartolas no se cierra mientras se descargan los archivos: así salen en un solo lote y con un solo aviso
+    cartolas?.retenerCola(chatId, { avisado: varios });
+    if (varios) await enviar(chatId, `Recibí ${mensajes.length} archivos, los estoy leyendo.`);
+    try {
+      for (const m of mensajes) {
+        try {
+          await procesarMensaje(compartir ? { ...m, caption } : m);
+        } catch (error) {
+          console.error('Error en el manejador de mensajes:', error.code ?? error.name);
+          await enviar(m.chat.id, 'Ocurrió un error al procesar ese mensaje. Inténtalo de nuevo.').catch(() => {});
+        }
+      }
+    } finally {
+      await cartolas?.soltarCola(chatId);
+    }
+  }
+
   // Manejador de mensajes de texto (registro de transacciones)
   bot.on('message', async (msg) => {
+    // Documentos (álbum o seguidos): se juntan y se procesan de a uno
+    if (msg.document && !msg.text && esChatAutorizado(msg.chat.id) && juntarDocumentos(msg)) return;
+
     // Fotos de un álbum: se junta el álbum completo antes de decidir si son cartolas o comprobantes
     if (msg.photo && msg.media_group_id && esChatAutorizado(msg.chat.id) && juntarAlbum(msg)) return;
 
@@ -3280,10 +3331,12 @@ async function manejarArchivo(msg) {
       return;
     }
 
-    const fileLink = await bot.getFileLink(documento.file_id);
-    const response = await fetch(fileLink);
-    if (!response.ok) throw new Error('la descarga del archivo falló');
-    const buffer = Buffer.from(await response.arrayBuffer());
+    // Telegram solo deja descargar archivos de hasta 20 MB a un bot
+    if (documento.file_size && documento.file_size > 20 * 1024 * 1024) {
+      await enviar(chatId, `❌ No pude leer «${esc(nombreArchivo)}»: pesa más de 20 MB, el máximo que Telegram deja descargar.`);
+      return;
+    }
+    const buffer = await descargarArchivoTelegram(documento.file_id);
 
     // CSV, Excel y PDF se agrupan en una cola por chat (álbum o archivos seguidos), se analizan y se
     // importan desde aquí. Los archivos esperan en tmp/ y pasan a cartolas/{YYYY-MM}/ al confirmar
@@ -3292,10 +3345,51 @@ async function manejarArchivo(msg) {
       nombre: nombreArchivo, buffer, ext, mediaGroupId: msg.media_group_id ?? null, mensajeId: msg.message_id, caption: msg.caption ?? null
     });
   } catch (error) {
-    // No imprimir el objeto completo: puede incluir la URL con el token
-    logErrorTelegram('procesar archivo', error);
-    await enviar(chatId, '❌ Error al procesar el archivo.');
+    // Se registra el error real (mensaje y stack, sin el token) con el nombre del archivo, y se le dice al usuario cuál falló y por qué
+    const nombre = documento.file_name ? path.basename(documento.file_name) : 'archivo sin nombre';
+    registrarErrorArchivo(nombre, error);
+    await enviar(chatId, `❌ No pude procesar «${esc(nombre)}»: ${motivoErrorArchivo(error)}. Los demás archivos siguen.`);
   }
+}
+
+/** Descarga un archivo de Telegram; reintenta hasta 3 veces (varias descargas seguidas fallan a veces por la conexión) */
+async function descargarArchivoTelegram(fileId) {
+  let ultimo;
+  for (let intento = 1; intento <= 3; intento++) {
+    try {
+      const fileLink = await bot.getFileLink(fileId);
+      const response = await fetch(fileLink);
+      if (!response.ok) throw new Error(`la descarga respondió ${response.status}`);
+      return Buffer.from(await response.arrayBuffer());
+    } catch (error) {
+      ultimo = error;
+      if (intento < 3) await new Promise(resolver => setTimeout(resolver, intento * 1000));
+    }
+  }
+  const error = new Error(`la descarga de Telegram falló tras 3 intentos: ${ultimo?.message ?? 'sin detalle'}`);
+  error.cause = ultimo;
+  throw error;
+}
+
+/** Texto sin el token del bot (el mensaje o el stack de un error de descarga puede traer la URL completa) */
+function sinToken(texto) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  return token ? String(texto).split(token).join('***') : String(texto);
+}
+
+/** Registra un error al procesar un archivo: nombre, mensaje, causa y stack, sin el token ni el contenido del archivo */
+function registrarErrorArchivo(nombre, error) {
+  const causa = error?.cause ? ` | causa: ${error.cause.name}: ${error.cause.message}` : '';
+  console.error(sinToken(`[telegram] error al procesar el archivo "${nombre}": ${error?.name}: ${error?.message}${causa}\n${error?.stack ?? ''}`));
+}
+
+/** Motivo corto para el usuario */
+function motivoErrorArchivo(error) {
+  const texto = `${error?.code ?? ''} ${error?.message ?? ''}`.toLowerCase();
+  if (/descarga|fetch|network|econn|timeout|socket|etimedout/.test(texto)) return 'no pude descargarlo de Telegram, reenvíalo';
+  if (/enospc/.test(texto)) return 'no hay espacio para guardarlo';
+  if (/eacces|eperm/.test(texto)) return 'no tengo permiso para guardarlo';
+  return 'ocurrió un error interno (quedó en el registro)';
 }
 
 /** Foto de una cartola: se descarga y entra a la cola de cartolas (OCR local). Devuelve true si la tomó. */

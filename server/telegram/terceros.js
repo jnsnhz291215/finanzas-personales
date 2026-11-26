@@ -142,6 +142,35 @@ export function nombreSugerido(descripcion) {
   return nombre[0].toUpperCase() + nombre.slice(1);
 }
 
+/**
+ * La misma compra en cuotas aparece en cada cartola con su número de cuota (06/12, 07/12...). Se reconoce por el comercio, el valor de la
+ * cuota, el total de cuotas y la fecha de la compra.
+ */
+export function claveCuotaDeLote(mov) {
+  const nc = mov.cuota ? { total: mov.cuota.total } : extraerNumeroCuota(mov.descripcion);
+  const valor = mov.cuota?.valorCuota ?? mov.monto;
+  return `${aliasDeCargo(nombreSugerido(mov.descripcion))}|${Math.round(Number(valor))}|${nc?.total ?? ''}|${String(mov.fecha).slice(0, 10)}`;
+}
+
+/**
+ * Para un lote de cartolas: por cada compra en cuotas (ver claveCuotaDeLote), la cuota más alta vista en cualquiera de ellas.
+ * Devuelve un Map clave -> { actual, mov }; sirve para preguntar una sola vez por compra y con la cuota más reciente.
+ */
+export function mejoresCuotasDeLote(items) {
+  const mejores = new Map();
+  for (const item of items) {
+    for (const mov of item.movimientos ?? []) {
+      if (mov.tipo !== 'cargo' || esCargoBanco(mov.descripcion)) continue;
+      const nc = mov.cuota ? { actual: mov.cuota.actual } : extraerNumeroCuota(mov.descripcion);
+      if (!nc) continue;
+      const clave = claveCuotaDeLote(mov);
+      const previo = mejores.get(clave);
+      if (!previo || nc.actual > previo.actual) mejores.set(clave, { actual: nc.actual, mov });
+    }
+  }
+  return mejores;
+}
+
 /** Nombre corto de una compra en cuotas a partir de la descripción del cargo (sin el "06/12") */
 export function aliasDeCargo(descripcion) {
   const limpio = normalizar(descripcion ?? '')
