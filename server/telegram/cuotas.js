@@ -325,3 +325,13 @@ export function calzarConCartola(descripcion, compras) {
     return alias.length >= 3 && texto.includes(` ${alias} `);
   });
 }
+
+/**
+ * Líneas "Valeska: cuotas del mes $130.000 · pagado $85.000 · pendiente $45.000" por titular. `titulares` viene de
+ * resumenMensualPorTitular(); `dinero` da formato a un monto y `esc` escapa el nombre (HTML).
+ */
+export function lineasPorTitular(titulares, dinero, esc = (t) => t) {
+  return titulares.map(t =>
+    `<b>${esc(t.titular)}</b>: cuotas del mes ${dinero(t.cuotasMes)} · pagado ${dinero(t.pagado)} · pendiente ${dinero(t.pendiente)}`
+  );
+}

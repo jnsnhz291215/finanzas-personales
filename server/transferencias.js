@@ -13,7 +13,7 @@
 
 import { normalizar, capitalizarNombre } from './telegram/cuentas.js';
 import { montosCalzan } from './telegram/terceros.js';
-import { vincularMovimientoACuota, registrarPagoCuota } from './cuotas.js';
+import { vincularMovimientoACuota, registrarPagoCuota, fijarCuotasPagadas } from './cuotas.js';
 
 async function consulta() {
   return (await import('./db.js')).query;
@@ -90,12 +90,12 @@ export function cruzarCuotas(monto, compras) {
   if (exactas.length === 1) return { tipo: 'exacta', cuotas: exactas };
   if (exactas.length > 1) return { tipo: 'ambigua', cuotas: exactas };
 
-  // Subconjuntos de 2 a 5 cuotas cuya suma es el monto
+  // Subconjuntos de 2 cuotas o más (hasta todas) cuya suma es el monto
   const calzan = [];
-  const limite = Math.min(cuotas.length, 8);
+  const limite = Math.min(cuotas.length, 10);
   for (let mascara = 1; mascara < (1 << limite); mascara++) {
     const elegidas = cuotas.slice(0, limite).filter((_, i) => mascara & (1 << i));
-    if (elegidas.length < 2 || elegidas.length > 5) continue;
+    if (elegidas.length < 2) continue;
     if (montosCalzan(elegidas.reduce((s, c) => s + c.monto, 0), monto)) calzan.push(elegidas);
   }
   if (calzan.length === 1) return { tipo: 'suma', cuotas: calzan[0] };
@@ -107,10 +107,62 @@ export function cruzarCuotas(monto, compras) {
     : { tipo: 'sobra', diferencia: monto - total, total, cuotas };
 }
 
+/**
+ * Reparte `monto` entre las cuotas elegidas: cada una recibe lo que vale, y la última queda con la diferencia
+ * (lo que sobra o lo que falta) para que el total sea exactamente el de la transferencia. Si el monto no
+ * alcanza para una cuota, esa y las siguientes reciben lo que quede (nunca menos de 0). Devuelve las cuotas
+ * con `montoAplicado`.
+ */
+export function repartirMonto(cuotas, monto) {
+  let resto = Number(monto);
+  return cuotas.map((c, i) => {
+    const ultima = i === cuotas.length - 1;
+    const aplicado = ultima ? Math.max(0, resto) : Math.max(0, Math.min(c.monto, resto));
+    resto -= aplicado;
+    return { ...c, montoAplicado: Math.round(aplicado) };
+  });
+}
+
+/**
+ * Varias transferencias del mes que juntas cubren las cuotas: junta `monto` con las transferencias anteriores
+ * al mismo destinatario que siguen sin vincular y cruza la suma. Devuelve { cruce, movimientos } con el
+ * cruce de la suma (exacta/suma) y los movimientos que la forman, o null si juntas tampoco calzan.
+ */
+export function cruzarConAnteriores(monto, anteriores, compras) {
+  if (anteriores.length === 0) return null;
+  // De la más reciente a la más antigua: se prueba con 1, 2, ... anteriores
+  const ordenadas = [...anteriores].sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
+  for (let n = 1; n <= ordenadas.length; n++) {
+    const grupo = ordenadas.slice(0, n);
+    const total = Number(monto) + grupo.reduce((s, m) => s + Number(m.monto), 0);
+    const cruce = cruzarCuotas(total, compras);
+    if (cruce.tipo === 'exacta' || cruce.tipo === 'suma') return { cruce, movimientos: grupo, total };
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Datos
 // ---------------------------------------------------------------------------
 
+/**
+ * Transferencias del mes de `fecha` al mismo destinatario que todavía no están ligadas a ninguna cuota
+ * (cargos, sin la propia transferencia `excluirId`). Para juntarlas con una nueva.
+ */
+export async function transferenciasSinVincularDelMes(destinatario, fecha, excluirId) {
+  const query = await consulta();
+  const mes = String(fecha).slice(0, 7);
+  const [filas] = await query(
+    `SELECT id, fecha, descripcion, monto FROM movimientos
+     WHERE tipo = 'cargo' AND compra_cuota_id IS NULL AND id <> ? AND fecha >= ? AND fecha <= ?
+       AND tipo_movimiento IN ('compra', 'transferencia_terceros')`,
+    [excluirId ?? 0, `${mes}-01`, `${mes}-31`]
+  );
+  const clave = clavePorNombre(destinatario);
+  return filas
+    .filter(f => esTransferenciaSaliente(f.descripcion) && clavePorNombre(extraerDestinatario(f.descripcion) ?? '') === clave)
+    .map(f => ({ id: Number(f.id), fecha: String(f.fecha).slice(0, 10), descripcion: f.descripcion, monto: Number(f.monto) }));
+}
 /** Lo que Juan eligió antes para ese destinatario ('gasto' | 'prestamo' | 'pago') o null */
 export async function obtenerClasificacion(destinatario) {
   const clave = clavePorNombre(destinatario);
@@ -169,7 +221,8 @@ export async function aplicarClasificacion(movimientoId, clasificacion, destinat
 export async function aplicarPlanDeCuotas(movimiento, cuotas, { cuentaId, fecha }) {
   const query = await consulta();
   const [primera, ...resto] = cuotas;
-  if (resto.length > 0) await query('UPDATE movimientos SET monto = ? WHERE id = ?', [primera.monto, movimiento.id]);
+  // Con varias cuotas, el movimiento original queda con lo que le toca a la primera
+  if (resto.length > 0) await query('UPDATE movimientos SET monto = ? WHERE id = ?', [primera.montoAplicado ?? primera.monto, movimiento.id]);
   const r = await vincularMovimientoACuota(movimiento.id, primera.compra.id);
   if (!r.ok) return { ok: false, error: r.error };
 
@@ -178,7 +231,7 @@ export async function aplicarPlanDeCuotas(movimiento, cuotas, { cuentaId, fecha 
     const pago = await registrarPagoCuota({
       compraId: cuota.compra.id,
       numero: cuota.numero,
-      monto: cuota.monto,
+      monto: cuota.montoAplicado ?? cuota.monto,
       cuentaId,
       fecha,
       descripcion: `Cuota ${cuota.numero}/${cuota.compra.total_cuotas} ${cuota.compra.alias} (${cuota.compra.acreedor})`,
@@ -187,4 +240,55 @@ export async function aplicarPlanDeCuotas(movimiento, cuotas, { cuentaId, fecha 
     compras.push(pago.compra);
   }
   return { ok: true, compras };
+}
+
+/**
+ * Varias transferencias (las del grupo) que juntas cubren las cuotas: cada cuota avanza su contador una vez y las
+ * transferencias quedan ligadas a las cuotas en orden (si hay más transferencias que cuotas, las sobrantes van a la
+ * última cuota; si hay más cuotas que transferencias, las últimas avanzan sin movimiento propio). El gasto sigue
+ * siendo cada transferencia: no se crea ningún movimiento nuevo.
+ */
+export async function vincularGrupo(movimientos, cuotas) {
+  const query = await consulta();
+  for (let i = 0; i < cuotas.length; i++) {
+    const cuota = cuotas[i];
+    const mov = movimientos[Math.min(i, movimientos.length - 1)];
+    await query(
+      `UPDATE movimientos SET compra_cuota_id = ?, numero_cuota = ?, tipo_movimiento = 'transferencia_terceros'
+       WHERE id = ? AND compra_cuota_id IS NULL`,
+      [cuota.compra.id, cuota.numero, mov.id]
+    );
+    await fijarCuotasPagadas(cuota.compra.id, cuota.numero);
+  }
+  // Las transferencias que sobran (más transferencias que cuotas) se ligan a la última cuota
+  const ultima = cuotas[cuotas.length - 1];
+  for (const mov of movimientos.slice(cuotas.length)) {
+    await query(
+      `UPDATE movimientos SET compra_cuota_id = ?, numero_cuota = ?, tipo_movimiento = 'transferencia_terceros'
+       WHERE id = ? AND compra_cuota_id IS NULL`,
+      [ultima.compra.id, ultima.numero, mov.id]
+    );
+  }
+}
+
+/**
+ * Registra el pago de varias cuotas con UNA transferencia que todavía no existe como movimiento (el comprobante del
+ * lote): un movimiento por cuota, con su monto (la última queda con la diferencia) y el respaldo en el primero.
+ */
+export async function registrarPagosMultiples(cuotas, { cuentaId, fecha, archivoRespaldo = null }) {
+  const movimientos = [];
+  for (let i = 0; i < cuotas.length; i++) {
+    const c = cuotas[i];
+    const pago = await registrarPagoCuota({
+      compraId: c.compra.id,
+      numero: c.numero,
+      monto: c.montoAplicado ?? c.monto,
+      cuentaId,
+      fecha,
+      descripcion: `Cuota ${c.numero}/${c.compra.total_cuotas} ${c.compra.alias} (${c.compra.acreedor})`,
+      archivoRespaldo: i === 0 ? archivoRespaldo : null
+    });
+    movimientos.push(pago.movimientoId);
+  }
+  return movimientos;
 }

@@ -62,6 +62,14 @@ describe('formatearVista', () => {
     expect(m.cuentas).toEqual([{ indice: 1, id: 1 }]);
   });
 
+  test('muestra por titular las cuotas del mes, lo pagado y lo pendiente', () => {
+    const [m] = formatearVista(
+      { ...resumen, titularesMes: [{ titular: 'Valeska', compras: 2, cuotasMes: 130000, pagado: 85000, pendiente: 45000 }] },
+      { hoy: '2026-11-25' }
+    );
+    expect(m.texto).toContain('Valeska</b>: cuotas del mes $130.000 · pagado $85.000 · pendiente $45.000');
+  });
+
   test('sin datos responde corto', () => {
     const [m] = formatearVista({ cuentas: [], cuotas: [], categorias: [], totales: { movimientos: 0 } });
     expect(m.texto).toBe('Todavía no tengo cuentas ni cuotas guardadas. Crea una cuenta con /savecard.');

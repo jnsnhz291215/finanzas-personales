@@ -507,7 +507,6 @@ El bot te mostrará un resumen y te pedirá confirmar antes de guardar.
 - `/ayuda` - Ver todos los comandos disponibles
 - `/resumen` - Resumen del mes actual (ingresos, gastos, saldo)
 - `/ultimos` - Ver los últimos 10 movimientos
-- `/borrar_ultimo` - Eliminar el último movimiento (con confirmación)
 - `/miid` - Obtener tu chat ID
 
 #### Importar Cartolas
@@ -660,14 +659,20 @@ Una transferencia a otra persona no es siempre un gasto. Al registrarla por text
 
 - **A una cuenta propia** (tu nombre o el de una de tus cuentas): movimiento interno (`transferencia_propia`): no suma como gasto ni como ingreso.
 - **A quien le pagas una compra en cuotas** (por ejemplo Valeska): pago de cuotas. Cruza el monto con la cuota del mes de ese titular (la
-  siguiente de cada compra en curso): si calza con **una cuota**, la vincula y avanza su contador; si calza con la **suma de varias**, reparte la
-  transferencia en un movimiento por cuota (el total no cambia) y avanza cada compra. Si es **parcial** o **sobra** plata, avisa la diferencia y
-  pregunta (vincular a una cuota o dejarla sin vincular). Siempre con botones; nada se vincula solo. El gasto sigue siendo la transferencia.
+  siguiente de cada compra en curso). Hay varias compras con la misma persona, así que cruza con **todas** sus cuotas del mes:
+  - calza con **una cuota**: la vincula y avanza su contador;
+  - calza con la **suma de varias o de todas**: reparte la transferencia en un movimiento por cuota (el total no cambia) y avanza el contador de cada compra;
+  - **no calza sola, pero con otras transferencias del mismo mes a esa persona sí** (por ejemplo dos de $65.000 que juntas pagan $130.000): ofrece
+    vincularlas todas; cada cuota avanza su contador y no se crea ningún movimiento nuevo;
+  - es **parcial** o **sobra** plata: muestra la diferencia y deja **marcar con un botón por cuota** cuáles cubre (lo que sobra o falta queda en la
+    última que marques).
+  Siempre con botones; nada se vincula solo. El gasto sigue siendo la transferencia.
 - **A cualquier otra persona:** pregunta si fue **gasto**, **préstamo** (queda anotado a esa persona) o **pago**, y **recuerda la respuesta por
   destinatario** (tabla `destinatarios_transferencia`, por nombre sin tildes ni mayúsculas): la próxima vez la aplica sin preguntar. Pregunta
   como máximo por 5 transferencias en cada importación. Nunca se guarda un RUT ni un número de cuenta: del destinatario solo queda el nombre.
 
-Alcance de esta versión: no junta varias transferencias separadas del mes para sumar una cuota.
+En `/cuotas` y en `/cuentas` aparece, **por titular**, lo del mes: cuotas del mes (la cuota de cada compra en curso), lo pagado este mes
+(movimientos ligados a esas compras) y lo pendiente (por compra, sin que lo que sobra en una tape lo que falta en otra).
 
 ### Compra en cuotas con la tarjeta de otra persona (cartola + comprobante)
 
@@ -697,6 +702,10 @@ Caso: pagas un Mac en 12 cuotas con la tarjeta de crédito de la tía Valeska y 
    El OCR de capturas de apps no es perfecto: si no puede leer algo, el bot lo dice y usa la fecha de hoy o te lo pregunta.
 5. **Si el monto del comprobante no calza** con el de la cuota (o con el cargo de la cartola), avisa y pregunta con cuál lo registra.
 6. **Resumen del lote** al final: cartola de quién, cuota N de 12 registrada, cuántos gastos tuyos se agregaron y si se registró el pago.
+
+Si la persona tiene **varias compras en cuotas**, el monto del comprobante se cruza con todas sus cuotas del mes (una, la suma de varias o todas) con el
+mismo flujo de botones de arriba, y cada cuota pagada avanza su propio contador; las compras en cuotas que marques como tuyas en la cartola se
+reconocen y sincronizan una por una.
 
 Si el comprobante llega antes que la cartola espera hasta 25 segundos (110 si ya llegó un archivo) para combinarlos; si manda solo el
 comprobante, lo registra como pago de la siguiente cuota; si manda solo la cartola, al final ofrece registrar la cuota con el monto del

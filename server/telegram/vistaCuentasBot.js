@@ -17,7 +17,7 @@
 import { cargarResumen, fijarTitular, fijarDigitos } from '../resumenDatos.js';
 import { ETIQUETAS_TIPO_DB, normalizar, valorTitular } from './cuentas.js';
 import { buscarCuentaPorTexto } from './intenciones.js';
-import { resumenCompra } from './cuotas.js';
+import { resumenCompra, lineasPorTitular } from './cuotas.js';
 import { fechaHoySantiago, formatearFechaCL } from './fechas.js';
 
 const LIMITE_MENSAJE = 3800;
@@ -120,6 +120,10 @@ export function formatearVista(resumen, { defectoId = null, hoy = fechaHoySantia
     agregar(`<b>Cuotas activas</b>\n${resumen.cuotas.map(c => lineaCuota(c, hoy, esc)).join('\n')}`);
   } else {
     agregar('<b>Cuotas activas</b>\nTodavía no tengo cuotas guardadas.');
+  }
+
+  if ((resumen.titularesMes ?? []).length > 0) {
+    agregar(`<b>Cuotas de este mes, por titular</b>\n${lineasPorTitular(resumen.titularesMes, dinero, esc).join('\n')}`);
   }
 
   const t = resumen.totales;

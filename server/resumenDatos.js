@@ -8,7 +8,8 @@
  * La BD se importa de forma diferida para poder probar las funciones puras sin base de datos.
  */
 
-import { listarCompras } from './cuotas.js';
+import { listarCompras, resumenMensualPorTitular } from './cuotas.js';
+import { fechaHoySantiago } from './telegram/fechas.js';
 import { guardarDigitosCuenta } from './gestion.js';
 
 async function consulta() {
@@ -66,6 +67,7 @@ export async function cargarResumen() {
   return {
     cuentas,
     cuotas: await listarCompras(),
+    titularesMes: await resumenMensualPorTitular(fechaHoySantiago()),
     categorias: cats.map(c => c.nombre),
     totales: {
       movimientos: Number(tot[0]?.n ?? 0),

@@ -127,6 +127,40 @@ async function avanzarContador(compraId, numero) {
 }
 
 /**
+ * Por titular (a quien se le paga), las cuotas del mes: lo que suman las cuotas de este mes de sus compras en
+ * curso, lo pagado este mes (movimientos ligados a esas compras) y lo pendiente (por compra, sin que lo que
+ * sobra en una tape lo que falta en otra). `hoy` es YYYY-MM-DD. Devuelve
+ * [{ titular, compras, cuotasMes, pagado, pendiente }] ordenado por titular.
+ */
+export async function resumenMensualPorTitular(hoy) {
+  const query = await consulta();
+  const mes = String(hoy).slice(0, 7);
+  const compras = await listarCompras({ incluirTerminadas: true });
+  const [pagos] = await query(
+    `SELECT compra_cuota_id, SUM(monto) AS total FROM movimientos
+     WHERE compra_cuota_id IS NOT NULL AND fecha >= ? AND fecha <= ? GROUP BY compra_cuota_id`,
+    [`${mes}-01`, `${mes}-31`]
+  );
+  const pagadoPorCompra = new Map(pagos.map(p => [Number(p.compra_cuota_id), Number(p.total)]));
+
+  const porTitular = new Map();
+  for (const c of compras) {
+    const pagado = pagadoPorCompra.get(Number(c.id)) ?? 0;
+    // Una compra terminada solo cuenta este mes si este mes se pagó (su última cuota)
+    if (c.terminada && pagado === 0) continue;
+    const clave = normalizar(c.acreedor).trim();
+    const t = porTitular.get(clave) ?? { titular: c.acreedor, compras: 0, cuotasMes: 0, pagado: 0, pendiente: 0 };
+    const cuota = Number(c.monto_cuota);
+    t.compras += 1;
+    t.cuotasMes += cuota;
+    t.pagado += pagado;
+    t.pendiente += Math.max(0, cuota - pagado);
+    porTitular.set(clave, t);
+  }
+  return [...porTitular.values()].sort((a, b) => a.titular.localeCompare(b.titular));
+}
+
+/**
  * Deja el contador en exactamente `n` cuotas pagadas (sube o baja, a diferencia de avanzarContador); si
  * llega al total, la compra queda terminada. Se usa al sincronizar con el número que muestra una cartola.
  */

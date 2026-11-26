@@ -24,6 +24,7 @@ import { listarCompras, obtenerCompra, registrarPagoCuota, crearCompra, fijarCuo
 import { registrarImportacion, buscarUltimos4 } from '../cartolas.js';
 import { confirmarTemporal, borrarTemporal } from '../storage.js';
 import { leerTextoDeImagen } from '../ocr.js';
+import { registrarPagosMultiples } from '../transferencias.js';
 import { parsearComprobante, mencionaNombre } from './comprobante.js';
 import {
   esTitularPropio,
@@ -500,6 +501,10 @@ export function crearLoteTerceros(ctx) {
     if (lote.cuota?.consulta) return;
     clearTimeout(lote.timerEspera);
 
+    // Con varias compras en cuotas de la misma persona, el monto se cruza con todas sus cuotas del mes
+    const comprasTitular = lote.titular && ctx.transferencias ? comprasDeTitular(await listarCompras(), lote.titular) : [];
+    if (comprasTitular.length > 1 && await resolverPagoMultiple(chatId, comprasTitular)) return;
+
     const c = lote.comprobante;
     const compra = await obtenerCompra(c.compraId);
     if (!compra || compra.terminada || Number(compra.activa) === 0) {
@@ -577,6 +582,62 @@ export function crearLoteTerceros(ctx) {
         ]
       : [[{ text: 'Guardar', callback_data: 'lcp_c' }, { text: 'Cancelar', callback_data: 'lcp_x' }]];
     await enviar(chatId, lineas.join('\n'), { reply_markup: { inline_keyboard: botones } });
+  }
+
+  /**
+   * La persona tiene varias compras en cuotas: el monto del comprobante se cruza con la cuota de cada una (una sola,
+   * la suma de varias o todas). Si no calza, muestra la diferencia y deja marcar cuáles cubre. Cada cuota registrada
+   * avanza su propio contador. Devuelve true si preguntó.
+   */
+  async function resolverPagoMultiple(chatId, comprasTitular) {
+    const lote = obtenerLote(chatId);
+    const c = lote.comprobante;
+    const cuentas = await cuentasActivas();
+    let origen = cuentas.find(x => x.id === c.cuentaId) ?? null;
+    if (!origen) {
+      const def = await resolverCuentaPago(null);
+      origen = def ? cuentas.find(x => x.id === Number(def.id)) ?? def : null;
+    }
+    if (!origen) return false;
+
+    lote.pagoEstado = 'confirmando';
+    lote.confirmacion = { tipo: 'plan' };
+    const preguntado = await ctx.transferencias.ofrecerPlan(chatId, {
+      monto: c.monto,
+      fecha: c.fecha,
+      destinatario: lote.titular,
+      compras: comprasTitular,
+      textoSinVincular: 'Entendido: no registro el pago.',
+      alCancelar: async () => {
+        lote.pagoEstado = 'cancelado';
+        lote.confirmacion = null;
+        await eliminarRespaldo(c.archivo);
+        await cerrarSiListo(chatId);
+      },
+      aplicar: async (cuotas) => {
+        const ids = await registrarPagosMultiples(cuotas, { cuentaId: Number(origen.id), fecha: c.fecha, archivoRespaldo: c.archivo });
+        await vincular(chatId, [c.mensajeUsuarioId], 'pago_cuota', ids[0]);
+        const actualizadas = [];
+        for (const q of cuotas) actualizadas.push(await obtenerCompra(q.compra.id));
+        lote.pagoEstado = 'registrado';
+        lote.confirmacion = null;
+        const [primera, ...resto] = cuotas.map((q, i) => ({
+          alias: q.compra.alias, numero: q.numero, total: Number(q.compra.total_cuotas), terminada: Boolean(actualizadas[i]?.terminada)
+        }));
+        lote.cuotaRegistrada = primera;
+        for (const r of resto) lote.otras.push({ alias: r.alias, actual: r.numero, total: r.total, estado: 'pagada', terminada: r.terminada });
+        await cerrarSiListo(chatId);
+        return {
+          ok: true,
+          texto: `Pago registrado: ${cuotas.map(q => `${esc(q.compra.alias)} cuota ${q.numero}/${q.compra.total_cuotas} (${dinero(q.montoAplicado ?? q.monto)})`).join(', ')}. Respaldo adjunto.`
+        };
+      }
+    });
+    if (!preguntado) {
+      lote.pagoEstado = 'esperando';
+      lote.confirmacion = null;
+    }
+    return preguntado;
   }
 
   /** Registra el pago: movimiento de la transferencia ligado a la compra, y avanza el contador una vez */

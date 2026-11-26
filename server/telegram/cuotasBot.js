@@ -20,6 +20,7 @@ import {
   buscarCompras,
   detectarConsultaCuotas,
   resumenCompra,
+  lineasPorTitular,
   normalizar
 } from './cuotas.js';
 import {
@@ -30,7 +31,8 @@ import {
   fijarAliasCartola,
   registrarPagoCuota,
   vincularMovimientoACuota,
-  buscarCuotasPorCartola
+  buscarCuotasPorCartola,
+  resumenMensualPorTitular
 } from '../cuotas.js';
 
 const ESPERA_MS = 5 * 60 * 1000;
@@ -93,10 +95,13 @@ export function crearCuotas(ctx) {
     }
     const hoy = fechaHoySantiago();
     const total = compras.reduce((suma, c) => suma + resumenCompra(c, hoy).montoPendiente, 0);
+    const titulares = await resumenMensualPorTitular(hoy);
     await enviar(chatId,
       '<b>Compras en cuotas:</b>\n\n' +
       compras.map((c, i) => lineaCompra(c, hoy, `${i + 1}. `)).join('\n') +
-      `\n\nTotal pendiente: ${dinero(total)}\n\nPaga una cuota escribiendo, por ejemplo: pagué cuota tía mac`,
+      `\n\nTotal pendiente: ${dinero(total)}` +
+      (titulares.length > 0 ? `\n\n<b>Este mes, por titular:</b>\n${lineasPorTitular(titulares, dinero, esc).join('\n')}` : '') +
+      '\n\nPaga una cuota escribiendo, por ejemplo: pagué cuota tía mac',
       {
         reply_markup: {
           inline_keyboard: compras.map((c, i) => [{

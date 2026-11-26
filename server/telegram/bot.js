@@ -222,8 +222,11 @@ export async function iniciarBot() {
     });
     cuotas.configurarComandos();
 
+    transferencias = crearTransferencias({ bot, enviar, editar, responderCallback, esc, formatearMonto });
+
     terceros = crearLoteTerceros({
       bot,
+      transferencias,
       enviar,
       editar,
       responderCallback,
@@ -235,8 +238,6 @@ export async function iniciarBot() {
       resolverCuentaPago,
       vincularRegistro: vincularMensajes
     });
-
-    transferencias = crearTransferencias({ enviar, editar, responderCallback, esc, formatearMonto });
 
     cartolas = crearCartolas({
       terceros,
@@ -533,51 +534,6 @@ function configurarComandos() {
     await admin.mostrarUltimos(chatId);
   });
 
-  // Comando /borrar_ultimo
-  bot.onText(/\/borrar_ultimo/, async (msg) => {
-    const chatId = msg.chat.id;
-
-    if (!esChatAutorizado(chatId)) {
-      await enviar(chatId, '❌ No estás autorizado para usar este bot.');
-      return;
-    }
-
-    try {
-      const [movimientos] = await query(
-        `SELECT m.*, c.nombre as cuenta_nombre
-         FROM movimientos m
-         LEFT JOIN cuentas c ON m.cuenta_id = c.id
-         ORDER BY m.creado_en DESC
-         LIMIT 1`
-      );
-
-      if (movimientos.length === 0) {
-        await enviar(chatId, 'No hay movimientos para borrar.');
-        return;
-      }
-
-      const mov = movimientos[0];
-      const fecha = formatearFechaCL(mov.fecha);
-
-      await enviar(chatId,
-        `¿Eliminar este movimiento?\n\n` +
-        `${mov.tipo === 'cargo' ? '💸' : '💰'} $${formatearMonto(mov.monto)}\n` +
-        `📝 ${esc(mov.descripcion)}\n` +
-        `📅 ${fecha}`,
-        {
-          reply_markup: {
-            inline_keyboard: [[
-              { text: '✅ Sí, eliminar', callback_data: `delete_${mov.id}` },
-              { text: '❌ Cancelar', callback_data: 'cancel_delete' }
-            ]]
-          }
-        }
-      );
-    } catch (error) {
-      console.error('Error al buscar último movimiento:', error);
-      await enviar(chatId, '❌ Error al buscar el movimiento.');
-    }
-  });
 }
 
 /**
@@ -838,39 +794,6 @@ function configurarManejadores() {
         }
       );
 
-      await responderCallback(cb.id, { text: 'Cancelado' });
-    }
-
-    // Eliminar movimiento
-    if (data.startsWith('delete_')) {
-      const movId = data.replace('delete_', '');
-
-      try {
-        await query('DELETE FROM movimientos WHERE id = ?', [movId]);
-
-        await editar(
-          '✅ Movimiento eliminado',
-          {
-            chat_id: chatId,
-            message_id: cb.message.message_id
-          }
-        );
-
-        await responderCallback(cb.id, { text: '✅ Eliminado' });
-      } catch (error) {
-        console.error('Error al eliminar movimiento:', error);
-        await responderCallback(cb.id, { text: '❌ Error' });
-      }
-    }
-
-    if (data === 'cancel_delete') {
-      await editar(
-        '❌ Cancelado',
-        {
-          chat_id: chatId,
-          message_id: cb.message.message_id
-        }
-      );
       await responderCallback(cb.id, { text: 'Cancelado' });
     }
 
