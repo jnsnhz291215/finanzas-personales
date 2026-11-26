@@ -4,7 +4,8 @@
  * prompt corto. Los comandos siguen funcionando como respaldo.
  *
  * Intenciones: registrar, pagar_cuota, nueva_compra_cuotas, consultar_gastos, plan,
- * datos_transferencia, cuentas, cuotas_pendientes, buscar, ayuda, eliminar_ultimo, asignar_digitos, estado, reset y restaurar_respaldo.
+ * datos_transferencia, cuentas, cuotas_pendientes, buscar, ayuda, eliminar_ultimo, asignar_digitos, guardar_cuenta, estado, reset y
+ * restaurar_respaldo.
  *
  * También entiende las respuestas (reply de Telegram) a un mensaje que creó un registro: eliminar,
  * corregir o deshacer (clasificarReply; la ejecución está en registrosBot.js).
@@ -40,7 +41,8 @@ const CODIGOS = {
   cuentas: 'ct',
   cuotas_pendientes: 'cp',
   buscar: 'bs',
-  ayuda: 'ay'
+  ayuda: 'ay',
+  guardar_cuenta: 'gc'
 };
 const INTENCION_POR_CODIGO = Object.fromEntries(Object.entries(CODIGOS).map(([i, c]) => [c, i]));
 
@@ -50,6 +52,7 @@ const ETIQUETAS = {
   plan: 'Ver cuánto puedo gastar',
   cuotas_pendientes: 'Ver mis cuotas',
   cuentas: 'Ver mis cuentas',
+  guardar_cuenta: 'Guardar una cuenta o tarjeta',
   ayuda: 'Qué puedes hacer'
 };
 
@@ -107,6 +110,58 @@ export function detectarReset(texto) {
   if (/^reset(?:ea(?:r)?)?(?:\s+(?:todo|(?:los\s+|mis\s+)?datos))?$/.test(norm)) return 'reset';
   if (/^restaura(?:r)?\s+(?:el\s+)?(?:ultimo\s+)?respaldo$/.test(norm)) return 'restaurar_respaldo';
   return null;
+}
+
+const VERBO_GUARDAR_CUENTA = /^(?:por favor\s+)?(?:(?:quiero|necesito|puedes|podrias|podr[ií]as)\s+)?(?:guarda(?:r|me)?|agrega(?:r|me)?|a[ñn]ade|a[ñn]adir|crea(?:r|me)?|registra(?:r|me)?|anota(?:r|me)?|nueva|nuevo)\b/;
+
+/**
+ * Frases naturales para guardar una cuenta o tarjeta: "guarda la tarjeta crédito 8263 es de Valeska Sanhueza",
+ * "agrega mi cuenta rut 1234 del banco estado", "nueva tarjeta débito 5555 de Juan", "la tarjeta 8263 es de Valeska".
+ * Devuelve { textoCuenta, ultimos4, titular, numeroLargo } o null. `textoCuenta` es el texto reescrito en el formato de
+ * /savecard ("tarjeta crédito terminada en 8263 a nombre de Valeska Sanhueza") para pasarlo a parsearCuenta; de un
+ * número largo solo se toman los últimos 4 dígitos. Reglas locales: nada de esto va a Gemini.
+ */
+export function detectarGuardarCuenta(texto) {
+  const original = String(texto ?? '').trim();
+  if (!original || original.startsWith('/')) return null;
+  const norm = normalizar(original).replace(/[¿?¡!,;:]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!/\b(?:tarjeta|cuenta)\b/.test(norm)) return null;
+
+  // El número de la tarjeta o cuenta: un grupo de 4 a 19 dígitos (con espacios o guiones); nunca un monto con $ o "mil"
+  const numero = /(?<![\d$])(\d(?:[\s.-]?\d){3,18})(?![\d])(?!\s*(?:pesos|mil|lucas|luca|palos|k)\b)/.exec(original);
+  if (!numero || /\$\s*$/.test(original.slice(0, numero.index))) return null;
+  const digitos = numero[1].replace(/\D/g, '');
+  if (digitos.length < 4) return null;
+  const ultimos4 = digitos.slice(-4);
+
+  const conVerbo = VERBO_GUARDAR_CUENTA.test(norm);
+  const esDe = /\b(?:es|pertenece|va|son)\s+(?:de|a)\s+(\S.*)$/i.exec(original);
+  const estructura = new RegExp('^(?:la|mi|el)?\\s*(?:tarjeta|cuenta)\\b').test(norm) && Boolean(esDe);
+  if (!conVerbo && !estructura) return null;
+
+  // Titular: "es de X", "a nombre de X", "titular X" o un "de X" al final que no sea el banco
+  let titular = null;
+  const nombre = (t) => t.replace(/[¿?¡!.,;:]+$/g, '').replace(/\s+/g, ' ').trim();
+  const esNombre = (t) => t && !/\d/.test(t) && !/^(?:banco|la|el|los|las|mi|mis|ahorro|cuenta|tarjeta)\b/i.test(t) && t.split(' ').length <= 5;
+  let m;
+  if (esDe && esNombre(nombre(esDe[1]))) titular = nombre(esDe[1]);
+  else if ((m = /\b(?:a nombre de|titular(?: es)?)\s+(\S.*)$/i.exec(original)) && esNombre(nombre(m[1]))) titular = nombre(m[1]);
+  else if ((m = /\bde\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+){0,3})\s*$/.exec(original)) && esNombre(nombre(m[1]))) titular = nombre(m[1]);
+
+  // Texto en el formato de /savecard: sin el verbo ni el "es de X", con "terminada en NNNN" y el titular como "a nombre de"
+  let cuerpo = original
+    .replace(/^\s*(?:por favor\s+)?(?:(?:quiero|necesito|puedes|podr[ií]as)\s+)?(?:guarda(?:r|me)?|agrega(?:r|me)?|a[ñn]ade|a[ñn]adir|crea(?:r|me)?|registra(?:r|me)?|anota(?:r|me)?)\s+/i, '')
+    .replace(/^\s*(?:nueva|nuevo)\s+/i, '')
+    .replace(numero[1], ` terminada en ${ultimos4} `);
+  if (titular) {
+    cuerpo = cuerpo.replace(/\b(?:es|pertenece|va|son)\s+(?:de|a)\s+\S.*$/i, ' ')
+      .replace(/\b(?:a nombre de|titular(?: es)?)\s+\S.*$/i, ' ')
+      .replace(new RegExp(`\\bde\\s+${titular.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i'), ' ');
+  }
+  cuerpo = cuerpo.replace(/\s+/g, ' ').trim();
+  const textoCuenta = `${cuerpo}${titular ? ` a nombre de ${titular}` : ''}`.replace(/\s+/g, ' ').trim();
+
+  return { textoCuenta, ultimos4, titular, numeroLargo: digitos.length > 4 };
 }
 
 /**
@@ -381,6 +436,10 @@ export function clasificarPorReglas(texto) {
   const reinicio = detectarReset(original);
   if (reinicio) return resultado(reinicio);
 
+  // "guarda la tarjeta crédito 8263 es de Valeska": guardar una cuenta o tarjeta (siempre por reglas, sin Gemini)
+  const nuevaCuenta = detectarGuardarCuenta(original);
+  if (nuevaCuenta) return resultado('guardar_cuenta', nuevaCuenta);
+
   // "la FAN termina en 6958": asignar los últimos 4 dígitos a una cuenta (siempre con confirmación)
   const digitos = detectarAsignarDigitos(original);
   if (digitos) return resultado('asignar_digitos', digitos);
@@ -473,7 +532,7 @@ export function crearIntenciones(ctx) {
       candidatas.unshift(sugerida);
     }
 
-    await enviar(chatId, 'No estoy seguro de qué quieres hacer con ese mensaje. ¿Qué prefieres?', {
+    await enviar(chatId, 'No entendí ese mensaje. ¿Quieres guardar una cuenta, registrar un gasto o ver algo? Elige:', {
       reply_markup: {
         inline_keyboard: [
           ...candidatas.map(i => [{ text: ETIQUETAS[i], callback_data: `inte_${key}_${CODIGOS[i]}` }]),
@@ -566,6 +625,17 @@ export function crearIntenciones(ctx) {
         await ctx.ayuda(chatId);
         return true;
 
+      case 'guardar_cuenta':
+        if (datos.textoCuenta && ctx.guardarCuenta) {
+          await ctx.guardarCuenta(msg, datos);
+          return true;
+        }
+        if (ctx.ayudaGuardarCuenta) {
+          await ctx.ayudaGuardarCuenta(chatId);
+          return true;
+        }
+        return preguntarIntencion(chatId, texto);
+
       case 'estado':
         if (ctx.estado) {
           await ctx.estado(chatId);
@@ -646,8 +716,9 @@ export function crearIntenciones(ctx) {
       }
     }
 
-    // 3. Nada alcanzó: se pregunta
-    return preguntarIntencion(chatId, texto);
+    // 3. Nada alcanzó (o el mensaje trae datos sensibles y no va a Gemini): se pregunta, nunca se queda en silencio.
+    // Si habla de una tarjeta o cuenta, "guardar una cuenta" va primero.
+    return preguntarIntencion(chatId, texto, /\b(?:tarjeta|cuenta)\b/.test(normalizar(texto)) ? 'guardar_cuenta' : null);
   }
 
   /** Botones de este módulo. Devuelve true si el callback era suyo. */

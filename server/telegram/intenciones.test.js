@@ -1,4 +1,4 @@
-import { clasificarPorReglas, puedeEnviarseAGemini, limpiarBusqueda, clasificarReply, detectarEliminarUltimo, replyDesdeGemini, detectarAsignarDigitos, detectarReset } from './intenciones.js';
+import { clasificarPorReglas, puedeEnviarseAGemini, limpiarBusqueda, clasificarReply, detectarEliminarUltimo, replyDesdeGemini, detectarAsignarDigitos, detectarReset, detectarGuardarCuenta } from './intenciones.js';
 
 const intencion = (texto) => clasificarPorReglas(texto)?.intencion ?? null;
 
@@ -214,5 +214,36 @@ describe('correcciones de monto con muletillas y de lugar', () => {
     expect(cambios('la descripción es Líder')).toEqual({ descripcion: 'Líder' });
     expect(cambios('era en supermercado')).toEqual({ categoria_id: 1 });
     expect(cambios('era en la fan')).toEqual({ cuenta_id: 1 });
+  });
+});
+
+describe('guardar una cuenta o tarjeta con una frase', () => {
+  test('saca el texto en formato /savecard, los últimos 4 dígitos y el titular', () => {
+    expect(detectarGuardarCuenta('guarda la tarjeta crédito 8263 es de Valeska Sanhueza')).toMatchObject({
+      ultimos4: '8263', titular: 'Valeska Sanhueza', numeroLargo: false,
+      textoCuenta: 'la tarjeta crédito terminada en 8263 a nombre de Valeska Sanhueza'
+    });
+    expect(detectarGuardarCuenta('nueva tarjeta débito 5555 de Juan')).toMatchObject({ ultimos4: '5555', titular: 'Juan' });
+    expect(detectarGuardarCuenta('la tarjeta 8263 es de Valeska')).toMatchObject({ ultimos4: '8263', titular: 'Valeska' });
+  });
+
+  test('el banco no es el titular y sin titular queda null (se usa el por defecto)', () => {
+    const r = detectarGuardarCuenta('agrega mi cuenta rut 1234 del banco estado');
+    expect(r).toMatchObject({ ultimos4: '1234', titular: null });
+    expect(r.textoCuenta).toContain('del banco estado');
+  });
+
+  test('un número largo se reduce a los últimos 4 y se marca como largo', () => {
+    const r = detectarGuardarCuenta('guarda la tarjeta débito banco de chile 4111 1111 1111 1234');
+    expect(r).toMatchObject({ ultimos4: '1234', numeroLargo: true });
+    expect(JSON.stringify(r)).not.toContain('4111');
+  });
+
+  test('un gasto con tarjeta o una consulta no se confunden', () => {
+    expect(detectarGuardarCuenta('pagué 5000 con la tarjeta 1234')).toBeNull();
+    expect(detectarGuardarCuenta('almuerzo 5500 tarjeta')).toBeNull();
+    expect(detectarGuardarCuenta('la FAN termina en 6958')).toBeNull();
+    expect(clasificarPorReglas('guarda la tarjeta crédito 8263 es de Valeska Sanhueza').intencion).toBe('guardar_cuenta');
+    expect(clasificarPorReglas('pagué 5000 con la tarjeta 1234')?.intencion).not.toBe('guardar_cuenta');
   });
 });

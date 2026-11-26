@@ -33,6 +33,8 @@ import { crearStatus } from './statusBot.js';
 import { crearVistaCuentas } from './vistaCuentasBot.js';
 import { crearLoteTerceros } from './loteTerceros.js';
 import { crearTransferencias } from './transferenciasBot.js';
+import { esTitularPropio } from './terceros.js';
+import { fijarTitular } from '../resumenDatos.js';
 import { crearSistema } from './sistemaBot.js';
 import { crearIntenciones, clasificarPorReglas } from './intenciones.js';
 import { limitadorGemini } from './limiteGemini.js';
@@ -48,6 +50,7 @@ import {
   buscarBanco,
   normalizar,
   capitalizarNombre,
+  valorTitular,
   TIPOS_CUENTA,
   TIPO_DB,
   ETIQUETAS_TIPO_CUENTA,
@@ -285,6 +288,8 @@ export async function iniciarBot() {
       buscar: (chatId, texto) => admin.buscar(chatId, texto),
       ayuda: (chatId) => enviar(chatId, textoAyuda()),
       eliminarUltimo: (chatId) => registros.eliminarUltimo(chatId),
+      guardarCuenta: (msg, datos) => procesarCuentaDesdeTexto(msg, datos.textoCuenta, { natural: true, numeroLargo: datos.numeroLargo }),
+      ayudaGuardarCuenta: (chatId) => enviarAyudaGuardarCuenta(chatId),
       asignarDigitos: (chatId, datos) => cartolas.proponerDigitos(chatId, datos),
       estado: (chatId) => status.responder(chatId),
       reset: (chatId) => reset.pedirReset(chatId),
@@ -362,6 +367,11 @@ function textoAyuda() {
     '• busca uber de octubre\n' +
     '• qué cuentas tengo, qué datos tienes guardados\n' +
     '• pásame los datos de la mercado pago\n\n' +
+    '<b>Guardar una cuenta o tarjeta</b> (con los últimos 4 dígitos)\n' +
+    '• guarda la tarjeta crédito 8263 es de Valeska Sanhueza\n' +
+    '• agrega mi cuenta rut 1234 del banco estado\n' +
+    '• nueva tarjeta débito 5555 de Juan\n' +
+    '• la tarjeta 8263 es de Valeska\n\n' +
     '<b>Transferencias</b>\n' +
     '• a una cuenta tuya: movimiento interno, no suma como gasto\n' +
     '• a quien le pagas cuotas (Valeska): la vinculo a la cuota del mes o a la suma de varias, y te aviso si falta o sobra\n' +
@@ -394,6 +404,13 @@ function textoAyuda() {
     'Los demás comandos (/ultimos, /buscar, /gastos, /fijo, /regla, /deudas...) siguen funcionando si los escribes.'
   );
 }
+
+// Comandos que existen (quien manda un "/algo" que no está aquí recibe un aviso en vez de silencio)
+const COMANDOS_CONOCIDOS = new Set([
+  'start', 'miid', 'help', 'ayuda', 'plan', 'cuotas', 'cuentas', 'datosguardados', 'resumen', 'ultimos', 'gastos', 'buscar',
+  'fijo', 'fijos', 'deudas', 'pago', 'categoria', 'categorias', 'regla', 'savecard', 'nuevacuenta', 'borrarcuenta',
+  'savetrans', 'misdatos', 'datos', 'borrardatos', 'status', 'update', 'reboot', 'reset'
+]);
 
 // Menú "/" de Telegram (setMyCommands): solo lo esencial; lo demás funciona escribiéndolo o en lenguaje natural
 const COMANDOS_MENU = [
@@ -542,10 +559,28 @@ function configurarComandos() {
 function configurarManejadores() {
   // Manejador de mensajes de texto (registro de transacciones)
   bot.on('message', async (msg) => {
+    try {
+      await procesarMensaje(msg);
+    } catch (error) {
+      // Nunca en silencio: se registra (sin el texto, que puede traer datos personales) y se avisa
+      console.error('Error en el manejador de mensajes:', error.code ?? error.name);
+      try {
+        await enviar(msg.chat.id, 'Ocurrió un error al procesar ese mensaje. Inténtalo de nuevo.');
+      } catch {
+        // si ni el aviso sale, no hay más que hacer
+      }
+    }
+  });
+
+  async function procesarMensaje(msg) {
     const chatId = msg.chat.id;
 
-    // Ignorar comandos (ya manejados)
+    // Los comandos los atienden sus propios manejadores; uno que no existe se avisa en vez de quedarse en silencio
     if (msg.text && msg.text.startsWith('/')) {
+      const nombre = /^\/([a-z0-9_]+)/i.exec(msg.text)?.[1]?.toLowerCase();
+      if (nombre && !COMANDOS_CONOCIDOS.has(nombre) && esChatAutorizado(chatId)) {
+        await enviar(chatId, 'No conozco ese comando. Escribe /help para ver lo que puedo hacer, o cuéntame lo que necesitas con tus palabras.');
+      }
       return;
     }
 
@@ -638,8 +673,14 @@ function configurarManejadores() {
         console.error('Error al interpretar el mensaje:', error.code ?? error.name);
         await enviar(chatId, 'No pude procesar ese mensaje. Inténtalo de nuevo.');
       }
+      return;
     }
-  });
+
+    // Stickers, notas de voz, videos, ubicaciones...: no se entienden, pero se responde
+    if (msg.sticker || msg.voice || msg.audio || msg.video || msg.video_note || msg.animation || msg.location || msg.contact || msg.poll) {
+      await enviar(chatId, 'Solo entiendo texto, fotos y archivos (cartolas en PDF, CSV o Excel). Cuéntame con palabras lo que necesitas o escribe /help.');
+    }
+  }
 
   // Manejador de callbacks (botones inline)
   bot.on('callback_query', async (cb) => {
@@ -1695,6 +1736,110 @@ async function enviarCuentas(chatId) {
   await vistaCuentas.responder(chatId);
 }
 
+// Cuentas ya existentes a las que se les ofrece cambiar el titular: clave -> { cuentaId, nombre, titular }
+const pendingActualizacionTitular = new Map();
+
+/** Cuenta activa que ya tiene esos 4 dígitos (de la tarjeta o del número de cuenta, según lo que se guarda) */
+async function buscarCuentaPorDigitos(datos) {
+  const digitos = datos.ultimos4 ?? datos.ultimos4Cuenta;
+  if (!digitos) return null;
+  const columna = datos.ultimos4 ? 'ultimos4' : 'ultimos4_cuenta';
+  const [filas] = await query(`SELECT id, nombre, titular FROM cuentas WHERE activa = 1 AND ${columna} = ? LIMIT 1`, [digitos]);
+  return filas[0] ?? null;
+}
+
+/**
+ * Guarda una cuenta o tarjeta a partir de un texto: lo que sigue a /savecard o una frase natural ("guarda la tarjeta
+ * crédito 8263 es de Valeska"). Es el mismo flujo en los dos casos: se interpreta con parsearCuenta, se muestra un
+ * resumen con Guardar y Cancelar y se pregunta lo que falte (por ejemplo el tipo). En la frase natural no se usa
+ * Gemini, el titular sin decir es TITULAR_POR_DEFECTO y, si ya hay una cuenta con esos 4 dígitos, se ofrece
+ * actualizar su titular en vez de duplicarla.
+ */
+async function procesarCuentaDesdeTexto(msg, texto, { natural = false, numeroLargo = false } = {}) {
+  const chatId = msg.chat.id;
+  try {
+    let datos = parsearCuenta(texto);
+
+    // Si el mensaje traía un número de tarjeta completo, se borra del chat (solo se guardan los últimos 4)
+    if (datos.numeroCompletoRechazado || numeroLargo) {
+      await borrarMensaje(chatId, msg.message_id);
+    }
+
+    if (natural) {
+      // Sin titular dicho: el titular por defecto; una tarjeta ajena se nombra por su dueña ("Tarjeta de Valeska")
+      if (!datos.titular) datos.titular = valorTitular('yo');
+      if (datos.tipo && !esTitularPropio(datos.titular) && datos.nombre === nombrePorDefecto(datos.tipo, datos.banco)) {
+        datos.nombre = `${datos.tipo === 'credito' || datos.tipo === 'debito' ? 'Tarjeta' : 'Cuenta'} de ${datos.titular.split(' ')[0]}`;
+      }
+
+      const existente = await buscarCuentaPorDigitos(datos);
+      if (existente) {
+        await ofrecerActualizarTitular(chatId, existente, datos);
+        return;
+      }
+    } else if (!datos.tipo) {
+      // Respaldo: Gemini si las reglas no identifican el tipo
+      const ia = await interpretarCuenta(texto);
+      if (ia) datos = combinarCuenta(datos, ia);
+    }
+
+    const key = `${chatId}_${Date.now()}`;
+    pendingCuentas.set(key, { datos, mensajeUsuarioId: msg.message_id ?? null });
+    setTimeout(() => pendingCuentas.delete(key), 5 * 60 * 1000);
+
+    if (!datos.tipo) {
+      await enviar(chatId, 'No pude identificar el tipo de cuenta. Elige uno:', tecladoTiposCuenta(key));
+      return;
+    }
+
+    await mostrarConfirmacionCuenta(chatId, key);
+  } catch (error) {
+    // Sin el texto del mensaje: puede contener datos de la tarjeta
+    console.error('Error al interpretar la cuenta:', error.code ?? '', error.message);
+    await enviar(chatId, '❌ Error al procesar la cuenta.');
+  }
+}
+
+/** Ya existe una cuenta con esos 4 dígitos: se ofrece cambiarle el titular en lugar de crear otra */
+async function ofrecerActualizarTitular(chatId, existente, datos) {
+  const mismo = normalizar(existente.titular ?? '').trim() === normalizar(datos.titular ?? '').trim();
+  if (mismo) {
+    await enviar(chatId,
+      `Ya tienes <b>${esc(existente.nombre)}</b> terminada en ${esc(datos.ultimos4 ?? datos.ultimos4Cuenta)} con titular ${esc(existente.titular)}. No cambié nada.`
+    );
+    return;
+  }
+  const key = `${chatId}_${Date.now()}`;
+  pendingActualizacionTitular.set(key, { cuentaId: existente.id, nombre: existente.nombre, titular: datos.titular });
+  setTimeout(() => pendingActualizacionTitular.delete(key), 5 * 60 * 1000);
+  await enviar(chatId,
+    `Ya tienes <b>${esc(existente.nombre)}</b> terminada en ${esc(datos.ultimos4 ?? datos.ultimos4Cuenta)}` +
+    `${existente.titular ? ` (titular: ${esc(existente.titular)})` : ' (sin titular)'}. ` +
+    `¿Le cambio el titular a <b>${esc(datos.titular)}</b> en vez de crear otra cuenta?`,
+    {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: 'Sí, actualizar titular', callback_data: `ncu_${key}` },
+          { text: 'No', callback_data: `ncv_${key}` }
+        ]]
+      }
+    }
+  );
+}
+
+/** Cómo guardar una cuenta con una frase (cuando el mensaje habla de una cuenta pero no se entendió) */
+async function enviarAyudaGuardarCuenta(chatId) {
+  await enviar(chatId,
+    '<b>Guardar una cuenta o tarjeta</b>\n\n' +
+    'Escríbelo como hablas, con los últimos 4 dígitos:\n' +
+    '• guarda la tarjeta crédito 8263 es de Valeska Sanhueza\n' +
+    '• agrega mi cuenta rut 1234 del banco estado\n' +
+    '• nueva tarjeta débito 5555 de Juan\n' +
+    '• la tarjeta 8263 es de Valeska\n\n' +
+    'Si no dices el titular, uso el tuyo. Nunca mandes el número completo: solo guardo los últimos 4.'
+  );
+}
+
 function configurarComandosCuentas() {
   // /savecard o /nuevacuenta <texto libre>
   bot.onText(/^\/(?:savecard|nuevacuenta)(?:@\w+)?(?:\s+([\s\S]+))?$/i, async (msg, match) => {
@@ -1717,35 +1862,7 @@ function configurarComandosCuentas() {
       return;
     }
 
-    try {
-      let datos = parsearCuenta(texto);
-
-      // Si el mensaje traía un número de tarjeta completo, se borra del chat
-      if (datos.numeroCompletoRechazado) {
-        await borrarMensaje(chatId, msg.message_id);
-      }
-
-      // Respaldo: Gemini si las reglas no identifican el tipo
-      if (!datos.tipo) {
-        const ia = await interpretarCuenta(texto);
-        if (ia) datos = combinarCuenta(datos, ia);
-      }
-
-      const key = `${chatId}_${Date.now()}`;
-      pendingCuentas.set(key, { datos, mensajeUsuarioId: msg.message_id ?? null });
-      setTimeout(() => pendingCuentas.delete(key), 5 * 60 * 1000);
-
-      if (!datos.tipo) {
-        await enviar(chatId, 'No pude identificar el tipo de cuenta. Elige uno:', tecladoTiposCuenta(key));
-        return;
-      }
-
-      await mostrarConfirmacionCuenta(chatId, key);
-    } catch (error) {
-      // Sin el texto del mensaje: puede contener datos de la tarjeta
-      console.error('Error al interpretar la cuenta:', error.code ?? '', error.message);
-      await enviar(chatId, '❌ Error al procesar la cuenta.');
-    }
+    await procesarCuentaDesdeTexto(msg, texto);
   });
 
   // /cuentas: cuentas activas numeradas
@@ -1838,6 +1955,34 @@ async function manejarNombreCuentaPendiente(msg) {
  */
 async function manejarCallbackCuentas(cb, chatId, data) {
   const messageId = cb.message.message_id;
+
+  // Actualizar el titular de una cuenta que ya existe
+  if (data.startsWith('ncu_') || data.startsWith('ncv_')) {
+    const key = data.slice(4);
+    const pendiente = pendingActualizacionTitular.get(key);
+    pendingActualizacionTitular.delete(key);
+    if (data.startsWith('ncv_')) {
+      await editar('Entendido, no cambié nada.', { chat_id: chatId, message_id: messageId });
+      await responderCallback(cb.id, { text: 'Cancelado' });
+      return true;
+    }
+    if (!pendiente) {
+      await responderCallback(cb.id, { text: 'Solicitud expirada' });
+      return true;
+    }
+    try {
+      const listo = await fijarTitular(pendiente.cuentaId, pendiente.titular);
+      await editar(
+        listo ? `Listo: el titular de <b>${esc(pendiente.nombre)}</b> ahora es <b>${esc(pendiente.titular)}</b>.` : 'No pude actualizarla: la cuenta ya no está activa.',
+        { chat_id: chatId, message_id: messageId }
+      );
+      await responderCallback(cb.id, { text: listo ? 'Actualizado' : 'Sin cambios' });
+    } catch (error) {
+      console.error('Error al actualizar el titular:', error.code ?? '', error.message);
+      await responderCallback(cb.id, { text: 'Error al guardar' });
+    }
+    return true;
+  }
 
   // Guardar la cuenta
   if (data.startsWith('ncs_')) {

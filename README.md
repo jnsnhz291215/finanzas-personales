@@ -711,6 +711,24 @@ Si el comprobante llega antes que la cartola espera hasta 25 segundos (110 si ya
 comprobante, lo registra como pago de la siguiente cuota; si manda solo la cartola, al final ofrece registrar la cuota con el monto del
 cargo. Una foto que no parece un comprobante de transferencia sigue el flujo de siempre. A Gemini no viaja nada de esto.
 
+### Guardar una cuenta o tarjeta con una frase
+
+Además de `/savecard`, puedes escribirlo como hablas (siempre con los **últimos 4 dígitos**; reglas locales, sin Gemini):
+
+- `guarda la tarjeta crédito 8263 es de Valeska Sanhueza`
+- `agrega mi cuenta rut 1234 del banco estado`
+- `nueva tarjeta débito 5555 de Juan`
+- `la tarjeta 8263 es de Valeska`
+
+El bot saca el tipo (crédito, débito, corriente, vista o rut), los 4 dígitos, el titular (si no lo dices, `TITULAR_POR_DEFECTO`) y el banco si aparece;
+si viene un número largo guarda solo los últimos 4 y borra tu mensaje del chat. Es el mismo flujo de `/savecard`: muestra un resumen con **Guardar** y
+**Cancelar**, y pregunta lo que falte (por ejemplo el tipo si dices solo "la tarjeta"). Si ya hay una cuenta con esos 4 dígitos, en vez de duplicarla ofrece
+**actualizar su titular**. Una tarjeta de otra persona se nombra por su dueña ("Tarjeta de Valeska").
+
+**El bot no se queda en silencio:** un mensaje que ninguna regla entiende (y que no va a Gemini, por ejemplo por traer datos sensibles) recibe "No entendí ese
+mensaje" con botones (guardar una cuenta, registrar un gasto, ver gastos, plan, cuotas, cuentas, ayuda); un comando que no existe, un sticker, una nota de voz
+o un error inesperado también reciben respuesta (los errores quedan en el log, sin el texto del mensaje).
+
 ### Cuentas, vínculos y datos guardados: /cuentas
 
 `/cuentas` (alias `/datosguardados`; también "qué cuentas tengo", "muéstrame mis cuentas" y "qué datos tienes guardados", siempre por reglas,
