@@ -682,12 +682,31 @@ Solo para los chats de `TELEGRAM_ALLOWED_CHAT_IDS` y solo con `NODE_ENV=producti
      clave o con error, se muestran los títulos tal cual.
   6. Guarda en `tmp/reinicio.json` el hash esperado y reinicia como `/reboot`. Al volver, el mensaje "Listo, volví a estar en línea"
      incluye la versión y dice "Actualización confirmada" si coincide con el hash esperado, o "Algo no calzó" si no.
-  - **`update.sh`:** está en la raíz del repositorio y `/update` lo usa en vez de hacer el `git pull` y el `npm ci` por su cuenta. Imprime
-    las mismas verificaciones (git, node y npm con su versión, rama, remoto), hace `git pull --ff-only`, muestra el hash anterior y el
-    nuevo, ejecuta `npm ci --omit=dev` solo si cambió `package.json` o `package-lock.json`, y recarga con
-    `pm2 startOrReload ecosystem.config.cjs --update-env` y `pm2 save` (así sirve también para el primer arranque, cuando la app aún no está en PM2). A mano: `bash update.sh`. El bot lo llama en dos partes
-    (`--sin-reinicio` al comienzo y `--solo-reiniciar` al final) para poder mandar antes la prueba del cambio y el resumen con IA; al
-    volver, compara el hash con el esperado. Si `pm2 startOrReload` falla, el bot reinicia el proceso directamente y PM2 lo levanta.
+  - **`update.sh`:** hace todo de punta a punta con un solo comando (`bash update.sh`, desde cualquier carpeta; `/update` lo usa en vez de
+    hacer el pull y el npm por su cuenta). En orden, con `set -Eeuo pipefail` (si algo falla, dice en qué paso):
+    1. Se ubica en la carpeta del propio script.
+    2. Verifica `git`, `node`, `npm`, `pm2`, `tar` (y `mysqldump` y `mysql` con MariaDB) y que exista el `.env` en la raíz, sin leer su
+       contenido salvo la línea `DB_ENGINE=`; además la rama y que el remoto responda.
+    3. `git pull --ff-only` mostrando el hash anterior y el nuevo.
+    4. `npm ci --omit=dev` (o `npm install --omit=dev` si no hay `package-lock.json`) si cambió `package.json` o `package-lock.json`, o si
+       falta `node_modules`.
+    5. Migraciones: no hay un paso aparte; las tablas se crean y actualizan solas cuando arranca la app.
+    6. **Siempre** inicia o reinicia con `pm2 startOrReload ecosystem.config.cjs --update-env` y `pm2 save`, aunque no haya cambios en git (así
+       sirve también para el primer arranque).
+    7. Espera unos segundos (`ESPERA_PM2`, 5 por defecto), comprueba con PM2 que el proceso esté `online` y que no haya reinicios en bucle
+       (compara el contador antes y después) y lee los logs de ese arranque para confirmar que el bot inició. Si no está online, el
+       bot quedó deshabilitado o hay reinicios en bucle, imprime las últimas 40 líneas de `pm2 logs <nombre> --lines 40 --nostream` y sale
+       con código distinto de 0.
+    8. Resumen final: hash, si instaló dependencias, estado de PM2 y "Bot en línea" (o el error).
+
+    El nombre del proceso lo toma de `ecosystem.config.cjs` (`finanzas-personales`). El ecosistema fija `cwd` en la carpeta de la app, así que
+    el `.env` de la raíz se carga aunque PM2 se lance desde otra carpeta, y `log_date_format` fijo para poder leer solo los logs del último arranque.
+
+    El bot lo llama en dos partes (`--sin-reinicio` al comienzo y `--solo-reiniciar` al final) para poder mandar antes la prueba del cambio y
+    el resumen con IA. Como PM2 mata al bot y a sus procesos hijos al recargar, la segunda parte se lanza desacoplada (`nohup`, en segundo
+    plano) y su salida completa queda en `tmp/update-reinicio.log` (dentro de storage): si el bot no vuelve, ahí está el motivo. Si PM2
+    no reinicia al bot en 40 segundos, el bot se cierra solo y PM2 lo levanta (autorestart). Sin cambios en git, `/update` sigue diciendo
+    "Ya estaba al día" y no reinicia; el reinicio incondicional es el de `bash update.sh` a mano.
   - **Motor de BD en el script:** `update.sh` toma `DB_ENGINE` del entorno; si no está, lee solo esa línea del `.env` de la raíz (sin cargar
     el archivo ni mostrar otras variables); si tampoco está, asume `sqlite` y avisa "DB_ENGINE no definido en .env, se asume sqlite".
     Imprime de dónde salió: `(entorno)`, `(.env)` o `(por defecto)`. Con `mariadb` revisa que existan `mysqldump` y `mysql`.

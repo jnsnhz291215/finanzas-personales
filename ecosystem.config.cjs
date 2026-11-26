@@ -2,6 +2,9 @@ module.exports = {
   apps: [{
     name: 'finanzas-personales',
     script: './server/index.js',
+    // Carpeta de la app: ahí está el .env que carga dotenv (se busca en el directorio de trabajo) y de ahí
+    // salen ./server/index.js y ./logs, aunque PM2 se lance desde otra carpeta
+    cwd: __dirname,
     instances: 1,
     autorestart: true,
     watch: false,
@@ -13,6 +16,8 @@ module.exports = {
     error_file: './logs/err.log',
     out_file: './logs/out.log',
     log_file: './logs/combined.log',
-    time: true
+    time: true,
+    // Formato fijo de la hora en los logs: update.sh lo usa para leer solo los logs del último arranque
+    log_date_format: 'YYYY-MM-DDTHH:mm:ss'
   }]
 };

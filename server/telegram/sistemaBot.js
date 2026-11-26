@@ -20,7 +20,7 @@
 
 import path from 'path';
 import fs from 'fs/promises';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { carpetaTmp } from '../storage.js';
 import { resumirCambios, geminiDisponible } from './gemini.js';
@@ -245,13 +245,30 @@ export function crearSistema(ctx) {
     } catch (error) {
       console.error(`[sistema] no se pudo escribir el aviso de reinicio: error_code=${error.code ?? 'desconocido'}`);
     }
-    // Con update.sh, el script arranca o recarga PM2 (startOrReload y save); si falla o el proceso sigue vivo, se sale
-    // igual y PM2 (autorestart) lo levanta
+    // Con update.sh, el script arranca o recarga PM2 (startOrReload, save y comprobación). PM2 mata a este
+    // proceso y a todos sus hijos al recargar, así que el script se lanza desacoplado (nohup, en segundo
+    // plano) para que sobreviva y termine; su salida queda en tmp/update-reinicio.log. Si PM2 no nos
+    // reinicia en 40 s, se sale igual y PM2 (autorestart) levanta el proceso.
     if (conScript) {
+      const log = path.join(carpetaTmp(), 'update-reinicio.log');
+      await enviar(chatId,
+        'Reiniciando con update.sh. Si no vuelvo en un minuto, el motivo queda en <code>tmp/update-reinicio.log</code> (dentro de storage) ' +
+        'y con <code>pm2 logs</code> en el servidor.'
+      );
       await new Promise(resolve => setTimeout(resolve, RETRASO_SALIDA_MS));
-      const r = await ejecutar('bash', [NOMBRE_SCRIPT, '--solo-reiniciar'], { timeoutMs: TIMEOUT_GIT_MS });
-      if (!r.ok) await enviar(chatId, `No pude recargar PM2 con ${NOMBRE_SCRIPT}; reinicio el proceso directamente.`);
-      setTimeout(() => process.exit(0), RETRASO_SALIDA_MS * 2);
+      try {
+        // Argumentos fijos: la ruta del script y la del log; nada viene de texto del usuario
+        spawn('sh', ['-c', 'nohup bash "$0" --solo-reiniciar > "$1" 2>&1 &', path.join(RAIZ_REPO, NOMBRE_SCRIPT), log], {
+          cwd: RAIZ_REPO,
+          detached: true,
+          stdio: 'ignore'
+        }).unref();
+      } catch (error) {
+        console.error(`[sistema] no se pudo lanzar ${NOMBRE_SCRIPT}: error_code=${error.code ?? 'desconocido'}`);
+        setTimeout(() => process.exit(0), RETRASO_SALIDA_MS);
+        return;
+      }
+      setTimeout(() => process.exit(0), 40 * 1000);
       return;
     }
     // Margen para que el mensaje alcance a salir
