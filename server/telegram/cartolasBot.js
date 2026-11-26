@@ -15,6 +15,7 @@
  * contenido de cartolas.
  */
 
+import { describirError } from './errores.js';
 import { fechaFinDeMovimientos, analizarCartola, analizarPDF, analizarTexto, calcularHashBuffer, cartolaYaImportada, registrarImportacion } from '../cartolas.js';
 import { listarCuentasConBanco, guardarDigitosCuenta } from '../gestion.js';
 import { fijarTitular } from '../resumenDatos.js';
@@ -224,7 +225,7 @@ export function crearCartolas(ctx) {
   // -------------------------------------------------------------------------
 
   /** Lee un archivo. Devuelve { estado: 'ok'|'escaneado'|'ilegible', movimientos, origen, banco, formato } */
-  async function analizarArchivo({ buffer, ext }) {
+  async function analizarArchivo({ buffer, ext, nombre = 'el archivo' }) {
     try {
       if (EXT_IMAGEN.includes(ext)) {
         // Foto de una cartola: OCR local y las mismas reglas del PDF (sin IA). Las tablas salen peor que en un PDF.
@@ -260,9 +261,9 @@ export function crearCartolas(ctx) {
         ultimos4: r.ultimos4 ?? [], formato: nombre ?? 'Formato genérico'
       };
     } catch (error) {
-      // Sin el contenido del archivo: solo el tipo de error
-      console.error(`[cartolas] no pude leer un archivo (${ext}): ${error.name}: ${error.message}`);
-      return { estado: 'ilegible' };
+      // El detalle (con stack, sin el contenido del archivo) queda en el log; al usuario se le da la causa corta
+      const paso = EXT_IMAGEN.includes(ext) ? 'leer' : ext === '.pdf' ? 'leer_pdf' : 'reconocer_formato';
+      return { estado: 'ilegible', causa: describirError(error, paso, nombre).causa };
     }
   }
 
@@ -443,7 +444,7 @@ export function crearCartolas(ctx) {
               ? `${prefijo}este PDF parece escaneado y no tiene texto, mándame la cartola descargada desde el banco. Dejé el archivo guardado.`
               : esFoto
                 ? `${prefijo}no pude leer los movimientos de esta foto (las tablas se leen mal en una imagen). Mándame el PDF de la cartola. Dejé la foto guardada.`
-                : `${prefijo}no pude leer los movimientos${archivo.ext === '.pdf' ? ' de este PDF (no reconozco su formato)' : ''}. Dejé el archivo guardado.`
+                : `${prefijo}no pude leer los movimientos${archivo.ext === '.pdf' ? ' de este PDF' : ''}: ${analisis.causa ?? 'no reconozco su formato'}. Dejé el archivo guardado.`
           );
           continue;
         }
@@ -452,6 +453,7 @@ export function crearCartolas(ctx) {
         validos.push({
           tmp: tmp.ruta,
           hash,
+          nombre: archivo.nombre,
           ext: archivo.ext,
           esPDF: archivo.ext === '.pdf' || EXT_IMAGEN.includes(archivo.ext),
           origen: analisis.origen,
@@ -470,8 +472,7 @@ export function crearCartolas(ctx) {
         });
       } catch (error) {
         // Un archivo que falla no detiene al resto del lote: se dice cuál y por qué
-        console.error(`[cartolas] error al procesar "${archivo.nombre}": ${error.name}: ${error.message}\n${error.stack}`);
-        avisos.push(`${prefijo}no pude procesarlo (${motivoCorto(error)}). Los demás siguen.`);
+        avisos.push(`${describirError(error, 'procesar', archivo.nombre).plano} Los demás siguen.`);
       }
     }
 
@@ -514,16 +515,6 @@ export function crearCartolas(ctx) {
     }, ESPERA_MS / 12);
     espera.timer.unref?.();
     for (const item of dudas) await preguntarContexto(chatId, item, cuentas, espera);
-  }
-
-  /** Motivo corto (sin datos personales) de un error al procesar un archivo */
-  function motivoCorto(error) {
-    const texto = `${error?.code ?? ''} ${error?.message ?? ''}`.toLowerCase();
-    if (/enospc|espacio/.test(texto)) return 'no hay espacio para guardarlo';
-    if (/eacces|eperm/.test(texto)) return 'no tengo permiso para guardarlo';
-    if (/duplicate|er_dup|unique|constraint/.test(texto)) return 'ya existía un registro igual';
-    if (/timeout|econn|fetch|network|socket/.test(texto)) return 'falló la conexión';
-    return 'error interno, quedó en el registro';
   }
 
   /** Un solo resumen para todo el envío: qué se leyó de cada archivo y lo que se descartó */
@@ -919,7 +910,8 @@ export function crearCartolas(ctx) {
       lote.registrados.push(...registrados);
       lote.grupos.push({ cuentaId: cuenta.id, registrados });
     } catch (error) {
-      console.error('Error al importar una cartola del lote:', error.code ?? error.name);
+      // Se guarda el motivo para decirle al usuario qué archivo falló y por qué (el detalle completo queda en el log)
+      item.error = describirError(error, 'guardar_bd', `la cartola ${item.nombre ?? ''}`.trim());
       item.estado = 'error';
     }
   }
@@ -948,7 +940,7 @@ export function crearCartolas(ctx) {
 
     const lineas = lote.items.map((item, i) => {
       if (item.estado === 'importado') return `${i + 1}. ${item.importados} movimientos en ${esc(item.cuentaNombre)}${textoDuplicados(item.duplicados)}`;
-      if (item.estado === 'error') return `${i + 1}. no se pudo importar (el archivo quedó pendiente)`;
+      if (item.estado === 'error') return `${i + 1}. ${item.error?.usuario ?? 'no se pudo importar.'} El archivo quedó pendiente.`;
       return `${i + 1}. omitido`;
     });
     const total = lote.items.reduce((suma, item) => suma + item.importados, 0);
@@ -1053,7 +1045,7 @@ export function crearCartolas(ctx) {
       );
     } catch (error) {
       console.error('Error al proponer dígitos:', error.code ?? error.name);
-      await enviar(chatId, 'No pude procesar eso. Inténtalo de nuevo.');
+      await enviar(chatId, describirError(error, 'procesar', 'el texto sobre las cartolas').usuario);
     }
   }
 
@@ -1173,7 +1165,7 @@ export function crearCartolas(ctx) {
       } catch (error) {
         console.error('Error al importar la cartola:', error.code ?? error.name);
         await editar('El archivo venció o no se pudo importar. Envíalo de nuevo.', { chat_id: chatId, message_id: messageId });
-        await responderCallback(cb.id, { text: 'Error al importar' });
+        await responderCallback(cb.id, { text: describirError(error, 'guardar_bd', 'la cartola').toast });
       }
       return true;
     }
@@ -1203,13 +1195,13 @@ export function crearCartolas(ctx) {
         await editar(
           guardado
             ? `Listo: •${esc(pendiente.digitos)} queda asociada a ${esc(pendiente.nombre)}.`
-            : 'No pude guardar esos dígitos.',
+            : 'No pude guardar esos dígitos: la cuenta ya no está activa.',
           { chat_id: chatId, message_id: messageId }
         );
         await responderCallback(cb.id, { text: guardado ? 'Guardado' : 'Sin cambios' });
       } catch (error) {
         console.error('Error al guardar los dígitos de la cuenta:', error.code ?? error.name);
-        await responderCallback(cb.id, { text: 'Error al guardar' });
+        await responderCallback(cb.id, { text: describirError(error, 'guardar_bd', 'los datos de la cuenta').toast });
       }
       return true;
     }
@@ -1281,7 +1273,7 @@ export function crearCartolas(ctx) {
         await editar(
           item.estado === 'importado'
             ? `Importé ${item.importados} movimientos en <b>${esc(cuenta.nombre)}</b>.${textoDuplicados(item.duplicados)}`
-            : 'No pude importar este archivo.',
+            : `${item.error?.usuario ?? 'No pude importar este archivo.'} El archivo quedó pendiente.`,
           { chat_id: chatId, message_id: messageId }
         );
         if (item.estado === 'importado') await vincular(chatId, [item.mensajeUsuarioId, messageId], 'importacion', item.archivoId);

@@ -11,6 +11,7 @@
  * Los textos que se muestran vienen de la BD (descripciones, nombres): se escapan siempre.
  */
 
+import { describirError } from './errores.js';
 import {
   buscarVinculo,
   ultimoRegistroManual,
@@ -116,7 +117,7 @@ export function crearRegistros(ctx) {
       await responderCallback(cb.id, { text: 'Eliminado' });
     } catch (error) {
       errorBD('Error al eliminar un registro', error);
-      await responderCallback(cb.id, { text: 'Error al eliminar' });
+      await responderCallback(cb.id, { text: describirError(error, 'borrar', 'el registro').toast });
     }
   }
 
@@ -228,7 +229,7 @@ export function crearRegistros(ctx) {
       await responderCallback(cb.id, { text: 'Corregido' });
     } catch (error) {
       errorBD('Error al corregir un registro', error);
-      await responderCallback(cb.id, { text: 'Error al corregir' });
+      await responderCallback(cb.id, { text: describirError(error, 'actualizar', 'el registro').toast });
     }
   }
 
@@ -248,7 +249,7 @@ export function crearRegistros(ctx) {
       return r.ok ? TEXTO_DESHECHO[r.accion] ?? 'Listo, lo deshice.' : r.error;
     } catch (error) {
       errorBD('Error al deshacer', error);
-      return 'No pude deshacerlo.';
+      return describirError(error, 'deshacer', 'el cambio').plano;
     }
   }
 
@@ -317,7 +318,7 @@ export function crearRegistros(ctx) {
       return false;
     } catch (error) {
       errorBD('Error al procesar la respuesta a un registro', error);
-      await enviar(chatId, 'No pude procesar esa respuesta. Inténtalo de nuevo.');
+      await enviar(chatId, describirError(error, 'procesar', 'tu respuesta').usuario);
       return true;
     }
   }
@@ -333,7 +334,7 @@ export function crearRegistros(ctx) {
       return await pedirEliminacion(chatId, ultimo.tipo, ultimo.registroId);
     } catch (error) {
       errorBD('Error al buscar el último registro', error);
-      await enviar(chatId, 'No pude buscar el último registro.');
+      await enviar(chatId, describirError(error, 'consultar', 'el último registro').usuario);
       return true;
     }
   }

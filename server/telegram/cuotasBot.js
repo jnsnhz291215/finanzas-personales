@@ -9,6 +9,7 @@
  * Los errores de BD se registran solo con su código.
  */
 
+import { describirError } from './errores.js';
 import path from 'path';
 import { parsearMontoExacto, extraerFecha, extraerMedioPago } from './parser.js';
 import { fechaHoySantiago, formatearFechaCL } from './fechas.js';
@@ -380,7 +381,7 @@ export function crearCuotas(ctx) {
       await responderCallback(cb.id, { text: 'Guardado' });
     } catch (error) {
       errorBD('Error al registrar el pago de cuota', error);
-      await responderCallback(cb.id, { text: 'Error al guardar' });
+      await responderCallback(cb.id, { text: describirError(error, 'guardar', 'el pago de la cuota').toast });
     }
   }
 
@@ -488,7 +489,7 @@ export function crearCuotas(ctx) {
       if (consulta) return await responderConsulta(chatId, consulta);
     } catch (error) {
       errorBD('Error en cuotas', error);
-      await enviar(chatId, 'Ocurrió un error al procesar las cuotas.');
+      await enviar(chatId, describirError(error, 'procesar', 'las cuotas').usuario);
       return true;
     }
     return false;
@@ -739,7 +740,7 @@ export function crearCuotas(ctx) {
       }
     } catch (error) {
       errorBD('Error en un botón de cuotas', error);
-      await responderCallback(cb.id, { text: 'Error' });
+      await responderCallback(cb.id, { text: describirError(error, 'procesar', 'la cuota').toast });
       return true;
     }
 
@@ -792,7 +793,7 @@ export function crearCuotas(ctx) {
         );
       } catch (error) {
         errorBD('Error en /cuotas', error);
-        await enviar(chatId, 'Ocurrió un error al procesar el comando.');
+        await enviar(chatId, describirError(error, 'procesar', 'el comando').usuario);
       }
     });
   }

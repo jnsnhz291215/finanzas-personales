@@ -11,6 +11,7 @@
  * datos está en server/reset.js.
  */
 
+import { describirError } from './errores.js';
 import {
   contarDatos,
   lineasConteos,
@@ -182,7 +183,7 @@ export function crearReset(ctx) {
       console.error('[reset] error:', error.codigo ?? error.code ?? error.name);
       await enviar(chatId, error.message === 'no se pudo crear el respaldo'
         ? 'No pude hacer el respaldo, así que no borré nada.'
-        : 'Ocurrió un error durante el borrado. La base de datos se deshizo a como estaba; revisa el servidor y el respaldo en storage/respaldos/.'
+        : `${describirError(error, 'borrar', 'los datos').usuario} La base de datos se deshizo a como estaba; revisa el servidor y el respaldo en storage/respaldos/.`
       );
     } finally {
       enProceso = false;

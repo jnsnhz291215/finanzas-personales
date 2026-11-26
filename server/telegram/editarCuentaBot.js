@@ -10,6 +10,7 @@
  * edicionCuentas.js). Los textos de la BD (nombres, titulares) se escapan siempre.
  */
 
+import { describirError } from './errores.js';
 import {
   CAMPOS,
   CAMPO_POR_CODIGO,
@@ -261,7 +262,7 @@ export function crearEditarCuenta(ctx) {
       }
     } catch (error) {
       errorBD('Error al editar una cuenta', error);
-      await enviar(chatId, 'No pude procesar eso. Inténtalo de nuevo.');
+      await enviar(chatId, describirError(error, 'actualizar', 'la cuenta').usuario);
     }
     return true;
   }
@@ -316,7 +317,7 @@ export function crearEditarCuenta(ctx) {
         else await listar(chatId);
       } catch (error) {
         errorBD('Error en /editarcuenta', error);
-        await enviar(chatId, 'No pude leer las cuentas. Inténtalo de nuevo.');
+        await enviar(chatId, describirError(error, 'consultar', 'las cuentas').usuario);
       }
     });
   }
@@ -411,7 +412,7 @@ export function crearEditarCuenta(ctx) {
           );
         } catch (error) {
           errorBD('Error al mover los archivos de una cuenta', error);
-          await editar('No pude mover los archivos: devolví todo a su lugar. Inténtalo de nuevo más tarde.', { chat_id: chatId, message_id: messageId });
+          await editar(`${describirError(error, 'mover_archivo', 'los archivos de la cuenta').usuario} Devolví todo a su lugar.`, { chat_id: chatId, message_id: messageId });
         } finally {
           moviendo.delete(valor);
         }
@@ -441,7 +442,7 @@ export function crearEditarCuenta(ctx) {
       }
     } catch (error) {
       errorBD('Error en un botón de editar cuenta', error);
-      await responderCallback(cb.id, { text: 'Error' });
+      await responderCallback(cb.id, { text: describirError(error, 'procesar', 'el cambio de la cuenta').toast });
       return true;
     }
     return false;

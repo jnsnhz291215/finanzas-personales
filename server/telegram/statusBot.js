@@ -12,6 +12,7 @@
  * completas de .env. De las variables solo se muestran los nombres.
  */
 
+import { describirError } from './errores.js';
 import os from 'os';
 import path from 'path';
 import fs from 'fs/promises';
@@ -549,7 +550,7 @@ export function crearStatus(ctx) {
       if (!editado) await enviar(chatId, texto);
     } catch (error) {
       console.error('[status] error:', error.code ?? error.name);
-      await enviar(chatId, 'No pude completar la revisión.');
+      await enviar(chatId, describirError(error, 'consultar', 'el estado del sistema').usuario);
     } finally {
       enCurso = false;
     }

@@ -8,6 +8,7 @@
  * Botones (prefijo rc): rcc_<sesión>_<cuenta> · rcy_<sesión>_<año> · rcm_<sesión>_<i|t> · rcb_<sesión> · rcx_<sesión> · rcz_<sesión>.
  */
 
+import { describirError } from './errores.js';
 import {
   interpretarResetCuenta,
   rangoDePeriodo,
@@ -195,7 +196,7 @@ export function crearResetCuenta(ctx) {
       );
     } catch (error) {
       console.error('Error en /resetcuenta:', error.code ?? error.name);
-      await mostrar(chatId, messageId, 'No pude borrar: no se cambió nada. Inténtalo de nuevo.', []);
+      await mostrar(chatId, messageId, `${describirError(error, 'borrar', 'los datos de la cuenta').usuario} No se cambió nada.`, []);
     }
   }
 
@@ -245,7 +246,7 @@ export function crearResetCuenta(ctx) {
       await empezar(msg.chat.id, i);
     } catch (error) {
       console.error('Error en /resetcuenta:', error.code ?? error.name);
-      await enviar(msg.chat.id, 'No pude preparar el borrado. Inténtalo de nuevo.');
+      await enviar(msg.chat.id, describirError(error, 'preparar', 'el borrado').usuario);
     }
     return true;
   }
@@ -267,7 +268,7 @@ export function crearResetCuenta(ctx) {
         await empezar(chatId, i);
       } catch (error) {
         console.error('Error en /resetcuenta:', error.code ?? error.name);
-        await enviar(chatId, 'No pude preparar el borrado. Inténtalo de nuevo.');
+        await enviar(chatId, describirError(error, 'preparar', 'el borrado').usuario);
       }
     });
   }
@@ -313,7 +314,7 @@ export function crearResetCuenta(ctx) {
       }
     } catch (error) {
       console.error('Error en /resetcuenta:', error.code ?? error.name);
-      await enviar(chatId, 'Ocurrió un error. No se borró nada nuevo.');
+      await enviar(chatId, `${describirError(error, 'procesar', 'el borrado').usuario} No se borró nada nuevo.`);
     }
     return true;
   }

@@ -14,6 +14,7 @@
  * Los textos de la BD (nombres, titulares) se escapan siempre. No usa Gemini.
  */
 
+import { describirError } from './errores.js';
 import { cargarResumen, fijarTitular, fijarDigitos } from '../resumenDatos.js';
 import { ETIQUETAS_TIPO_DB, normalizar, valorTitular } from './cuentas.js';
 import { buscarCuentaPorTexto } from './intenciones.js';
@@ -329,7 +330,7 @@ export function crearVistaCuentas(ctx) {
       }
     } catch (error) {
       errorBD('Error al armar la vista de cuentas', error);
-      await enviar(chatId, 'No pude leer las cuentas. Inténtalo de nuevo.');
+      await enviar(chatId, describirError(error, 'consultar', 'las cuentas').usuario);
     }
     return true;
   }
@@ -422,7 +423,7 @@ export function crearVistaCuentas(ctx) {
       return true;
     } catch (error) {
       errorBD('Error al corregir un vínculo de cuenta', error);
-      await enviar(chatId, 'No pude procesar eso. Inténtalo de nuevo.');
+      await enviar(chatId, describirError(error, 'actualizar', 'la cuenta').usuario);
       return true;
     }
   }
@@ -454,7 +455,7 @@ export function crearVistaCuentas(ctx) {
       await responderCallback(cb.id, { text: guardado ? 'Guardado' : 'Sin cambios' });
     } catch (error) {
       errorBD('Error al guardar la corrección de una cuenta', error);
-      await responderCallback(cb.id, { text: 'Error al guardar' });
+      await responderCallback(cb.id, { text: describirError(error, 'guardar', 'la corrección de la cuenta').toast });
     }
     return true;
   }

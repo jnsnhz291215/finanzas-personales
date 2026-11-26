@@ -186,13 +186,15 @@ export function aliasDeCargo(descripcion) {
 
 /**
  * La compra en cuotas que ya existe para un cargo: mismo total de cuotas, mismo monto por cuota (±1) y
- * una descripción parecida (el mismo nombre o una palabra de 4 letras o más en común). null si no hay.
+ * una descripción parecida (el mismo nombre o una palabra de 4 letras o más en común) y, si se conoce, la misma fecha de compra. null si no hay.
  */
-export function buscarCompraSimilar(compras, descripcion, monto, total) {
+export function buscarCompraSimilar(compras, descripcion, monto, total, fecha = null) {
   const alias = aliasDeCargo(descripcion);
   const palabras = alias.split(' ').filter(p => p.length >= 4);
   return compras.find(c => {
     if (Number(c.total_cuotas) !== Number(total) || !montosCalzan(c.monto_cuota, monto)) return false;
+    // Dos compras del mismo comercio, cuota y total pero de fechas distintas son compras distintas
+    if (fecha && c.fecha_inicio && String(c.fecha_inicio).slice(0, 10) !== String(fecha).slice(0, 10)) return false;
     const nombre = normalizar(c.alias).trim();
     return nombre === alias || palabras.some(p => ` ${nombre} `.includes(` ${p} `)) ||
       nombre.split(' ').some(p => p.length >= 4 && alias.split(' ').includes(p));
@@ -241,7 +243,8 @@ export function textoResumenLote({ titular, cuota, gastos, pago, otras = [], avi
   else lineas.push('No reconocí la cuota en la cartola');
   lineas.push(`${gastos} ${gastos === 1 ? 'gasto tuyo agregado' : 'gastos tuyos agregados'}`);
   for (const o of otras) {
-    lineas.push(`Cuotas: ${o.alias} ${o.actual}/${o.total} (${o.estado})${o.terminada ? ' - compra terminada' : ''}`);
+    if (o.estado === 'error') lineas.push(`Cuotas: no pude crear ${o.alias} ${o.actual}/${o.total}${o.motivo ? ` (${o.motivo})` : ''}`);
+    else lineas.push(`Cuotas: ${o.alias} ${o.actual}/${o.total} (${o.estado})${o.terminada ? ' - compra terminada' : ''}`);
   }
   if (pago === 'registrado') lineas.push(`Pago a ${titular} registrado`);
   else if (pago === 'sin') lineas.push(`Pago a ${titular}: sin comprobante`);

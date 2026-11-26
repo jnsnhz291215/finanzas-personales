@@ -8,6 +8,7 @@
  * Los errores de BD se registran solo con su código.
  */
 
+import { describirError } from './errores.js';
 import { parsearMontoExacto, analizarMonto } from './parser.js';
 import { fechaHoySantiago, formatearFechaCL } from './fechas.js';
 import { normalizar } from './cuentas.js';
@@ -160,7 +161,7 @@ export function crearAdmin(ctx) {
       await enviarListaMovimientos(chatId, 'Últimos 10 movimientos', await ultimosMovimientos(10));
     } catch (error) {
       errorBD('Error al obtener últimos movimientos', error);
-      await enviar(chatId, 'Error al obtener los movimientos.');
+      await enviar(chatId, describirError(error, 'consultar', 'los últimos movimientos').usuario);
     }
   }
 
@@ -453,7 +454,7 @@ export function crearAdmin(ctx) {
         await responderCallback(cb.id, { text: 'Guardado' });
       } catch (error) {
         errorBD('Error al registrar pago', error);
-        await responderCallback(cb.id, { text: 'Error al guardar' });
+        await responderCallback(cb.id, { text: describirError(error, 'guardar', 'el pago').toast });
       }
       return true;
     }
@@ -552,7 +553,7 @@ export function crearAdmin(ctx) {
       );
     } catch (error) {
       errorBD('Error en /plan', error);
-      await enviar(chatId, 'Error al guardar la configuración del plan.');
+      await enviar(chatId, describirError(error, 'guardar', 'la configuración del plan').usuario);
     }
   }
 
@@ -777,7 +778,7 @@ export function crearAdmin(ctx) {
     } catch (error) {
       errorBD('Error al aplicar el cambio', error);
       esperando.delete(chatId);
-      await enviar(chatId, 'Error al guardar el cambio.');
+      await enviar(chatId, describirError(error, 'actualizar', 'el movimiento').usuario);
       return true;
     }
 
@@ -804,7 +805,7 @@ export function crearAdmin(ctx) {
       if (/^(?:pl[bpr]_x|fje_|fjf_|fjdy?_)/.test(data)) return await manejarCallbackPlan(cb, chatId, data);
     } catch (error) {
       errorBD('Error en un botón', error);
-      await responderCallback(cb.id, { text: 'Error' });
+      await responderCallback(cb.id, { text: describirError(error, 'procesar', 'el botón').toast });
       return true;
     }
     return false;
@@ -901,7 +902,7 @@ export function crearAdmin(ctx) {
           await accion(chatId, (match[1] || '').trim());
         } catch (error) {
           errorBD('Error en un comando', error);
-          await enviar(chatId, 'Ocurrió un error al procesar el comando.');
+          await enviar(chatId, describirError(error, 'procesar', 'el comando').usuario);
         }
       });
     };

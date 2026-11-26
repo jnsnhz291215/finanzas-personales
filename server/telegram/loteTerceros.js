@@ -21,7 +21,8 @@
  */
 
 import { listarCompras, obtenerCompra, registrarPagoCuota, crearCompra, fijarCuotasPagadas } from '../cuotas.js';
-import { registrarImportacion, buscarUltimos4, fechaFinDeMovimientos } from '../cartolas.js';
+import { registrarImportacion, buscarUltimos4, fechaFinDeMovimientos, fechaPlausible } from '../cartolas.js';
+import { describirError, describirMotivo } from './errores.js';
 import { confirmarTemporal, borrarTemporal } from '../storage.js';
 import { leerTextoDeImagen } from '../ocr.js';
 import { registrarPagosMultiples } from '../transferencias.js';
@@ -63,6 +64,16 @@ async function cuentasActivas() {
     'SELECT id, nombre, banco, tipo, ultimos4, ultimos4_cuenta, titular FROM cuentas WHERE activa = 1 ORDER BY nombre'
   );
   return filas.map(c => ({ ...c, id: Number(c.id) }));
+}
+
+/**
+ * Fecha de la compra de un cargo de cartola: la de su fila si es una fecha razonable (año entre 2000 y el año actual + 1); si no, el fin del
+ * período de la cartola (la última fecha razonable de sus filas). null si no hay ninguna.
+ */
+export function fechaDeCompraValida(mov, item) {
+  const propia = String(mov?.fecha ?? '').slice(0, 10);
+  if (fechaPlausible(propia)) return propia;
+  return fechaFinDeMovimientos((item?.movimientos ?? []).filter(m => fechaPlausible(String(m.fecha).slice(0, 10)))) ?? null;
 }
 
 export function crearLoteTerceros(ctx) {
@@ -459,9 +470,11 @@ export function crearLoteTerceros(ctx) {
           if (delLote.procesadas.has(clave) || nc.actual < (delLote.mejores.get(clave)?.actual ?? 0)) continue;
           delLote.procesadas.add(clave);
         }
-        let compra = nc ? buscarCompraSimilar(delTitular, mov.descripcion, mov.monto, nc.total) : null;
+        const fechaCompra = fechaDeCompraValida(mov, lote.item);
+        let compra = nc ? buscarCompraSimilar(delTitular, mov.descripcion, mov.monto, nc.total, fechaCompra) : null;
         if (!compra) {
-          const iguales = delTitular.filter(c => montosCalzan(c.monto_cuota, mov.monto) && (!nc || Number(c.total_cuotas) === nc.total));
+          const iguales = delTitular.filter(c => montosCalzan(c.monto_cuota, mov.monto) && (!nc || Number(c.total_cuotas) === nc.total) &&
+            !(fechaCompra && c.fecha_inicio && String(c.fecha_inicio).slice(0, 10) !== fechaCompra));
           if (iguales.length === 1) compra = iguales[0];
         }
         if (compra && compra.id === lote.compra?.id) continue;
@@ -588,7 +601,8 @@ export function crearLoteTerceros(ctx) {
         if (!nc) continue;
 
         const existentes = await listarCompras({ incluirTerminadas: true });
-        let compra = buscarCompraSimilar(comprasDeTitular(existentes, lote.titular), mov.descripcion, mov.monto, nc.total);
+        const fechaCompra = fechaDeCompraValida(mov, lote.item);
+        let compra = buscarCompraSimilar(comprasDeTitular(existentes, lote.titular), mov.descripcion, mov.monto, nc.total, fechaCompra);
         let estado = 'igual';
 
         if (compra) {
@@ -598,16 +612,26 @@ export function crearLoteTerceros(ctx) {
           }
         } else {
           const alias = aliasDeCargo(mov.descripcion);
-          const creada = await crearCompra({
-            alias,
-            acreedor: lote.titular,
-            montoCuota: mov.monto,
-            totalCuotas: nc.total,
-            cuotasPagadas: nc.actual,
-            diaPago: Number(String(mov.fecha).slice(8, 10)) || null,
-            aliasCartola: alias
-          });
-          if (!creada.ok) continue;
+          let creada;
+          try {
+            creada = await crearCompra({
+              alias,
+              acreedor: lote.titular,
+              montoCuota: mov.monto,
+              totalCuotas: nc.total,
+              cuotasPagadas: nc.actual,
+              fechaInicio: fechaCompra,
+              diaPago: fechaCompra ? Number(fechaCompra.slice(8, 10)) || null : null,
+              aliasCartola: alias
+            });
+          } catch (error) {
+            creada = { ok: false, error: describirError(error, 'crear_compra', `«${alias}» ($${formatearMonto(mov.monto)})`).causa };
+          }
+          if (!creada.ok) {
+            console.error(`[cuotas] no se creó la compra «${alias}» desde la cartola: ${creada.error}`);
+            lote.otras.push({ alias, actual: nc.actual, total: nc.total, estado: 'error', terminada: false, motivo: creada.error });
+            continue;
+          }
           compra = await obtenerCompra(creada.id);
           estado = 'nueva';
         }
@@ -1095,22 +1119,37 @@ export function crearLoteTerceros(ctx) {
           c.estado = 'ignorada';
           await editar(`Ignoré la cuota de ${esc(c.alias)}.`, { chat_id: chatId, message_id: messageId });
         } else {
-          const creada = await crearCompra({
-            alias: c.alias,
-            acreedor: lote.titular,
-            montoCuota: c.mov.monto,
-            totalCuotas: c.nc.total,
-            cuotasPagadas: c.nc.actual,
-            diaPago: Number(String(c.mov.fecha).slice(8, 10)) || null,
-            aliasCartola: c.alias
-          });
+          const objeto = `«${c.alias}» (${dinero(c.mov.monto)})`;
+          const fechaCompra = fechaDeCompraValida(c.mov, lote.item);
+          let creada;
+          try {
+            creada = await crearCompra({
+              alias: c.alias,
+              acreedor: lote.titular,
+              montoCuota: c.mov.monto,
+              totalCuotas: c.nc.total,
+              cuotasPagadas: c.nc.actual,
+              fechaInicio: fechaCompra,
+              diaPago: fechaCompra ? Number(fechaCompra.slice(8, 10)) || null : null,
+              aliasCartola: c.alias
+            });
+          } catch (error) {
+            // El error real queda en el log; al usuario se le dice el paso, la compra y la causa
+            await editar(describirError(error, 'crear_compra', objeto).usuario, { chat_id: chatId, message_id: messageId });
+            return true;
+          }
           if (!creada.ok) {
-            await editar('No pude crear la compra en cuotas.', { chat_id: chatId, message_id: messageId });
+            console.error(`[cuotas] no se creó la compra ${objeto}: ${creada.error}`);
+            await editar(describirMotivo('crear_compra', objeto, creada.error).usuario, { chat_id: chatId, message_id: messageId });
             return true;
           }
           c.estado = 'creada';
-          lote.otras.push({ alias: c.alias, actual: c.nc.actual, total: c.nc.total, estado: 'nueva', terminada: c.nc.actual >= c.nc.total });
-          await editar(`Creé la compra en cuotas <b>${esc(c.alias)}</b>: ${c.nc.actual} de ${c.nc.total}, cuota de ${dinero(c.mov.monto)}.`, { chat_id: chatId, message_id: messageId });
+          lote.otras.push({ alias: creada.alias, actual: c.nc.actual, total: c.nc.total, estado: 'nueva', terminada: c.nc.actual >= c.nc.total });
+          await editar(
+            `Creé la compra en cuotas <b>${esc(creada.alias)}</b>: ${c.nc.actual} de ${c.nc.total}, cuota de ${dinero(c.mov.monto)}.` +
+            (creada.renombrada ? ` Como ya había otra compra «${esc(c.alias)}», la nombré así.` : ''),
+            { chat_id: chatId, message_id: messageId }
+          );
         }
         await cerrarSiListo(chatId);
         return true;
@@ -1173,7 +1212,7 @@ export function crearLoteTerceros(ctx) {
       return true;
     } catch (error) {
       console.error('Error en un botón de la tarjeta ajena:', error.code ?? error.name);
-      await responderCallback(cb.id, { text: 'Error' });
+      await responderCallback(cb.id, { text: describirError(error, 'guardar', 'el pago de la cuota').toast });
       return true;
     }
   }

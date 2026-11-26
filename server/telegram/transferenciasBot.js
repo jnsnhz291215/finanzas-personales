@@ -9,6 +9,7 @@
  * muestra ni se guarda un RUT o un número de cuenta: solo el nombre del destinatario.
  */
 
+import { describirError } from './errores.js';
 import { listarCompras } from '../cuotas.js';
 import { listarGastosFijos } from '../planAhorro.js';
 import {
@@ -331,7 +332,7 @@ export function crearTransferencias(ctx) {
         }
         const elegidas = [...pendiente.seleccion].sort((a, b) => a - b).map(i => pendiente.cuotas[i]);
         const r = await pendiente.aplicar(repartirMonto(elegidas, pendiente.monto));
-        await editar(r.ok ? r.texto : esc(r.error ?? 'No pude vincularla.'), { chat_id: chatId, message_id: messageId });
+        await editar(r.ok ? r.texto : esc(r.error ?? 'No pude vincular la transferencia: ya no encuentro el movimiento o la compra.'), { chat_id: chatId, message_id: messageId });
         await responderCallback(cb.id, { text: r.ok ? 'Vinculada' : 'Error' });
         return true;
       }
@@ -368,7 +369,7 @@ export function crearTransferencias(ctx) {
       // Varias transferencias que juntas cubren las cuotas
       if (tipo === 'h') {
         const r = await pendiente.aplicarGrupo(pendiente.grupo.movimientos, pendiente.grupo.cuotas);
-        await editar(r.ok ? r.texto : esc(r.error ?? 'No pude vincularlas.'), { chat_id: chatId, message_id: messageId });
+        await editar(r.ok ? r.texto : esc(r.error ?? 'No pude vincular las transferencias: ya no encuentro alguno de los movimientos o la compra.'), { chat_id: chatId, message_id: messageId });
         await responderCallback(cb.id, { text: r.ok ? 'Vinculadas' : 'Error' });
         return true;
       }
@@ -381,7 +382,7 @@ export function crearTransferencias(ctx) {
           return true;
         }
         const r = await pendiente.aplicar(plan);
-        await editar(r.ok ? r.texto : esc(r.error ?? 'No pude vincularla.'), { chat_id: chatId, message_id: messageId });
+        await editar(r.ok ? r.texto : esc(r.error ?? 'No pude vincular la transferencia: ya no encuentro el movimiento o la compra.'), { chat_id: chatId, message_id: messageId });
         await responderCallback(cb.id, { text: r.ok ? 'Vinculada' : 'Error' });
         return true;
       }
@@ -399,7 +400,7 @@ export function crearTransferencias(ctx) {
       return true;
     } catch (error) {
       console.error('Error en un botón de transferencias:', error.code ?? error.name);
-      await responderCallback(cb.id, { text: 'Error' });
+      await responderCallback(cb.id, { text: describirError(error, 'vincular', 'la transferencia').toast });
       return true;
     }
   }

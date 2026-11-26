@@ -908,6 +908,12 @@ Tipo y Predeterminada), con un resumen "antes → después" y botones **Guardar*
   actual + 1; si no se puede leer, se usa la del período de la cartola.
 - Un estado de cuenta de tarjeta nunca va al resumen genérico sin saber de qué tarjeta es: si no se reconoce la cuenta, se pregunta.
 - La misma compra en cuotas que sale en varias cartolas del lote se pregunta una sola vez, con la cuota más alta.
+- Pueden coexistir varias compras en cuotas del mismo comercio: la identidad de una compra es titular + comercio + valor de la cuota + total de
+  cuotas + fecha de la compra, no el nombre. Si el nombre ya existe se guarda como `Apple ($21.749)`. La fecha de compra que se guarda es la
+  de la fila si es válida; si no, la del período de la cartola.
+- Las descargas desde Telegram van de a una, con timeout y hasta 3 reintentos (1 s, 3 s y 6 s). Si no se logra, el mensaje dice cuál archivo y pide reenviarlo.
+- Todos los errores que ve el usuario salen de `server/telegram/errores.js` (`describirError(err, paso, objeto)`): dicen el paso, el archivo o elemento
+  y la causa corta en español, sin tokens, rutas ni números largos; el log guarda el detalle completo con el stack.
 
 Reparar fechas con año inválido que ya se guardaron (idempotente; por defecto solo cuenta lo que tocaría):
 

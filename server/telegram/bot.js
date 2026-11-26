@@ -30,6 +30,7 @@ import { crearAdmin } from './admin.js';
 import { crearCuotas } from './cuotasBot.js';
 import { crearCartolas } from './cartolasBot.js';
 import { leerContextoCartola } from './contextoCartola.js';
+import { describirError, clasificarError, sanear } from './errores.js';
 import { crearRegistros } from './registrosBot.js';
 import { crearReset } from './resetBot.js';
 import { crearStatus } from './statusBot.js';
@@ -595,7 +596,7 @@ function configurarComandos() {
       );
     } catch (error) {
       console.error('Error al obtener resumen:', error);
-      await enviar(chatId, '❌ Error al obtener el resumen.');
+      await enviar(chatId, describirError(error, 'consultar', 'el resumen del mes').usuario);
     }
   });
 
@@ -647,7 +648,7 @@ function configurarManejadores() {
         } catch (error) {
           console.error('Error en el manejador de mensajes:', error.code ?? error.name);
           try {
-            await enviar(m.chat.id, 'Ocurrió un error al procesar ese mensaje. Inténtalo de nuevo.');
+            await enviar(m.chat.id, describirError(error, 'procesar', 'ese mensaje').usuario);
           } catch {
             // si ni el aviso sale, no hay más que hacer
           }
@@ -696,7 +697,7 @@ function configurarManejadores() {
           await procesarMensaje(compartir ? { ...m, caption } : m);
         } catch (error) {
           console.error('Error en el manejador de mensajes:', error.code ?? error.name);
-          await enviar(m.chat.id, 'Ocurrió un error al procesar ese mensaje. Inténtalo de nuevo.').catch(() => {});
+          await enviar(m.chat.id, describirError(error, 'procesar', 'ese mensaje').usuario).catch(() => {});
         }
       }
     } finally {
@@ -723,7 +724,7 @@ function configurarManejadores() {
       // Nunca en silencio: se registra (sin el texto, que puede traer datos personales) y se avisa
       console.error('Error en el manejador de mensajes:', error.code ?? error.name);
       try {
-        await enviar(msg.chat.id, 'Ocurrió un error al procesar ese mensaje. Inténtalo de nuevo.');
+        await enviar(msg.chat.id, describirError(error, 'procesar', 'ese mensaje').usuario);
       } catch {
         // si ni el aviso sale, no hay más que hacer
       }
@@ -864,7 +865,7 @@ function configurarManejadores() {
         await intenciones.manejarTexto(msg);
       } catch (error) {
         console.error('Error al interpretar el mensaje:', error.code ?? error.name);
-        await enviar(chatId, 'No pude procesar ese mensaje. Inténtalo de nuevo.');
+        await enviar(chatId, describirError(error, 'procesar', 'ese mensaje').usuario);
       }
       return;
     }
@@ -1050,7 +1051,7 @@ function configurarManejadores() {
       } catch (error) {
         // Mensaje de la BD para diagnosticar (p. ej. "NOT NULL constraint failed: movimientos.cuenta_id")
         console.error('Error al guardar movimiento:', error.code ?? '', error.message);
-        await responderCallback(cb.id, { text: '❌ Error al guardar' });
+        await responderCallback(cb.id, { text: describirError(error, 'guardar_bd', 'el movimiento').toast });
       }
     }
 
@@ -1094,7 +1095,7 @@ function configurarManejadores() {
         await responderCallback(cb.id, { text: 'Cuenta destino elegida' });
       } catch (error) {
         console.error('Error al elegir cuenta destino:', error.code ?? '', error.message);
-        await responderCallback(cb.id, { text: '❌ Error' });
+        await responderCallback(cb.id, { text: describirError(error, 'guardar', 'el destinatario').toast });
       }
     }
 
@@ -1243,7 +1244,7 @@ function configurarManejadores() {
         await responderCallback(cb.id, { text: `Tipo: ${ETIQUETAS_TIPO[tipoMovimiento]}` });
       } catch (error) {
         console.error('Error al cambiar el tipo:', error.code ?? '', error.message);
-        await responderCallback(cb.id, { text: '❌ Error' });
+        await responderCallback(cb.id, { text: describirError(error, 'guardar', 'el tipo de movimiento').toast });
       }
     }
 
@@ -1674,7 +1675,7 @@ async function registrarTransaccion(msg, { confianzaBaja = false } = {}) {
 
   } catch (error) {
     console.error('Error al registrar transacción:', error);
-    await enviar(chatId, '❌ Error al procesar el mensaje.');
+    await enviar(chatId, describirError(error, 'procesar', 'tu mensaje').usuario);
   }
 }
 
@@ -1742,24 +1743,50 @@ async function ultimaCuentaUsada(cuentas) {
  * relativa a la raíz, que es lo que se guarda en archivo_respaldo.
  */
 async function guardarRespaldoCuota(fileId, nombreSugerido, prefijo = 'respaldo_cuota_') {
-  const fileLink = await bot.getFileLink(fileId);
-  const respuesta = await fetch(fileLink);
-  if (!respuesta.ok) throw new Error('la descarga del archivo falló');
+  const buffer = await descargarBuffer(fileId);
 
   // Todavía no se sabe la cuenta del movimiento: va a sin-cuenta/<año>/<mes>/comprobante_<fecha>_<n>.<ext>. migrarStorage.js lo pasa a la
   // carpeta de su cuenta cuando el movimiento ya la tiene.
   const guardado = await guardarEnCuenta({
-    cuenta: null, clase: 'comprobante', fecha: fechaHoySantiago(), nombreOriginal: nombreSugerido, buffer: Buffer.from(await respuesta.arrayBuffer())
+    cuenta: null, clase: 'comprobante', fecha: fechaHoySantiago(), nombreOriginal: nombreSugerido, buffer
   });
   return guardado.ruta;
 }
 
-/** Descarga un archivo de Telegram a memoria (para leer una captura con OCR local) */
+// Espera antes de cada reintento de una descarga de Telegram (1 s, 3 s y 6 s)
+const ESPERAS_DESCARGA_MS = [1000, 3000, 6000];
+const TIMEOUT_GETFILE_MS = 15 * 1000;
+const TIMEOUT_DESCARGA_MS = 45 * 1000;
+
+const conTimeout = (promesa, ms, etiqueta) => Promise.race([
+  promesa,
+  new Promise((_, rechazar) => setTimeout(() => rechazar(Object.assign(new Error(`${etiqueta}: se agotó el tiempo (${ms / 1000} s)`), { name: 'TimeoutError' })), ms).unref?.())
+]);
+
+/**
+ * Descarga un archivo de Telegram a memoria. Falla a veces por la red cuando llegan varios archivos juntos ("fetch failed"), así que
+ * reintenta hasta 3 veces más con espera creciente (1 s, 3 s, 6 s) y con un tiempo máximo por intento. Cada intento fallido se registra
+ * con su tipo (red, timeout, límite...) y la causa (err.cause), sin el token ni la URL de descarga. Lanza el último error si no se logra.
+ */
 async function descargarBuffer(fileId) {
-  const fileLink = await bot.getFileLink(fileId);
-  const respuesta = await fetch(fileLink);
-  if (!respuesta.ok) throw new Error('la descarga del archivo falló');
-  return Buffer.from(await respuesta.arrayBuffer());
+  let ultimo;
+  for (let intento = 0; intento <= ESPERAS_DESCARGA_MS.length; intento++) {
+    try {
+      const fileLink = await conTimeout(bot.getFileLink(fileId), TIMEOUT_GETFILE_MS, 'getFile');
+      const respuesta = await fetch(fileLink, { signal: AbortSignal.timeout(TIMEOUT_DESCARGA_MS) });
+      if (!respuesta.ok) throw Object.assign(new Error(`la descarga respondió ${respuesta.status}`), { code: String(respuesta.status) });
+      return Buffer.from(await respuesta.arrayBuffer());
+    } catch (error) {
+      ultimo = error;
+      const { tipo } = clasificarError(error);
+      const causa = error?.cause ? ` | causa: ${error.cause.code ?? error.cause.name}: ${error.cause.message}` : '';
+      console.error(sanear(`[telegram] descarga fallida (intento ${intento + 1}/${ESPERAS_DESCARGA_MS.length + 1}, tipo=${tipo}): ${error?.name}: ${error?.message}${causa}`));
+      // Un archivo demasiado grande o inexistente no se arregla reintentando
+      if (tipo === 'grande' || /^(400|403|404)$/.test(String(error?.code))) break;
+      if (intento < ESPERAS_DESCARGA_MS.length) await new Promise(resolver => setTimeout(resolver, ESPERAS_DESCARGA_MS[intento]));
+    }
+  }
+  throw ultimo;
 }
 
 /**
@@ -2045,7 +2072,7 @@ async function procesarCuentaDesdeTexto(msg, texto, { natural = false, numeroLar
   } catch (error) {
     // Sin el texto del mensaje: puede contener datos de la tarjeta
     console.error('Error al interpretar la cuenta:', error.code ?? '', error.message);
-    await enviar(chatId, '❌ Error al procesar la cuenta.');
+    await enviar(chatId, describirError(error, 'guardar_bd', 'la cuenta').usuario);
   }
 }
 
@@ -2163,7 +2190,7 @@ function configurarComandosCuentas() {
       });
     } catch (error) {
       console.error('Error en /borrarcuenta:', error.code ?? '', error.message);
-      await enviar(chatId, '❌ Error al obtener las cuentas.');
+      await enviar(chatId, describirError(error, 'consultar', 'las cuentas').usuario);
     }
   });
 }
@@ -2232,7 +2259,7 @@ async function manejarCallbackCuentas(cb, chatId, data) {
       await responderCallback(cb.id, { text: listo ? 'Actualizado' : 'Sin cambios' });
     } catch (error) {
       console.error('Error al actualizar el titular:', error.code ?? '', error.message);
-      await responderCallback(cb.id, { text: 'Error al guardar' });
+      await responderCallback(cb.id, { text: describirError(error, 'actualizar', 'la cuenta').toast });
     }
     return true;
   }
@@ -2270,7 +2297,7 @@ async function manejarCallbackCuentas(cb, chatId, data) {
       await responderCallback(cb.id, { text: 'Guardada' });
     } catch (error) {
       console.error('Error al guardar cuenta:', error.code ?? '', error.message);
-      await responderCallback(cb.id, { text: 'Error al guardar' });
+      await responderCallback(cb.id, { text: describirError(error, 'guardar_bd', 'la cuenta').toast });
     }
     return true;
   }
@@ -2341,7 +2368,7 @@ async function manejarCallbackCuentas(cb, chatId, data) {
       await responderCallback(cb.id, {});
     } catch (error) {
       console.error('Error al elegir cuenta:', error.code ?? '', error.message);
-      await responderCallback(cb.id, { text: 'Error' });
+      await responderCallback(cb.id, { text: describirError(error, 'guardar_bd', 'la cuenta').toast });
     }
     return true;
   }
@@ -2354,7 +2381,7 @@ async function manejarCallbackCuentas(cb, chatId, data) {
       await responderCallback(cb.id, { text: 'Desactivada' });
     } catch (error) {
       console.error('Error al desactivar cuenta:', error.code ?? '', error.message);
-      await responderCallback(cb.id, { text: 'Error' });
+      await responderCallback(cb.id, { text: describirError(error, 'borrar', 'la cuenta').toast });
     }
     return true;
   }
@@ -2681,7 +2708,7 @@ async function responderConsultaDatos(chatId, termino) {
     });
   } catch (error) {
     console.error('Error al consultar datos de transferencia:', error.code ?? error.name);
-    await enviar(chatId, 'Error al consultar los datos.');
+    await enviar(chatId, describirError(error, 'consultar', 'tus datos').usuario);
   }
 }
 
@@ -2741,7 +2768,7 @@ function configurarComandosDatos() {
       await avanzarDatos(chatId, key);
     } catch (error) {
       console.error('Error al interpretar datos de transferencia:', error.code ?? error.name);
-      await enviar(chatId, 'Error al procesar los datos.');
+      await enviar(chatId, describirError(error, 'guardar', 'tus datos').usuario);
     }
   });
 
@@ -2766,7 +2793,7 @@ function configurarComandosDatos() {
       );
     } catch (error) {
       console.error('Error al listar datos de transferencia:', error.code ?? error.name);
-      await enviar(chatId, 'Error al obtener los datos.');
+      await enviar(chatId, describirError(error, 'consultar', 'tus datos').usuario);
     }
   });
 
@@ -2815,7 +2842,7 @@ function configurarComandosDatos() {
       });
     } catch (error) {
       console.error('Error en /borrardatos:', error.code ?? error.name);
-      await enviar(chatId, 'Error al obtener los datos.');
+      await enviar(chatId, describirError(error, 'consultar', 'tus datos').usuario);
     }
   });
 }
@@ -2862,7 +2889,7 @@ async function manejarCallbackDatos(cb, chatId, data) {
       await responderCallback(cb.id, { text: 'Guardados' });
     } catch (error) {
       console.error('Error al guardar datos de transferencia:', error.code ?? error.name);
-      await responderCallback(cb.id, { text: 'Error al guardar' });
+      await responderCallback(cb.id, { text: describirError(error, 'guardar', 'tus datos').toast });
     }
     return true;
   }
@@ -2918,7 +2945,7 @@ async function manejarCallbackDatos(cb, chatId, data) {
       await avanzarDatos(chatId, key);
     } catch (error) {
       console.error('Error al reutilizar datos de transferencia:', error.code ?? error.name);
-      await responderCallback(cb.id, { text: 'Error' });
+      await responderCallback(cb.id, { text: describirError(error, 'guardar', 'tus datos').toast });
     }
     return true;
   }
@@ -2957,7 +2984,7 @@ async function manejarCallbackDatos(cb, chatId, data) {
       await enviarPlano(chatId, textoPlanoDatos(registro));
     } catch (error) {
       console.error('Error al consultar datos de transferencia:', error.code ?? error.name);
-      await responderCallback(cb.id, { text: 'Error' });
+      await responderCallback(cb.id, { text: describirError(error, 'consultar', 'tus datos').toast });
     }
     return true;
   }
@@ -2975,7 +3002,7 @@ async function manejarCallbackDatos(cb, chatId, data) {
       await responderCallback(cb.id, {});
     } catch (error) {
       console.error('Error en /borrardatos:', error.code ?? error.name);
-      await responderCallback(cb.id, { text: 'Error' });
+      await responderCallback(cb.id, { text: describirError(error, 'consultar', 'tus datos').toast });
     }
     return true;
   }
@@ -2991,7 +3018,7 @@ async function manejarCallbackDatos(cb, chatId, data) {
       await responderCallback(cb.id, { text: 'Eliminados' });
     } catch (error) {
       console.error('Error al eliminar datos de transferencia:', error.code ?? error.name);
-      await responderCallback(cb.id, { text: 'Error' });
+      await responderCallback(cb.id, { text: describirError(error, 'borrar', 'tus datos').toast });
     }
     return true;
   }
@@ -3042,7 +3069,7 @@ async function responderPlan(chatId) {
     await enviar(chatId, textoResumenPlan(resumen));
   } catch (error) {
     console.error('Error al calcular el plan de ahorro:', error.code ?? error.name);
-    await enviar(chatId, 'Error al calcular el plan de ahorro.');
+    await enviar(chatId, describirError(error, 'consultar', 'el plan de ahorro').usuario);
   }
 }
 
@@ -3139,7 +3166,7 @@ async function procesarGastoFijo(chatId, datos) {
     });
   } catch (error) {
     console.error('Error al preparar el gasto fijo:', error.code ?? error.name);
-    await enviar(chatId, 'Error al procesar el gasto fijo.');
+    await enviar(chatId, describirError(error, 'procesar', 'el gasto fijo').usuario);
   }
 }
 
@@ -3250,7 +3277,7 @@ async function manejarCallbackFijos(cb, chatId, data) {
       await responderCallback(cb.id, { text: 'Guardado' });
     } catch (error) {
       console.error('Error al guardar gasto fijo:', error.code ?? error.name);
-      await responderCallback(cb.id, { text: 'Error al guardar' });
+      await responderCallback(cb.id, { text: describirError(error, 'guardar', 'el gasto fijo').toast });
     }
     return true;
   }
@@ -3291,7 +3318,7 @@ async function manejarCallbackFijos(cb, chatId, data) {
       await responderCallback(cb.id, { text: 'Actualizado' });
     } catch (error) {
       console.error('Error al actualizar gasto fijo:', error.code ?? error.name);
-      await responderCallback(cb.id, { text: 'Error al guardar' });
+      await responderCallback(cb.id, { text: describirError(error, 'actualizar', 'el gasto fijo').toast });
     }
     return true;
   }
@@ -3333,10 +3360,10 @@ async function manejarArchivo(msg) {
 
     // Telegram solo deja descargar archivos de hasta 20 MB a un bot
     if (documento.file_size && documento.file_size > 20 * 1024 * 1024) {
-      await enviar(chatId, `❌ No pude leer «${esc(nombreArchivo)}»: pesa más de 20 MB, el máximo que Telegram deja descargar.`);
+      await enviar(chatId, describirError(Object.assign(new Error('file is too big'), { file_size: documento.file_size }), 'descargar', nombreArchivo).usuario);
       return;
     }
-    const buffer = await descargarArchivoTelegram(documento.file_id);
+    const buffer = await descargarBuffer(documento.file_id);
 
     // CSV, Excel y PDF se agrupan en una cola por chat (álbum o archivos seguidos), se analizan y se
     // importan desde aquí. Los archivos esperan en tmp/ y pasan a cartolas/{YYYY-MM}/ al confirmar
@@ -3345,51 +3372,11 @@ async function manejarArchivo(msg) {
       nombre: nombreArchivo, buffer, ext, mediaGroupId: msg.media_group_id ?? null, mensajeId: msg.message_id, caption: msg.caption ?? null
     });
   } catch (error) {
-    // Se registra el error real (mensaje y stack, sin el token) con el nombre del archivo, y se le dice al usuario cuál falló y por qué
+    // El error real queda en el log (mensaje, causa y stack, sin el token) y al usuario se le dice cuál archivo falló y por qué
     const nombre = documento.file_name ? path.basename(documento.file_name) : 'archivo sin nombre';
-    registrarErrorArchivo(nombre, error);
-    await enviar(chatId, `❌ No pude procesar «${esc(nombre)}»: ${motivoErrorArchivo(error)}. Los demás archivos siguen.`);
+    const paso = ['red', 'timeout', 'limite', 'grande'].includes(clasificarError(error).tipo) ? 'descargar' : 'procesar';
+    await enviar(chatId, `${describirError(error, paso, nombre).usuario} Los demás archivos siguen.`);
   }
-}
-
-/** Descarga un archivo de Telegram; reintenta hasta 3 veces (varias descargas seguidas fallan a veces por la conexión) */
-async function descargarArchivoTelegram(fileId) {
-  let ultimo;
-  for (let intento = 1; intento <= 3; intento++) {
-    try {
-      const fileLink = await bot.getFileLink(fileId);
-      const response = await fetch(fileLink);
-      if (!response.ok) throw new Error(`la descarga respondió ${response.status}`);
-      return Buffer.from(await response.arrayBuffer());
-    } catch (error) {
-      ultimo = error;
-      if (intento < 3) await new Promise(resolver => setTimeout(resolver, intento * 1000));
-    }
-  }
-  const error = new Error(`la descarga de Telegram falló tras 3 intentos: ${ultimo?.message ?? 'sin detalle'}`);
-  error.cause = ultimo;
-  throw error;
-}
-
-/** Texto sin el token del bot (el mensaje o el stack de un error de descarga puede traer la URL completa) */
-function sinToken(texto) {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  return token ? String(texto).split(token).join('***') : String(texto);
-}
-
-/** Registra un error al procesar un archivo: nombre, mensaje, causa y stack, sin el token ni el contenido del archivo */
-function registrarErrorArchivo(nombre, error) {
-  const causa = error?.cause ? ` | causa: ${error.cause.name}: ${error.cause.message}` : '';
-  console.error(sinToken(`[telegram] error al procesar el archivo "${nombre}": ${error?.name}: ${error?.message}${causa}\n${error?.stack ?? ''}`));
-}
-
-/** Motivo corto para el usuario */
-function motivoErrorArchivo(error) {
-  const texto = `${error?.code ?? ''} ${error?.message ?? ''}`.toLowerCase();
-  if (/descarga|fetch|network|econn|timeout|socket|etimedout/.test(texto)) return 'no pude descargarlo de Telegram, reenvíalo';
-  if (/enospc/.test(texto)) return 'no hay espacio para guardarlo';
-  if (/eacces|eperm/.test(texto)) return 'no tengo permiso para guardarlo';
-  return 'ocurrió un error interno (quedó en el registro)';
 }
 
 /** Foto de una cartola: se descarga y entra a la cola de cartolas (OCR local). Devuelve true si la tomó. */
@@ -3400,8 +3387,7 @@ async function manejarFotoCartola(msg) {
     const buffer = await descargarBuffer(foto.file_id);
     await cartolas.recibirFoto(chatId, { buffer, mediaGroupId: msg.media_group_id ?? null, mensajeId: msg.message_id, caption: msg.caption ?? null });
   } catch (error) {
-    logErrorTelegram('procesar foto de cartola', error);
-    await enviar(chatId, '❌ Error al procesar la foto de la cartola.');
+    await enviar(chatId, describirError(error, 'procesar', 'la foto de la cartola').usuario);
   }
   return true;
 }
@@ -3439,16 +3425,13 @@ async function manejarFoto(msg) {
 
   try {
     // Otros archivos que se mandan al bot: <FINANZAS_STORAGE>/archivos/{YYYY-MM}/
-    const fileLink = await bot.getFileLink(foto.file_id);
-    const response = await fetch(fileLink);
-    if (!response.ok) throw new Error('la descarga del archivo falló');
-    await guardarEnCuenta({ cuenta: null, clase: 'foto', fecha: fechaHoySantiago(), nombreOriginal: 'foto.jpg', buffer: Buffer.from(await response.arrayBuffer()) });
+    const buffer = await descargarBuffer(foto.file_id);
+    await guardarEnCuenta({ cuenta: null, clase: 'foto', fecha: fechaHoySantiago(), nombreOriginal: 'foto.jpg', buffer });
 
     await enviar(chatId, '✅ Foto guardada correctamente.');
   } catch (error) {
-    // No imprimir el objeto completo: puede incluir la URL con el token
-    logErrorTelegram('guardar foto', error);
-    await enviar(chatId, '❌ Error al guardar la foto.');
+    const paso = ['red', 'timeout', 'limite', 'grande'].includes(clasificarError(error).tipo) ? 'descargar' : 'guardar_archivo';
+    await enviar(chatId, describirError(error, paso, 'la foto').usuario);
   }
 }
 

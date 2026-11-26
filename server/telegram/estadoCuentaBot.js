@@ -12,6 +12,7 @@
  * Privacidad: nunca se muestra la ruta de un archivo; la descarga solo envía archivos que están dentro de FINANZAS_STORAGE.
  */
 
+import { describirError } from './errores.js';
 import { promises as fs } from 'fs';
 import {
   interpretarConsultaEstado,
@@ -205,7 +206,7 @@ export function crearEstadoCuenta(ctx) {
       await responder(chatId, consulta);
     } catch (error) {
       console.error('Error en /estadocuenta:', error.code ?? error.name);
-      await enviar(chatId, 'No pude abrir los estados de cuenta. Inténtalo de nuevo.');
+      await enviar(chatId, describirError(error, 'consultar', 'los estados de cuenta').usuario);
     }
     return true;
   }
@@ -222,7 +223,7 @@ export function crearEstadoCuenta(ctx) {
         await responder(chatId, argumento ? interpretarConsultaEstado(`estado cuenta ${argumento}`) : null);
       } catch (error) {
         console.error('Error en /estadocuenta:', error.code ?? error.name);
-        await enviar(chatId, 'No pude abrir los estados de cuenta. Inténtalo de nuevo.');
+        await enviar(chatId, describirError(error, 'consultar', 'los estados de cuenta').usuario);
       }
     });
   }

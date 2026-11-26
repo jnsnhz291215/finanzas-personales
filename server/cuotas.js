@@ -58,9 +58,30 @@ export async function obtenerCompra(id) {
   return filas[0] ? normalizarFila(filas[0]) : null;
 }
 
+const fechaCorta = (f) => (f ? String(f).slice(0, 10) : null);
+
 /**
- * Crea una compra en cuotas. Devuelve { ok, id } o { ok: false, error }.
- * Valida los datos y evita duplicados (mismo alias y mismo acreedor en curso).
+ * Nombre con el que se guarda una compra nueva. Puede haber varias compras del mismo comercio (dos "Apple" con distinta cuota): si el
+ * nombre ya lo usa otra compra del mismo acreedor, queda "Apple ($21.749)" (y "Apple ($21.749) 2" si eso también existe). El usuario
+ * puede renombrarla después.
+ */
+export function aliasDisponible(alias, montoCuota, existentes) {
+  const usados = new Set(existentes.map(c => normalizar(c.alias).trim()));
+  if (!usados.has(normalizar(alias).trim())) return alias;
+  const base = `${alias} ($${Math.round(Number(montoCuota)).toLocaleString('es-CL')})`.slice(0, 96);
+  if (!usados.has(normalizar(base).trim())) return base;
+  for (let n = 2; n < 100; n++) {
+    const candidato = `${base} ${n}`;
+    if (!usados.has(normalizar(candidato).trim())) return candidato;
+  }
+  return `${base} ${Date.now() % 1000}`;
+}
+
+/**
+ * Crea una compra en cuotas. Devuelve { ok, id, alias, renombrada } o { ok: false, error }.
+ * Valida los datos. La identidad de una compra es acreedor + comercio + valor de la cuota + total de cuotas + fecha de la compra, no el
+ * nombre: se rechaza solo la que es idéntica en todo eso. Si el nombre ya lo usa otra compra del mismo acreedor, se le pone
+ * automáticamente "Nombre ($cuota)".
  */
 export async function crearCompra(datos) {
   const alias = String(datos.alias ?? '').trim();
@@ -80,8 +101,16 @@ export async function crearCompra(datos) {
   }
 
   const existentes = await listarCompras({ incluirTerminadas: true });
-  const repetida = existentes.find(c => normalizar(c.alias) === normalizar(alias) && normalizar(c.acreedor) === normalizar(acreedor));
-  if (repetida) return { ok: false, error: `Ya existe la compra ${repetida.alias} con ${repetida.acreedor}` };
+  const delAcreedor = existentes.filter(c => normalizar(c.acreedor) === normalizar(acreedor));
+  const comercio = normalizar(datos.aliasCartola || alias).trim();
+  const repetida = delAcreedor.find(c =>
+    normalizar(c.alias_cartola || c.alias).trim() === comercio &&
+    Math.round(Number(c.monto_cuota)) === Math.round(montoCuota) &&
+    Number(c.total_cuotas) === totalCuotas &&
+    fechaCorta(c.fecha_inicio) === fechaCorta(datos.fechaInicio)
+  );
+  if (repetida) return { ok: false, error: `Ya existe esa misma compra: ${repetida.alias} (${totalCuotas} cuotas de $${Math.round(montoCuota).toLocaleString('es-CL')}) con ${repetida.acreedor}` };
+  const aliasFinal = aliasDisponible(alias, montoCuota, delAcreedor);
 
   const diaPago = datos.diaPago === null || datos.diaPago === undefined ? null : Number(datos.diaPago);
   const aliasCartola = datos.aliasCartola ? normalizar(datos.aliasCartola).trim() : null;
@@ -92,12 +121,12 @@ export async function crearCompra(datos) {
        (alias, alias_cartola, acreedor, monto_total, monto_cuota, total_cuotas, cuotas_pagadas, fecha_inicio, dia_pago, terminada)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
-      alias, aliasCartola, acreedor, datos.montoTotal ?? null, Math.round(montoCuota), totalCuotas, pagadas,
+      aliasFinal, aliasCartola, acreedor, datos.montoTotal ?? null, Math.round(montoCuota), totalCuotas, pagadas,
       datos.fechaInicio ?? null, Number.isInteger(diaPago) && diaPago >= 1 && diaPago <= 31 ? diaPago : null,
       pagadas >= totalCuotas ? 1 : 0
     ]
   );
-  return { ok: true, id: resultado.insertId };
+  return { ok: true, id: resultado.insertId, alias: aliasFinal, renombrada: aliasFinal !== alias };
 }
 
 /** Desactiva una compra (activa = 0, no se borra la fila ni sus pagos). true si existía. */

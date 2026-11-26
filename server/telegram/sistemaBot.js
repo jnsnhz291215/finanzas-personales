@@ -18,6 +18,7 @@
  *    mencionen .env y sin credenciales en URLs.
  */
 
+import { describirError } from './errores.js';
 import path from 'path';
 import fs from 'fs/promises';
 import { execFile, spawn } from 'child_process';
@@ -577,7 +578,7 @@ export function crearSistema(ctx) {
       }
     } catch (error) {
       console.error(`[sistema] error inesperado: ${error.code ?? error.name}`);
-      await enviar(chatId, 'Ocurrió un error inesperado. No reinicié.');
+      await enviar(chatId, `${describirError(error, 'procesar', 'el reinicio').usuario} No reinicié.`);
     }
     enProceso = false;
     return true;
