@@ -20,7 +20,7 @@
  * cartola va a Gemini desde aquí.
  */
 
-import { listarCompras, obtenerCompra, registrarPagoCuota } from '../cuotas.js';
+import { listarCompras, obtenerCompra, registrarPagoCuota, crearCompra, fijarCuotasPagadas } from '../cuotas.js';
 import { registrarImportacion, buscarUltimos4 } from '../cartolas.js';
 import { confirmarTemporal, borrarTemporal } from '../storage.js';
 import { leerTextoDeImagen } from '../ocr.js';
@@ -31,6 +31,9 @@ import {
   acreedoresDe,
   reconocerCuota,
   evaluarNumeroCuota,
+  extraerNumeroCuota,
+  aliasDeCargo,
+  buscarCompraSimilar,
   montosCalzan,
   parsearSeleccion,
   lineaCargo,
@@ -86,6 +89,7 @@ export function crearLoteTerceros(ctx) {
       seleccionEstado: 'sin',// sin | pendiente | listo
       lista: null,           // { messageId, otros: [{ mov }], elegidos: Set }
       gastos: 0,
+      otras: [],             // otras compras en cuotas creadas o actualizadas desde la cartola
       archivoVisto: anterior?.archivoVisto ?? 0,
       comprobanteEn: 0,
       timerEspera: null,
@@ -213,7 +217,10 @@ export function crearLoteTerceros(ctx) {
           esperada: eva.esperada ?? null,
           montoCargo: Number(mov.monto),
           fechaCargo: String(mov.fecha).slice(0, 10),
-          estado: eva.accion === 'duplicada' ? 'duplicada' : 'pendiente'
+          estado: eva.accion === 'duplicada' ? 'duplicada' : 'pendiente',
+          // Si la cartola no calza con el contador (número menor o salto de más de una), se pregunta antes de cambiar
+          consulta: eva.accion === 'menor' || eva.accion === 'salto',
+          pagadas: Number(compra.cuotas_pagadas)
         };
       }
     }
@@ -231,8 +238,8 @@ export function crearLoteTerceros(ctx) {
         `(${dinero(lote.cuota.montoCargo)}, ${formatearFechaCL(lote.cuota.fechaCargo)}). ` +
         (lote.cuota.accion === 'duplicada'
           ? 'Esa cuota ya estaba registrada: no la duplico.'
-          : lote.cuota.accion === 'salto'
-            ? `Ojo: llevas ${compra.cuotas_pagadas} pagadas, así que la que toca es la ${lote.cuota.esperada}.`
+          : lote.cuota.consulta
+            ? `Ojo: en la app llevas ${compra.cuotas_pagadas} pagadas y la que toca es la ${lote.cuota.esperada}; te pregunto abajo cuál usar.`
             : 'Se registra con tu transferencia, no como gasto aparte.')
       );
     } else if (compra) {
@@ -265,6 +272,22 @@ export function crearLoteTerceros(ctx) {
       lote.lista.messageId = enviado?.message_id ?? null;
     }
 
+    // La cartola no calza con el contador: se pregunta antes de cambiarlo
+    if (lote.cuota?.consulta) {
+      await enviar(chatId,
+        `La cartola muestra la cuota <b>${lote.cuota.numero} de ${lote.cuota.total}</b> de ${esc(lote.cuota.alias)}, pero en la app llevas ` +
+        `${lote.cuota.pagadas} pagadas (la que toca es la ${lote.cuota.esperada}). ¿Con cuál sincronizo el contador?`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: `Usar la ${lote.cuota.numero}/${lote.cuota.total} de la cartola`, callback_data: 'lcy_s' }],
+              [{ text: `Dejarlo como está (la ${lote.cuota.esperada})`, callback_data: 'lcy_n' }]
+            ]
+          }
+        }
+      );
+    }
+
     if (lote.comprobante && lote.pagoEstado === 'esperando') await resolverPago(chatId);
   }
 
@@ -292,7 +315,7 @@ export function crearLoteTerceros(ctx) {
     try {
       const movimientos = elegidos.map(n => lista.otros[n - 1].mov);
       const ruta = await confirmarTemporal(item.tmp, 'cartolas', { prefijo: 'telegram_' });
-      const { importados, archivoId } = await registrarImportacion({
+      const { importados, archivoId, registrados } = await registrarImportacion({
         archivo: ruta,
         hash: item.hash,
         cuentaId: cuenta.id,
@@ -300,6 +323,7 @@ export function crearLoteTerceros(ctx) {
       });
       await vincular(chatId, [item.mensajeUsuarioId, lista?.messageId], 'importacion', archivoId);
       lote.gastos = importados;
+      await sincronizarOtrasCuotas(lote, movimientos, registrados);
       lote.seleccionEstado = 'listo';
     } catch (error) {
       console.error('Error al guardar la cartola de una tarjeta ajena:', error.code ?? error.name);
@@ -308,25 +332,82 @@ export function crearLoteTerceros(ctx) {
       return cerrarSiListo(chatId);
     }
 
-    // Sin comprobante: se ofrece registrar la cuota con el monto de la cartola
-    if (lote.cuota && lote.cuota.accion !== 'duplicada' && !lote.comprobante && lote.pagoEstado === 'sin') {
-      lote.pagoEstado = 'confirmando';
-      lote.confirmacion = { tipo: 'sin_comprobante' };
-      const numero = lote.cuota.accion === 'salto' ? lote.cuota.esperada : lote.cuota.numero;
-      await enviar(chatId,
-        `No recibí el comprobante de tu transferencia a ${esc(lote.titular)}. ¿Registro la cuota ${numero} de ${lote.cuota.total} ` +
-        `de ${esc(lote.cuota.alias)} (${dinero(lote.cuota.montoCargo)}) ahora?`,
-        {
-          reply_markup: {
-            inline_keyboard: [[
-              { text: 'Sí, registrar', callback_data: 'lcr_s' },
-              { text: 'No ahora', callback_data: 'lcr_n' }
-            ]]
-          }
-        }
-      );
-    }
+    await ofrecerPagoSinComprobante(chatId);
     await cerrarSiListo(chatId);
+  }
+
+  /** Sin comprobante: se ofrece registrar la cuota con el monto de la cartola (cuando ya no hay nada por preguntar) */
+  async function ofrecerPagoSinComprobante(chatId) {
+    const lote = obtenerLote(chatId);
+    if (!lote?.cuota || lote.cuota.consulta || lote.seleccionEstado !== 'listo') return;
+    if (lote.cuota.accion === 'duplicada' || lote.comprobante || lote.pagoEstado !== 'sin') return;
+
+    lote.pagoEstado = 'confirmando';
+    lote.confirmacion = { tipo: 'sin_comprobante' };
+    await enviar(chatId,
+      `No recibí el comprobante de tu transferencia a ${esc(lote.titular)}. ¿Registro la cuota ${lote.cuota.numero} de ${lote.cuota.total} ` +
+      `de ${esc(lote.cuota.alias)} (${dinero(lote.cuota.montoCargo)}) ahora?`,
+      {
+        reply_markup: {
+          inline_keyboard: [[
+            { text: 'Sí, registrar', callback_data: 'lcr_s' },
+            { text: 'No ahora', callback_data: 'lcr_n' }
+          ]]
+        }
+      }
+    );
+  }
+
+  /**
+   * Los cargos que Juan marcó como suyos y que son una compra en cuotas ("TV 3/10"): crea la compra en cuotas o
+   * actualiza la que ya existe (mismo total, monto por cuota y descripción parecida), sin duplicar, y liga el
+   * movimiento a ella. La cuota actual de la cartola queda como las cuotas pagadas. Una compra que llega a su
+   * total queda terminada.
+   */
+  async function sincronizarOtrasCuotas(lote, movimientos, registrados) {
+    try {
+      const query = await consulta();
+      for (let i = 0; i < movimientos.length; i++) {
+        const mov = movimientos[i];
+        const nc = extraerNumeroCuota(mov.descripcion);
+        if (!nc) continue;
+
+        const existentes = await listarCompras({ incluirTerminadas: true });
+        let compra = buscarCompraSimilar(comprasDeTitular(existentes, lote.titular), mov.descripcion, mov.monto, nc.total);
+        let estado = 'igual';
+
+        if (compra) {
+          if (nc.actual > Number(compra.cuotas_pagadas)) {
+            compra = await fijarCuotasPagadas(compra.id, nc.actual);
+            estado = 'actualizada';
+          }
+        } else {
+          const alias = aliasDeCargo(mov.descripcion);
+          const creada = await crearCompra({
+            alias,
+            acreedor: lote.titular,
+            montoCuota: mov.monto,
+            totalCuotas: nc.total,
+            cuotasPagadas: nc.actual,
+            diaPago: Number(String(mov.fecha).slice(8, 10)) || null,
+            aliasCartola: alias
+          });
+          if (!creada.ok) continue;
+          compra = await obtenerCompra(creada.id);
+          estado = 'nueva';
+        }
+
+        if (registrados?.[i]?.id) {
+          await query('UPDATE movimientos SET compra_cuota_id = ?, numero_cuota = ? WHERE id = ?', [compra.id, nc.actual, registrados[i].id]);
+        }
+        lote.otras.push({
+          alias: compra.alias, actual: nc.actual, total: nc.total, estado,
+          terminada: nc.actual >= nc.total || Boolean(compra.terminada)
+        });
+      }
+    } catch (error) {
+      console.error('Error al sincronizar las cuotas de la cartola:', error.code ?? error.name);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -415,6 +496,8 @@ export function crearLoteTerceros(ctx) {
   async function resolverPago(chatId) {
     const lote = obtenerLote(chatId);
     if (!lote?.comprobante || lote.pagoEstado !== 'esperando') return;
+    // Si hay una pregunta sin responder sobre el número de cuota, se espera la respuesta
+    if (lote.cuota?.consulta) return;
     clearTimeout(lote.timerEspera);
 
     const c = lote.comprobante;
@@ -428,7 +511,9 @@ export function crearLoteTerceros(ctx) {
 
     // Qué cuota es: la de la cartola si la hay; si no, la siguiente a la última pagada
     const delLote = lote.cuota && lote.cuota.alias === compra.alias ? lote.cuota.numero : null;
-    const eva = evaluarNumeroCuota(compra, delLote);
+    // Si Juan eligió usar el número de la cartola, el contador se sincroniza con ese número
+    const forzar = lote.cuota?.accion === 'forzar' && delLote !== null && delLote !== Number(compra.cuotas_pagadas);
+    const eva = forzar ? { accion: 'registrar', numero: delLote } : evaluarNumeroCuota(compra, delLote);
     if (eva.accion === 'duplicada') {
       lote.pagoEstado = 'duplicada';
       if (lote.cuota) lote.cuota.estado = 'duplicada';
@@ -465,7 +550,7 @@ export function crearLoteTerceros(ctx) {
     const montoCargo = lote.cuota?.montoCargo ?? null;
     const descuadre = !montosCalzan(c.monto, montoCuota) || (montoCargo !== null && !montosCalzan(c.monto, montoCargo));
 
-    lote.confirmacion = { tipo: 'pago', numero, compraId: compra.id, cuentaId: Number(origen.id), montoCuota, montoComprobante: c.monto };
+    lote.confirmacion = { tipo: 'pago', numero, forzar, compraId: compra.id, cuentaId: Number(origen.id), montoCuota, montoComprobante: c.monto };
     lote.pagoEstado = 'confirmando';
 
     const lineas = [
@@ -474,7 +559,7 @@ export function crearLoteTerceros(ctx) {
       `Comprobante: ${dinero(c.monto)} el ${formatearFechaCL(c.fecha)}${c.fechaLeida ? '' : ' (no pude leer la fecha: pongo hoy)'}`,
       `Sale de: ${esc(origen.nombre)}${porDefecto ? ' (tu cuenta por defecto: el comprobante no la mostraba)' : ''}`
     ];
-    if (eva.accion === 'salto') lineas.push(`La cartola muestra otra cuota, pero llevas ${compra.cuotas_pagadas} pagadas: registro la ${numero}.`);
+    if (forzar) lineas.push(`El contador pasa de ${compra.cuotas_pagadas}/${compra.total_cuotas} a ${numero}/${compra.total_cuotas}, como dice la cartola.`);
     if (descuadre) {
       lineas.push(
         `<b>El monto no calza:</b> el comprobante dice ${dinero(c.monto)}, la cuota de ${esc(compra.alias)} es de ${dinero(montoCuota)}` +
@@ -503,7 +588,7 @@ export function crearLoteTerceros(ctx) {
     const compra = await obtenerCompra(conf.compraId);
     if (!compra) return false;
     // Revisión final contra duplicados: si mientras tanto se registró esa cuota, no se vuelve a sumar
-    if (evaluarNumeroCuota(compra, conf.numero).accion === 'duplicada') {
+    if (evaluarNumeroCuota(compra, conf.numero).accion === 'duplicada' && !conf.forzar) {
       lote.pagoEstado = 'duplicada';
       await eliminarRespaldo(lote.comprobante.archivo);
       await enviar(chatId, `La cuota ${conf.numero} de ${esc(compra.alias)} ya estaba registrada: no la dupliqué.`);
@@ -522,15 +607,18 @@ export function crearLoteTerceros(ctx) {
       archivoRespaldo: lote.comprobante.archivo
     });
     await vincular(chatId, [lote.comprobante.mensajeUsuarioId], 'pago_cuota', movimientoId);
+    // Sincronizado con la cartola: el contador queda exactamente en ese número (también si es menor)
+    const despues = conf.forzar ? await fijarCuotasPagadas(compra.id, conf.numero) : await obtenerCompra(compra.id);
 
     lote.pagoEstado = 'registrado';
     lote.confirmacion = null;
-    lote.cuotaRegistrada = { numero: conf.numero, total: Number(compra.total_cuotas), alias: compra.alias };
+    lote.cuotaRegistrada = { numero: conf.numero, total: Number(compra.total_cuotas), alias: compra.alias, terminada: Boolean(despues?.terminada) };
     if (lote.cuota) lote.cuota.estado = 'registrada';
     if (messageId) {
       await editar(
         `Pago registrado: cuota ${conf.numero} de ${compra.total_cuotas} de <b>${esc(compra.alias)}</b> ` +
-        `(${dinero(monto)} a ${esc(compra.acreedor)}). Respaldo adjunto.`,
+        `(${dinero(monto)} a ${esc(compra.acreedor)}). Respaldo adjunto.` +
+        (lote.cuotaRegistrada.terminada ? `\n<b>Con esta cuota terminas de pagar ${esc(compra.alias)}.</b>` : ''),
         { chat_id: chatId, message_id: messageId }
       );
     }
@@ -546,7 +634,8 @@ export function crearLoteTerceros(ctx) {
     const cuenta = await resolverCuentaPago(null);
     if (!compra || !cuenta) return false;
 
-    const eva = evaluarNumeroCuota(compra, lote.cuota.accion === 'salto' ? lote.cuota.esperada : lote.cuota.numero);
+    const forzar = lote.cuota.accion === 'forzar' && lote.cuota.numero !== Number(compra.cuotas_pagadas);
+    const eva = forzar ? { accion: 'registrar', numero: lote.cuota.numero } : evaluarNumeroCuota(compra, lote.cuota.numero);
     if (eva.accion === 'duplicada') {
       lote.pagoEstado = 'duplicada';
       await enviar(chatId, `La cuota ${eva.numero} de ${esc(compra.alias)} ya estaba registrada: no la dupliqué.`);
@@ -562,13 +651,15 @@ export function crearLoteTerceros(ctx) {
       archivoRespaldo: null
     });
     await vincular(chatId, [], 'pago_cuota', movimientoId);
+    const despues = forzar ? await fijarCuotasPagadas(compra.id, eva.numero) : await obtenerCompra(compra.id);
     lote.pagoEstado = 'registrado';
     lote.confirmacion = null;
-    lote.cuotaRegistrada = { numero: eva.numero, total: Number(compra.total_cuotas), alias: compra.alias };
+    lote.cuotaRegistrada = { numero: eva.numero, total: Number(compra.total_cuotas), alias: compra.alias, terminada: Boolean(despues?.terminada) };
     lote.cuota.estado = 'registrada';
     if (messageId) {
       await editar(
-        `Cuota ${eva.numero} de ${compra.total_cuotas} de <b>${esc(compra.alias)}</b> registrada (${dinero(lote.cuota.montoCargo)}).`,
+        `Cuota ${eva.numero} de ${compra.total_cuotas} de <b>${esc(compra.alias)}</b> registrada (${dinero(lote.cuota.montoCargo)}).` +
+        (lote.cuotaRegistrada.terminada ? `\n<b>Con esta cuota terminas de pagar ${esc(compra.alias)}.</b>` : ''),
         { chat_id: chatId, message_id: messageId }
       );
     }
@@ -584,7 +675,7 @@ export function crearLoteTerceros(ctx) {
   async function cerrarSiListo(chatId) {
     const lote = obtenerLote(chatId);
     if (!lote) return;
-    const pendiente = lote.seleccionEstado === 'pendiente' || ['esperando', 'confirmando'].includes(lote.pagoEstado);
+    const pendiente = lote.seleccionEstado === 'pendiente' || Boolean(lote.cuota?.consulta) || ['esperando', 'confirmando'].includes(lote.pagoEstado);
     if (pendiente) return;
 
     if (lote.item) {
@@ -594,7 +685,7 @@ export function crearLoteTerceros(ctx) {
           ? { estado: lote.cuota.estado, numero: lote.cuota.numero, total: lote.cuota.total, alias: lote.cuota.alias }
           : null;
       const pago = lote.pagoEstado === 'registrado' ? 'registrado' : lote.pagoEstado === 'cancelado' ? 'cancelado' : lote.comprobante ? 'cancelado' : 'sin';
-      await enviar(chatId, esc(textoResumenLote({ titular: lote.titular, cuota, gastos: lote.gastos, pago })));
+      await enviar(chatId, esc(textoResumenLote({ titular: lote.titular, cuota, gastos: lote.gastos, pago, otras: lote.otras })));
     }
     clearTimeout(lote.timerVida);
     clearTimeout(lote.timerEspera);
@@ -689,6 +780,28 @@ export function crearLoteTerceros(ctx) {
       if ((tipo === 'g' || tipo === '0') && lote.lista && lote.seleccionEstado === 'pendiente') {
         await responderCallback(cb.id, {});
         await aplicarSeleccion(chatId, tipo === '0' ? [] : [...lote.lista.elegidos].sort((a, b) => a - b));
+        return true;
+      }
+
+      // La cartola no calza con el contador: usar su número o dejarlo como está
+      if (tipo === 'y' && lote.cuota?.consulta) {
+        await responderCallback(cb.id, {});
+        lote.cuota.consulta = false;
+        if (valor === 's') {
+          lote.cuota.accion = 'forzar';
+        } else {
+          lote.cuota.accion = 'registrar';
+          lote.cuota.numero = lote.cuota.esperada;
+        }
+        await editar(
+          valor === 's'
+            ? `Listo: el contador de ${esc(lote.cuota.alias)} se sincroniza con la cartola (${lote.cuota.numero}/${lote.cuota.total}) al registrar el pago.`
+            : `Listo: dejo el contador como está y registro la cuota ${lote.cuota.numero}.`,
+          { chat_id: chatId, message_id: messageId }
+        );
+        if (lote.comprobante && lote.pagoEstado === 'esperando') await resolverPago(chatId);
+        else await ofrecerPagoSinComprobante(chatId);
+        await cerrarSiListo(chatId);
         return true;
       }
 

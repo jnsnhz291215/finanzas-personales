@@ -4,6 +4,9 @@ import {
   acreedoresDe,
   reconocerCuota,
   evaluarNumeroCuota,
+  extraerNumeroCuota,
+  aliasDeCargo,
+  buscarCompraSimilar,
   montosCalzan,
   parsearSeleccion,
   lineaCargo,
@@ -55,12 +58,36 @@ describe('reconocer la cuota en la cartola', () => {
   });
 });
 
+describe('número de cuota en la descripción de un cargo', () => {
+  test('lee 06/12, 6/12, C06/12, CUOTA 6 DE 12 y 6 de 12 cuotas', () => {
+    for (const t of ['APPLE STORE 06/12', 'compra 6/12', 'C06/12 TIENDA', 'CUOTA 6 DE 12 LIDER', 'tienda cuota 06/12', 'TIENDA 6 de 12 cuotas']) {
+      expect(extraerNumeroCuota(t)).toEqual({ actual: 6, total: 12 });
+    }
+  });
+
+  test('no confunde una fecha ni un 1/1', () => {
+    expect(extraerNumeroCuota('pago 05/11 supermercado')).toBeNull();
+    expect(extraerNumeroCuota('SUPERMERCADO 12/11/2026')).toBeNull();
+    expect(extraerNumeroCuota('FARMACIA 1/1')).toBeNull();
+    expect(extraerNumeroCuota('cuota 9 de 3')).toBeNull();
+  });
+
+  test('alias de la compra y búsqueda de la que ya existe', () => {
+    expect(aliasDeCargo('APPLE STORE MACBOOK CUOTA 06/12')).toBe('apple store macbook');
+    const compras = [{ alias: 'tv samsung', total_cuotas: 10, monto_cuota: 45000 }, { alias: 'otra', total_cuotas: 10, monto_cuota: 45000 }];
+    expect(buscarCompraSimilar(compras, 'TV SAMSUNG 4/10', 45000, 10).alias).toBe('tv samsung');
+    expect(buscarCompraSimilar(compras, 'TV SAMSUNG 4/12', 45000, 12)).toBeNull();
+    expect(buscarCompraSimilar(compras, 'TV SAMSUNG 4/10', 50000, 10)).toBeNull();
+  });
+});
+
 describe('cuándo se avanza el contador', () => {
   test('registra la siguiente, no duplica una ya pagada y avisa si se salta una', () => {
     expect(evaluarNumeroCuota(compra, 6)).toEqual({ accion: 'registrar', numero: 6 });
     expect(evaluarNumeroCuota(compra, null)).toEqual({ accion: 'registrar', numero: 6 });
     expect(evaluarNumeroCuota(compra, 5)).toEqual({ accion: 'duplicada', numero: 5 });
     expect(evaluarNumeroCuota(compra, 8)).toEqual({ accion: 'salto', numero: 8, esperada: 6 });
+    expect(evaluarNumeroCuota(compra, 3)).toEqual({ accion: 'menor', numero: 3, esperada: 6 });
   });
 
   test('los montos calzan con $1 de tolerancia', () => {
@@ -88,8 +115,15 @@ describe('"el 2 y el 5 son míos"', () => {
 describe('textos', () => {
   test('línea de un cargo y resumen del lote', () => {
     expect(lineaCargo(3, { fecha: '2026-11-12', descripcion: 'FARMACIA', monto: 8900 })).toBe('3. 12-11-2026 FARMACIA $8.900');
+    expect(lineaCargo(4, { fecha: '2026-11-16', descripcion: 'TV SAMSUNG 3/10', monto: 45000 })).toBe('4. 16-11-2026 TV SAMSUNG 3/10 $45.000 (cuota 3/10)');
     const t = textoResumenLote({ titular: 'Valeska', cuota: { estado: 'registrada', numero: 6, total: 12, alias: 'macbook' }, gastos: 2, pago: 'registrado' });
-    expect(t).toBe('Cartola de Valeska\nCuota 6 de 12 (macbook) registrada\n2 gastos tuyos agregados\nPago a Valeska registrado');
+    expect(t).toBe('Cartola de Valeska\nCuota registrada: macbook 6/12\n2 gastos tuyos agregados\nPago a Valeska registrado');
+    const conOtras = textoResumenLote({
+      titular: 'Valeska', cuota: { estado: 'registrada', numero: 12, total: 12, alias: 'macbook', terminada: true }, gastos: 1, pago: 'registrado',
+      otras: [{ alias: 'tv samsung', actual: 3, total: 10, estado: 'nueva', terminada: false }]
+    });
+    expect(conOtras).toContain('Cuota registrada: macbook 12/12 (compra terminada)');
+    expect(conOtras).toContain('Cuotas: tv samsung 3/10 (nueva)');
   });
 });
 

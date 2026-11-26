@@ -127,6 +127,22 @@ async function avanzarContador(compraId, numero) {
 }
 
 /**
+ * Deja el contador en exactamente `n` cuotas pagadas (sube o baja, a diferencia de avanzarContador); si
+ * llega al total, la compra queda terminada. Se usa al sincronizar con el número que muestra una cartola.
+ */
+export async function fijarCuotasPagadas(compraId, n) {
+  const query = await consulta();
+  const compra = await obtenerCompra(compraId);
+  if (!compra) return null;
+  const pagadas = Math.min(compra.total_cuotas, Math.max(0, Math.round(Number(n))));
+  await query(
+    'UPDATE compras_cuotas SET cuotas_pagadas = ?, terminada = ?, actualizado_en = CURRENT_TIMESTAMP WHERE id = ?',
+    [pagadas, pagadas >= compra.total_cuotas ? 1 : 0, compraId]
+  );
+  return obtenerCompra(compraId);
+}
+
+/**
  * Registra el pago de una cuota: crea el movimiento (cargo, transferencia_terceros, sin
  * categoría) ligado a la compra y actualiza el contador. Devuelve { movimientoId, compra }.
  */

@@ -55,7 +55,7 @@ export function reconocerCuota(movimientos, compra) {
   let mejor = null;
   movimientos.forEach((m, indice) => {
     if (m.tipo !== 'cargo') return;
-    const desc = normalizar(m.descripcion ?? '');
+    const desc = normalizar(m.descripcion ?? '').replace(/\bc(?=0?\d{1,2}\s*\/)/g, 'cuota ');
     const motivos = [];
     let puntaje = 0;
     let numero = null;
@@ -82,15 +82,70 @@ export function reconocerCuota(movimientos, compra) {
 /**
  * ¿Corresponde registrar la cuota `numero` (null = la siguiente) de esta compra?
  *   { accion: 'registrar', numero }  es la siguiente a la última pagada
- *   { accion: 'duplicada', numero }  ya estaba registrada: no se duplica
- *   { accion: 'salto', numero, esperada }  faltan cuotas intermedias: no se avanza solo
+ *   { accion: 'duplicada', numero }  es la última pagada: ya estaba registrada, no se duplica
+ *   { accion: 'menor', numero, esperada }  la cartola muestra un número menor que el de la app: se pregunta
+ *   { accion: 'salto', numero, esperada }  la cartola salta más de una cuota: se pregunta
  */
 export function evaluarNumeroCuota(compra, numero) {
-  const esperada = Number(compra.cuotas_pagadas) + 1;
+  const pagadas = Number(compra.cuotas_pagadas);
+  const esperada = pagadas + 1;
   if (numero === null || numero === undefined) return { accion: 'registrar', numero: esperada };
   if (numero === esperada) return { accion: 'registrar', numero };
-  if (numero < esperada) return { accion: 'duplicada', numero };
+  if (numero === pagadas) return { accion: 'duplicada', numero };
+  if (numero < pagadas) return { accion: 'menor', numero, esperada };
   return { accion: 'salto', numero, esperada };
+}
+
+/**
+ * Número de cuota que muestra la descripción de un cargo de crédito: "06/12", "6/12", "C06/12",
+ * "CUOTA 6 DE 12", "cuota 6 de 12", "6 de 12 cuotas". Devuelve { actual, total } o null. Para no
+ * confundir una fecha ("05/11"), la forma "NN/NN" solo vale con un total habitual de cuotas o con la
+ * palabra cuota cerca; el actual no puede pasar del total ni el total de 60.
+ */
+export function extraerNumeroCuota(descripcion) {
+  const desc = normalizar(descripcion ?? '');
+  const valido = (a, t) => Number.isInteger(a) && Number.isInteger(t) && t >= 2 && t <= 60 && a >= 1 && a <= t;
+
+  let m = /\b(?:cuota|cta|cta\.)\s*0?(\d{1,2})\s*(?:de|\/)\s*0?(\d{1,2})\b/.exec(desc);
+  if (m && valido(Number(m[1]), Number(m[2]))) return { actual: Number(m[1]), total: Number(m[2]) };
+
+  m = /\b0?(\d{1,2})\s*de\s*0?(\d{1,2})\s*cuotas?\b/.exec(desc);
+  if (m && valido(Number(m[1]), Number(m[2]))) return { actual: Number(m[1]), total: Number(m[2]) };
+
+  const TOTALES_HABITUALES = new Set([2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 18, 20, 24, 30, 36, 48, 60]);
+  m = /(?:^|[^\d/])c?0?(\d{1,2})\s*\/\s*0?(\d{1,2})(?![\d/])/.exec(desc);
+  if (m && valido(Number(m[1]), Number(m[2])) && TOTALES_HABITUALES.has(Number(m[2]))) {
+    return { actual: Number(m[1]), total: Number(m[2]) };
+  }
+  return null;
+}
+
+/** Nombre corto de una compra en cuotas a partir de la descripción del cargo (sin el "06/12") */
+export function aliasDeCargo(descripcion) {
+  const limpio = normalizar(descripcion ?? '')
+    .replace(/\b(?:cuota|cta)\.?\s*0?\d{1,2}\s*(?:de|\/)\s*0?\d{1,2}\b/g, ' ')
+    .replace(/\b0?\d{1,2}\s*de\s*0?\d{1,2}\s*cuotas?\b/g, ' ')
+    .replace(/c?\b0?\d{1,2}\s*\/\s*0?\d{1,2}\b/g, ' ')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 60);
+  return limpio || 'compra en cuotas';
+}
+
+/**
+ * La compra en cuotas que ya existe para un cargo: mismo total de cuotas, mismo monto por cuota (±1) y
+ * una descripción parecida (el mismo nombre o una palabra de 4 letras o más en común). null si no hay.
+ */
+export function buscarCompraSimilar(compras, descripcion, monto, total) {
+  const alias = aliasDeCargo(descripcion);
+  const palabras = alias.split(' ').filter(p => p.length >= 4);
+  return compras.find(c => {
+    if (Number(c.total_cuotas) !== Number(total) || !montosCalzan(c.monto_cuota, monto)) return false;
+    const nombre = normalizar(c.alias).trim();
+    return nombre === alias || palabras.some(p => ` ${nombre} `.includes(` ${p} `)) ||
+      nombre.split(' ').some(p => p.length >= 4 && alias.split(' ').includes(p));
+  }) ?? null;
 }
 
 /** ¿Los dos montos son el mismo? (tolerancia de $1 por redondeos) */
@@ -120,17 +175,23 @@ export function parsearSeleccion(texto, max) {
 
 /** Línea de la lista de cargos: "3. 12-11-2026 SUPERMERCADO $12.300" (sin escapar; quien la use escapa) */
 export function lineaCargo(numero, mov) {
-  return `${numero}. ${formatearFechaCL(String(mov.fecha).slice(0, 10))} ${String(mov.descripcion).slice(0, 45)} ${dinero(mov.monto)}`;
+  const cuota = extraerNumeroCuota(mov.descripcion);
+  return `${numero}. ${formatearFechaCL(String(mov.fecha).slice(0, 10))} ${String(mov.descripcion).slice(0, 45)} ${dinero(mov.monto)}` +
+    (cuota ? ` (cuota ${cuota.actual}/${cuota.total})` : '');
 }
 
 /** Resumen corto del lote */
-export function textoResumenLote({ titular, cuota, gastos, pago, avisos = [] }) {
+export function textoResumenLote({ titular, cuota, gastos, pago, otras = [], avisos = [] }) {
   const lineas = [`Cartola de ${titular}`];
-  if (cuota?.estado === 'registrada') lineas.push(`Cuota ${cuota.numero} de ${cuota.total} (${cuota.alias}) registrada`);
-  else if (cuota?.estado === 'duplicada') lineas.push(`Cuota ${cuota.numero} de ${cuota.total} (${cuota.alias}): ya estaba registrada, no la dupliqué`);
-  else if (cuota?.estado === 'pendiente') lineas.push(`Cuota ${cuota.numero} de ${cuota.total} (${cuota.alias}): sin registrar`);
+  const etiqueta = cuota ? `${cuota.alias} ${cuota.numero}/${cuota.total}` : '';
+  if (cuota?.estado === 'registrada') lineas.push(`Cuota registrada: ${etiqueta}${cuota.terminada ? ' (compra terminada)' : ''}`);
+  else if (cuota?.estado === 'duplicada') lineas.push(`Cuota ${etiqueta}: ya estaba registrada, no la dupliqué`);
+  else if (cuota?.estado === 'pendiente') lineas.push(`Cuota ${etiqueta}: sin registrar`);
   else lineas.push('No reconocí la cuota en la cartola');
   lineas.push(`${gastos} ${gastos === 1 ? 'gasto tuyo agregado' : 'gastos tuyos agregados'}`);
+  for (const o of otras) {
+    lineas.push(`Cuotas: ${o.alias} ${o.actual}/${o.total} (${o.estado})${o.terminada ? ' - compra terminada' : ''}`);
+  }
   if (pago === 'registrado') lineas.push(`Pago a ${titular} registrado`);
   else if (pago === 'sin') lineas.push(`Pago a ${titular}: sin comprobante`);
   else if (pago === 'cancelado') lineas.push(`Pago a ${titular}: no registrado`);

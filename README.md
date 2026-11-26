@@ -661,14 +661,19 @@ Caso: pagas un Mac en 12 cuotas con la tarjeta de crédito de la tía Valeska y 
 1. **La cartola se asocia a la cuenta de Valeska** (titular Valeska) por los 4 dígitos o el banco, como cualquier cartola. Si no existe una
    cuenta así pero la cartola trae la cuota de una compra en cuotas, pregunta si la creas como tarjeta de crédito con titular Valeska
    (botones: crear, "es mía" o cancelar).
-2. **Reconoce la cuota** en la cartola: por el número ("06/12", "cuota 6 de 12"), por la descripción (alias de la compra) o por el monto;
-   hace falta el número o dos de las otras señales. Solo avanza el contador si corresponde: la cuota siguiente a la última pagada. Una cuota
-   que ya estaba registrada **no se duplica**.
+2. **Reconoce la cuota** en la cartola: por el número ("06/12", "6/12", "C06/12", "CUOTA 6 DE 12", "6 de 12 cuotas"), por la descripción (alias de
+   la compra) o por el monto; hace falta el número o dos de las otras señales. **Sincroniza el contador con la cartola**: si la app dice 5/12 y la
+   cartola 06/12, al registrar tu transferencia pasa a 6/12. Si la cartola muestra un número menor o salta más de una cuota, avisa y **pregunta
+   antes de cambiar** (usar el número de la cartola o dejarlo como está). Una cuota que ya estaba registrada **no se duplica**. Al llegar al total,
+   la compra queda terminada y el resumen lo avisa.
 3. **Los demás cargos no se guardan solos.** Son de Valeska por defecto. El bot los lista **en un solo mensaje** y preguntas cuáles son tuyos:
    toca los números (o "Ninguno es mío") o responde al mensaje, por ejemplo «el 2 y el 5 son míos», «todos» o «ninguno». Solo los que marques
    se guardan como gastos tuyos, en la cuenta de esa tarjeta. **Los demás se ignoran** (no se guardan, así no cuentan en tus totales); la
    cartola queda registrada como importada para no volver a procesarla. Decisión: ignorarlos en vez de guardarlos "marcados como de Valeska",
    porque eso exigiría una columna nueva en `movimientos` y filtrarla en todos los totales.
+   En la lista, los cargos que son una compra en cuotas muestran su número ("TV SAMSUNG 3/10 (cuota 3/10)"). Los que marques como tuyos y sean una
+   compra en cuotas **crean o actualizan una cuota activa** (acreedor: el titular de la tarjeta, total, cuota actual como cuotas pagadas y monto por
+   cuota), sin duplicar si ya existe una con el mismo total, monto y descripción parecida; el movimiento queda ligado a ella.
 4. **El comprobante** se lee con **OCR local** (`tesseract.js` con los datos de español de `@tesseract.js-data/spa`, sin descargar nada y sin
    enviar la imagen a ningún servicio) y se registra como **el pago de la cuota** del mes (monto y fecha del comprobante), ligado a la
    compra y a la cuenta tuya de la que salió (la que muestre el comprobante por sus 4 dígitos; si no, tu cuenta por defecto). Ese pago es el
