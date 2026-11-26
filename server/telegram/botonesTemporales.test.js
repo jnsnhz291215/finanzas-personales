@@ -84,7 +84,7 @@ describe('botones con vencimiento', () => {
 
 describe('/mantenimiento', () => {
   test('solo hay una lista cerrada de tareas y un id desconocido no se ejecuta', () => {
-    expect(TAREAS.map(t => t.id)).toEqual(['fechas_contar', 'fechas_aplicar']);
+    expect(TAREAS.map(t => t.id)).toEqual(['fechas_contar', 'fechas_aplicar', 'gemini_probar', 'errores_ver']);
     expect(tareaPorId('rm -rf /')).toBeNull();
     expect(tareaPorId('fechas_aplicar').confirmar).toBe(true);
     expect(tareaPorId('fechas_contar').confirmar).toBe(false);

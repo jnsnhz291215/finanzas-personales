@@ -7,6 +7,7 @@
 import { fechaHoySantiago } from './fechas.js';
 import { TIPOS_MOVIMIENTO, requiereDestino, resolverTipos } from '../tiposMovimiento.js';
 import { TIPOS_CUENTA, bancoPorNombre, enmascararDigitos, BANCOS } from './cuentas.js';
+import { describirError } from './errores.js';
 
 const MODELO_POR_DEFECTO = 'gemini-2.5-flash';
 const TIMEOUT_MS = 8000;
@@ -14,9 +15,15 @@ const MAX_TEXTO = 500;
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 class ErrorGemini extends Error {
-  constructor(codigo, mensaje) {
+  /** `http`: estado HTTP de la respuesta; `estado`: el status de Google ("API_KEY_INVALID" no, sino "INVALID_ARGUMENT", "PERMISSION_DENIED"...) */
+  constructor(codigo, mensaje, { http = null, estado = null, motivo = null } = {}) {
     super(mensaje);
+    this.name = 'ErrorGemini';
     this.codigo = codigo;
+    this.http = http;
+    this.estado = estado;
+    // Primer "reason" de los detalles del error de Google (por ejemplo API_KEY_INVALID)
+    this.motivo = motivo;
   }
 }
 
@@ -43,7 +50,10 @@ function logErrorGemini(err) {
   let mensaje = String(err?.message ?? 'sin mensaje').slice(0, 200);
   const key = process.env.GEMINI_API_KEY;
   if (key) mensaje = mensaje.split(key).join('***');
-  console.error(`[gemini] error_code=${codigo} message=${mensaje}`);
+  // Con la causa exacta: código HTTP, status de Google y el motivo traducido (describirError, paso "gemini"); el bot sigue con las reglas locales
+  const { causa } = describirError(err, 'gemini', 'una consulta', { registrar: false });
+  const extra = `${err?.http ? ` http=${err.http}` : ''}${err?.estado ? ` status=${err.estado}` : ''}${err?.motivo ? ` reason=${err.motivo}` : ''}`;
+  console.error(`[gemini] error_code=${codigo}${extra} message=${mensaje} causa="${causa}"`);
 }
 
 const ESQUEMA_RESPUESTA = {
@@ -147,8 +157,8 @@ function validarRespuesta(datos, contexto) {
  * Lanza ErrorGemini (o el error de red/timeout) si algo falla; quien llama lo registra
  * con logErrorGemini. Timeout de 8 s.
  */
-async function llamarGemini(instrucciones, mensaje, esquema, { timeoutMs = TIMEOUT_MS } = {}) {
-  const modelo = process.env.GEMINI_MODEL || MODELO_POR_DEFECTO;
+async function llamarGemini(instrucciones, mensaje, esquema, { timeoutMs = TIMEOUT_MS, modelo: modeloForzado = null } = {}) {
+  const modelo = modeloForzado || process.env.GEMINI_MODEL || MODELO_POR_DEFECTO;
 
   const generationConfig = {
     temperature: 0,
@@ -181,7 +191,8 @@ async function llamarGemini(instrucciones, mensaje, esquema, { timeoutMs = TIMEO
     } catch {
       // cuerpo no JSON: se usa el estado HTTP
     }
-    throw new ErrorGemini(info.code ?? respuesta.status, info.message ?? respuesta.statusText);
+    const motivo = Array.isArray(info.details) ? (info.details.find(d => d?.reason)?.reason ?? null) : null;
+    throw new ErrorGemini(info.code ?? respuesta.status, info.message ?? respuesta.statusText, { http: respuesta.status, estado: info.status ?? null, motivo });
   }
 
   const cuerpo = await respuesta.json();
@@ -602,4 +613,42 @@ export async function probarGemini() {
   } catch (err) {
     return { ok: false, motivo: motivoFalloGemini(err) };
   }
+}
+
+/** Modelos que prueba el diagnóstico: GEMINI_MODEL (o el de por defecto) y, si existe, los de GEMINI_MODEL_FALLBACKS (separados por coma) */
+export function modelosParaProbar() {
+  const principal = process.env.GEMINI_MODEL || MODELO_POR_DEFECTO;
+  const extra = String(process.env.GEMINI_MODEL_FALLBACKS ?? '').split(',').map(m => m.trim()).filter(Boolean);
+  return [...new Set([principal, ...extra])];
+}
+
+/**
+ * Diagnóstico: una llamada mínima con texto fijo ("Responde OK", sin datos personales) a cada modelo. No pasa por el límite por hora.
+ * Devuelve { claveDefinida, largoClave, modeloConfigurado, resultados: [{ modelo, ok, ms, error }] }. Nunca devuelve la clave ni partes de ella;
+ * `error` es el error original (para describirError y para leer http / estado).
+ */
+export async function diagnosticarGemini() {
+  const clave = process.env.GEMINI_API_KEY ?? '';
+  const informe = {
+    claveDefinida: clave.length > 0,
+    largoClave: clave.length,
+    modeloConfigurado: Boolean(process.env.GEMINI_MODEL),
+    resultados: []
+  };
+  if (!informe.claveDefinida) return informe;
+  for (const modelo of modelosParaProbar()) {
+    const inicio = Date.now();
+    try {
+      await llamarGemini(
+        'Responde solo con un JSON que tenga la clave "respuesta".',
+        'Responde OK',
+        { type: 'OBJECT', properties: { respuesta: { type: 'STRING' } }, required: ['respuesta'] },
+        { timeoutMs: 10000, modelo }
+      );
+      informe.resultados.push({ modelo, ok: true, ms: Date.now() - inicio });
+    } catch (error) {
+      informe.resultados.push({ modelo, ok: false, ms: Date.now() - inicio, error });
+    }
+  }
+  return informe;
 }

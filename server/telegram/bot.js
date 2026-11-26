@@ -39,6 +39,7 @@ import { crearEstadoCuenta } from './estadoCuentaBot.js';
 import { crearResetCuenta } from './resetCuentaBot.js';
 import { crearBotonesTemporales } from './botonesTemporales.js';
 import { crearMantenimiento } from './mantenimientoBot.js';
+import { instalarBufferErrores } from './bufferErrores.js';
 import { crearEditarCuenta } from './editarCuentaBot.js';
 import { mensajesAyuda, COMANDOS_CONOCIDOS, COMANDOS_MENU } from './comandos.js';
 import { crearLoteTerceros } from './loteTerceros.js';
@@ -94,6 +95,9 @@ let cuotas = null;
 // Importación de cartolas desde el bot (cartolasBot.js); se crea al iniciar el bot
 let cartolas = null;
 // Reinicio y actualización desde el bot (sistemaBot.js); se crea al iniciar el bot
+// Guarda en memoria las últimas líneas de console.error (saneadas) para /mantenimiento
+instalarBufferErrores();
+
 let sistema = null;
 let mantenimiento = null;
 // Botones con vencimiento: se quitan solos al vencer (botonesTemporales.js)

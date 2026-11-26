@@ -14,6 +14,7 @@
  */
 
 import { describirError } from './errores.js';
+import { ultimasLineasDeError } from './bufferErrores.js';
 
 /** Lista cerrada de tareas permitidas */
 export const TAREAS = [
@@ -36,11 +37,71 @@ export const TAREAS = [
       const { repararFechas } = await import('../repararFechas.js');
       return lineasDeFechas(await repararFechas({ aplicar: true }), true);
     }
+  },
+  {
+    id: 'gemini_probar',
+    etiqueta: 'Probar Gemini',
+    descripcion: 'Una llamada mínima con texto fijo («Responde OK», sin datos tuyos) a cada modelo configurado. Dice si la clave existe (solo su largo), el modelo, el tiempo y, si falla, el código HTTP y el status de Google.',
+    confirmar: false,
+    async ejecutar() {
+      const { diagnosticarGemini, modelosParaProbar } = await import('./gemini.js');
+      return lineasDeGemini(await diagnosticarGemini(), modelosParaProbar());
+    }
+  },
+  {
+    id: 'errores_ver',
+    etiqueta: 'Últimos errores del bot',
+    descripcion: 'Las últimas 30 líneas de error del proceso (log de PM2 o memoria), sin tokens, keys, URLs, RUT ni números largos.',
+    confirmar: false,
+    async ejecutar() {
+      const { origen, lineas } = await ultimasLineasDeError(30);
+      if (lineas.length === 0) return [`Sin errores registrados (fuente: ${origen}).`];
+      // Telegram admite ~4.000 caracteres: se muestran las más recientes que quepan
+      const salida = [];
+      let largo = 0;
+      for (const l of [...lineas].reverse()) {
+        if (largo + l.length + 1 > 3000) break;
+        salida.unshift(l);
+        largo += l.length + 1;
+      }
+      return [`Fuente: ${origen}. Últimas ${salida.length} líneas:`, '', ...salida];
+    }
   }
   // Próximas tareas fijas: simular migrar-storage, estado de pm2 del proceso, últimas líneas del log propio sin secretos...
 ];
 
 export const tareaPorId = (id) => TAREAS.find(t => t.id === id) ?? null;
+
+/**
+ * Resultado de diagnosticarGemini en líneas. De la clave solo se dice si existe y cuántos caracteres tiene; nunca su valor ni partes de él.
+ * Un error se traduce con describirError (paso "gemini") y se muestra con su código HTTP y el status de Google.
+ */
+export function lineasDeGemini(informe, modelos) {
+  const lineas = [
+    informe.claveDefinida
+      ? `Clave GEMINI_API_KEY: definida (${informe.largoClave} caracteres)`
+      : 'Clave GEMINI_API_KEY: NO está definida (el bot usa solo las reglas locales)',
+    `GEMINI_MODEL: ${informe.modeloConfigurado ? 'definida' : 'no definida (se usa el modelo por defecto)'}`,
+    `Modelos a probar: ${modelos.join(', ')}`
+  ];
+  if (!informe.claveDefinida) return lineas;
+  lineas.push('');
+  for (const r of informe.resultados) {
+    if (r.ok) {
+      lineas.push(`${r.modelo}: respondió OK en ${r.ms} ms`);
+      continue;
+    }
+    const d = describirError(r.error, 'gemini', r.modelo);
+    const http = r.error?.http ? `HTTP ${r.error.http}` : 'sin respuesta HTTP';
+    const estado = r.error?.estado ? ` ${r.error.estado}` : '';
+    lineas.push(`${r.modelo}: FALLÓ en ${r.ms} ms (${http}${estado}): ${d.causa}`);
+  }
+  const buenos = informe.resultados.filter(r => r.ok).length;
+  lineas.push('', buenos === 0
+    ? 'Ningún modelo respondió: el bot sigue funcionando solo con las reglas locales.'
+    : `${buenos} de ${informe.resultados.length} modelos respondieron.`);
+  return lineas;
+}
 
 /** Resultado de repararFechas en líneas con números (nada sensible) */
 export function lineasDeFechas(r, aplicado) {

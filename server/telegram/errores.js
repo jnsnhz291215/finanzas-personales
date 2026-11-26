@@ -20,7 +20,13 @@ export function sanear(texto) {
   let t = String(texto ?? '');
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (token) t = t.split(token).join('***');
+  // La key de Gemini y las que parecen de Google (AIza...) nunca salen
+  const key = process.env.GEMINI_API_KEY;
+  if (key && key.length >= 8) t = t.split(key).join('***');
   return t
+    .replace(/\bAIza[\w-]{20,}/g, '***')
+    .replace(/\bBearer\s+[\w.-]{10,}/gi, 'Bearer ***')
+    .replace(/\b\d{1,2}\.?\d{3}\.?\d{3}-[\dkK]\b/g, '<rut>')
     .replace(/https?:\/\/\S+/gi, '<url>')
     .replace(/\bbot\d{6,}:[\w-]{20,}/g, 'bot***')
     .replace(/[A-Za-z]:\\(?:[\w.()-]+\\?)+/g, '<ruta>')
@@ -41,6 +47,23 @@ function codigos(err) {
 /** { tipo, causa } de un error: la causa es una frase corta en español que cabe tras «No pude ...: » */
 export function clasificarError(err, paso = '') {
   const cods = codigos(err);
+  // Errores de la API de Gemini: código HTTP + status de Google
+  if (err?.name === 'ErrorGemini' && (err.http || err.codigo)) {
+    const http = Number(err.http ?? err.codigo);
+    const estado = String(err.estado ?? '').toUpperCase();
+    const motivo = String(err.motivo ?? '').toUpperCase();
+    const etiqueta = `${http} ${motivo || estado}`.trim();
+    if (motivo === 'API_KEY_INVALID' || /api key not valid|api_key_invalid/i.test(err.message)) return { tipo: 'gemini_clave', causa: `la clave de API no es válida (${etiqueta})` };
+    if (http === 403 || estado === 'PERMISSION_DENIED') return { tipo: 'gemini_permiso', causa: `la clave no tiene permiso para usar Gemini o el modelo (${etiqueta})` };
+    if (http === 404 || estado === 'NOT_FOUND') return { tipo: 'gemini_modelo', causa: `el modelo no existe o no está disponible (${etiqueta})` };
+    if (http === 429 || estado === 'RESOURCE_EXHAUSTED') return { tipo: 'gemini_cuota', causa: `se agotó la cuota o hay demasiadas solicitudes (${etiqueta})` };
+    if (http === 503 || estado === 'UNAVAILABLE') return { tipo: 'gemini_caido', causa: `Gemini está sobrecargado o no disponible (${etiqueta})` };
+    if (http >= 500) return { tipo: 'gemini_caido', causa: `falla del servicio de Gemini (${etiqueta})` };
+    if (estado === 'FAILED_PRECONDITION') return { tipo: 'gemini_region', causa: `el servicio no está habilitado para tu región o falta facturación (${etiqueta})` };
+    if (http === 400) return { tipo: 'gemini_solicitud', causa: `Gemini rechazó la solicitud (${etiqueta})` };
+    return { tipo: 'gemini', causa: `error de Gemini (${etiqueta || http})` };
+  }
+  if (err?.codigo === 'SIN_CONTENIDO') return { tipo: 'gemini_vacio', causa: 'Gemini respondió vacío o bloqueó la respuesta' };
   const mensaje = `${err?.message ?? ''} ${err?.cause?.message ?? ''}`.toLowerCase();
   const tiene = (...c) => c.some(x => cods.includes(x));
 

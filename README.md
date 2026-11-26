@@ -932,7 +932,11 @@ npm run reparar-fechas -- --aplicar # repara, en una transacción
   pierde el teclado. Código: `server/telegram/botonesTemporales.js`.
 - `/mantenimiento` (solo chats autorizados, como `/update`) ofrece una **lista cerrada** de tareas definida en `server/telegram/mantenimientoBot.js`
   (`TAREAS`); nunca ejecuta texto del usuario ni usa un shell. Hoy: *Reparar fechas (solo contar)* y *Reparar fechas (aplicar)*, esta última con
-  segunda confirmación. Responde solo con números y deja en el log quién pidió qué tarea. Para agregar otra tarea, se suma una entrada a `TAREAS`.
+  segunda confirmación. Responde solo con números y deja en el log quién pidió qué tarea.
+  También: *Probar Gemini* (una llamada mínima con texto fijo a cada modelo de `GEMINI_MODEL` y, si existe, `GEMINI_MODEL_FALLBACKS` separados por
+  coma; informa si la clave existe y su largo —nunca su valor—, el tiempo y, si falla, el código HTTP y el status de Google traducido) y *Últimos
+  errores del bot* (las últimas 30 líneas de `logs/err.log` de PM2, o de un buffer en memoria si no existe, sin tokens, keys, URLs, RUT ni números
+  largos). Cuando Gemini falla, el log registra el código HTTP, el status de Google y la causa traducida, y el bot sigue con las reglas locales. Para agregar otra tarea, se suma una entrada a `TAREAS`.
 
 ### Estados de cuenta guardados: /estadocuenta
 
