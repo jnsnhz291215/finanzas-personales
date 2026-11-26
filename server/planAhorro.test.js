@@ -351,6 +351,13 @@ describe('gasto fijo en lenguaje natural', () => {
 
   test('"fijo 15.990 netflix" y "gasto fijo 24k internet"', () => {
     expect(parsearGastoFijoNatural('fijo 15.990 netflix')).toMatchObject({ nombre: 'Netflix', monto: 15990, destinatario: null });
+    // La misma forma que /fijo: destinatario con "a" y día con "el", y palabras clave al final
+    expect(parsearGastoFijoNatural('fijo 24000 telefonía a Vivian el 5')).toEqual({
+      nombre: 'Telefonía', monto: 24000, diaPago: 5, destinatario: 'Vivian', palabrasClave: null
+    });
+    expect(parsearGastoFijoNatural('fijo celular 20 mil el 10 palabras movistar, entel')).toMatchObject({
+      nombre: 'Celular', monto: 20000, diaPago: 10, destinatario: null, palabrasClave: 'movistar, entel'
+    });
     expect(parsearGastoFijoNatural('gasto fijo 24k internet')).toMatchObject({ nombre: 'Internet', monto: 24000 });
   });
 

@@ -127,8 +127,11 @@ async function recorrer(carpeta) {
   return salida;
 }
 
-/** Junta lo que hay que mover: archivos referenciados por la BD y archivos huérfanos de las carpetas de tipo */
-export async function construirInventario() {
+/**
+ * Junta lo que hay que mover: archivos referenciados por la BD y archivos huérfanos de las carpetas de tipo. Con `cuentaId` solo mira
+ * los archivos de esa cuenta (sus cartolas y los comprobantes de sus movimientos) y no toca los huérfanos.
+ */
+export async function construirInventario(cuentaId = null) {
   const { query } = await bd();
   const [cuentasFilas] = await query('SELECT id, tipo, titular, ultimos4, ultimos4_cuenta FROM cuentas');
   const cuentas = new Map(cuentasFilas.map(c => [Number(c.id), c]));
@@ -150,7 +153,8 @@ export async function construirInventario() {
   const [archivos] = await query(
     `SELECT a.id, a.ruta_archivo, a.cuenta_id, a.periodo_hasta, a.fecha_importacion,
             (SELECT MAX(m.fecha) FROM movimientos m WHERE m.importado_de = a.ruta_archivo) AS ultimo_mov
-     FROM archivos_importados a WHERE a.ruta_archivo IS NOT NULL AND a.ruta_archivo <> ''`
+     FROM archivos_importados a WHERE a.ruta_archivo IS NOT NULL AND a.ruta_archivo <> ''${cuentaId ? ' AND a.cuenta_id = ?' : ''}`,
+    cuentaId ? [Number(cuentaId)] : []
   );
   for (const a of archivos) {
     const absoluta = await resolverArchivo(a.ruta_archivo);
@@ -161,7 +165,8 @@ export async function construirInventario() {
 
   // Comprobantes de movimientos
   const [respaldos] = await query(
-    `SELECT id, cuenta_id, fecha, archivo_respaldo FROM movimientos WHERE archivo_respaldo IS NOT NULL AND archivo_respaldo <> ''`
+    `SELECT id, cuenta_id, fecha, archivo_respaldo FROM movimientos WHERE archivo_respaldo IS NOT NULL AND archivo_respaldo <> ''${cuentaId ? ' AND cuenta_id = ?' : ''}`,
+    cuentaId ? [Number(cuentaId)] : []
   );
   for (const m of respaldos) {
     const absoluta = await resolverArchivo(m.archivo_respaldo);
@@ -170,7 +175,7 @@ export async function construirInventario() {
   }
 
   // Archivos que la BD no menciona, en las carpetas de tipo
-  for (const tipo of TIPOS) {
+  for (const tipo of cuentaId ? [] : TIPOS) {
     for (const absoluta of await recorrer(carpetaBase(tipo))) {
       if (porArchivo.has(absoluta)) continue;
       const stat = await fs.stat(absoluta);
@@ -221,11 +226,11 @@ export async function moverArchivo(origenRel, destinoRel) {
   if (!(await existe(destino)) || await existe(origen) || (await fs.stat(destino)).size !== tamano) throw new Error('el archivo no quedó donde debía');
 }
 
-async function guardarLog(contenido, nombre = null) {
+async function guardarLog(contenido, nombre = null, prefijo = 'migracion-storage') {
   const carpeta = path.join(rutaRaiz(), 'respaldos');
   await fs.mkdir(carpeta, { recursive: true });
   const sello = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+$/, '').replace('T', '_');
-  const archivo = nombre ?? `migracion-storage-${sello}.json`;
+  const archivo = nombre ?? `${prefijo}-${sello}.json`;
   await fs.writeFile(path.join(carpeta, archivo), JSON.stringify(contenido), { mode: 0o600 });
   return archivo;
 }
@@ -234,8 +239,8 @@ async function guardarLog(contenido, nombre = null) {
  * Migra al orden por cuenta. `aplicar` false = solo simula. Devuelve { movidos, yaEnSuLugar, sinResolver, aplicado, log } o lanza si algo
  * no calzó (en ese caso no queda nada movido).
  */
-export async function migrarStorage({ aplicar = false } = {}) {
-  const { items, ocupados, sinResolver } = await construirInventario();
+export async function migrarStorage({ aplicar = false, cuentaId = null } = {}) {
+  const { items, ocupados, sinResolver } = await construirInventario(cuentaId);
   const plan = planificar(items, ocupados);
   const resumen = { total: items.length, movidos: plan.length, yaEnSuLugar: items.length - plan.length, sinResolver: sinResolver.length, aplicado: false, log: null };
 
@@ -248,8 +253,8 @@ export async function migrarStorage({ aplicar = false } = {}) {
   if (problemas.length > 0) throw new Error(`la migración no es segura, no moví nada (${[...new Set(problemas)].join(', ')})`);
   if (!aplicar || plan.length === 0) return resumen;
 
-  const registro = { version: 1, inicio: new Date().toISOString(), estado: 'en curso', movimientos: plan.map(p => ({ origen: p.origen, destino: p.destino })) };
-  const nombreLog = await guardarLog(registro);
+  const registro = { version: 1, cuentaId: cuentaId ? Number(cuentaId) : undefined, inicio: new Date().toISOString(), estado: 'en curso', movimientos: plan.map(p => ({ origen: p.origen, destino: p.destino })) };
+  const nombreLog = await guardarLog(registro, null, cuentaId ? `migracion-storage-cuenta${Number(cuentaId)}` : 'migracion-storage');
 
   const hechos = [];
   const revertirArchivos = async () => {

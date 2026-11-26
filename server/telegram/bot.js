@@ -23,6 +23,7 @@ import {
   actualizarGastoFijo,
   validarGastoFijo,
   parsearFijo,
+  parsearGastoFijoNatural,
   TIPOS_GASTO_LIBRE
 } from '../planAhorro.js';
 import { crearAdmin } from './admin.js';
@@ -3137,7 +3138,7 @@ function configurarComandosPlan() {
     await responderPlan(chatId);
   });
 
-  // /fijo arriendo 350 mil el 5
+  // /fijo arriendo 350 mil el 5 · /fijo 24000 telefonía a Vivian el 5 (mismo parser que la frase natural)
   bot.onText(/^\/fijo(?:@\w+)?(?:\s+([\s\S]+))?$/i, async (msg, match) => {
     const chatId = msg.chat.id;
     if (!esChatAutorizado(chatId)) {
@@ -3145,14 +3146,15 @@ function configurarComandosPlan() {
       return;
     }
 
-    const parsed = parsearFijo(match[1] || '');
+    const parsed = parsearGastoFijoNatural(`fijo ${match[1] || ''}`) ?? parsearFijo(match[1] || '');
     if (!parsed.nombre && !parsed.monto) {
       await enviar(chatId,
         '<b>Agregar un gasto fijo</b>\n\n' +
         'Escribe el nombre, el monto y, si quieres, el día de pago:\n' +
         '/fijo arriendo 350 mil el 5\n' +
         '/fijo internet 25.990 el 10\n' +
-        '/fijo celular 20 mil el 10 palabras movistar, entel\n\n' +
+        '/fijo celular 20 mil el 10 palabras movistar, entel\n' +
+        '/fijo 24000 telefonía a Vivian el 5\n\n' +
         'También puedes escribirlo como hablas: «gasto fijo: 24 mil en telefonía, lo pago a Vivian».'
       );
       return;

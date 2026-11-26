@@ -504,6 +504,14 @@ export function parsearGastoFijoNatural(texto) {
   if (!marcador || !/\bfijo\b/i.test(marcador[0])) return null;
   let resto = original.slice(marcador[0].length).trim();
 
+  // Las palabras clave ("palabras movistar, entel") van al final y se separan antes de buscar destinatario, monto y día
+  let palabrasClave = null;
+  const claves = /\bpalabras(?:\s+clave)?\s*:?\s+(.+)$/i.exec(resto);
+  if (claves) {
+    palabrasClave = listaPalabrasClave(claves[1]).join(', ') || null;
+    resto = resto.slice(0, claves.index).trim();
+  }
+
   // A quién se le paga: "lo pago a Vivian", "se lo pago a Don Pedro", "le pago a Camila", o un "a Vivian" al final
   let destinatario = null;
   const paga = /[,;]?\s*(?:(?:se\s+)?(?:lo|la|le)\s+)?(?:pago|transfiero|deposito|giro|paga)\s+a\s+(.+?)(?=\s+(?:el|los|cada|d[ií]a)\s+\d|\s+(?:cada|todos los)\s+mes|[,;]|$)/i.exec(resto);
@@ -511,10 +519,11 @@ export function parsearGastoFijoNatural(texto) {
     destinatario = paga[1];
     resto = resto.replace(paga[0], ' ');
   } else {
-    const alFinal = /\s+a\s+((?:(?:don|doña|dona|sr|sra)\s+)?[A-ZÁÉÍÓÚÑ][\p{L}'-]+(?:\s+[A-ZÁÉÍÓÚÑ][\p{L}'-]+){0,2})\s*$/u.exec(resto);
+    // "a Vivian", con o sin el día después: "telefonía a Vivian el 5"
+    const alFinal = /\s+a\s+((?:(?:don|doña|dona|sr|sra)\s+)?[A-ZÁÉÍÓÚÑ][\p{L}'-]+(?:\s+[A-ZÁÉÍÓÚÑ][\p{L}'-]+){0,2})(?=(?:\s+(?:el|dia|día|los)\s+\d{1,2}(?:\s+de\s+cada\s+mes|\s+cada\s+mes)?)?\s*$)/u.exec(resto);
     if (alFinal) {
       destinatario = alFinal[1];
-      resto = resto.slice(0, alFinal.index);
+      resto = resto.slice(0, alFinal.index) + resto.slice(alFinal.index + alFinal[0].length);
     }
   }
   if (destinatario) {
@@ -530,7 +539,7 @@ export function parsearGastoFijoNatural(texto) {
     monto: base.monto,
     diaPago: base.diaPago,
     destinatario,
-    palabrasClave: null
+    palabrasClave
   };
 }
 

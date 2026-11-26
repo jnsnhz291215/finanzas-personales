@@ -34,7 +34,7 @@ export const COMANDOS = [
 
   // Cuotas y fijos
   { seccion: 'Cuotas y fijos', nombre: 'cuotas', uso: '[nueva ... | cartola ...]', ejemplo: '/cuotas', descripcion: 'Todas tus compras en cuotas (activas y terminadas) por titular', menu: 4, menuDescripcion: 'Mis compras en cuotas' },
-  { seccion: 'Cuotas y fijos', nombre: 'fijo', uso: '<nombre> <monto> [el <día>]', ejemplo: '/fijo arriendo 350 mil el 5', descripcion: 'Agregar un gasto fijo' },
+  { seccion: 'Cuotas y fijos', nombre: 'fijo', uso: '<nombre> <monto> [a <quién>] [el <día>]', ejemplo: '/fijo 24000 telefonía a Vivian el 5', descripcion: 'Agregar un gasto fijo' },
   { seccion: 'Cuotas y fijos', nombre: 'fijos', ejemplo: '/fijos', descripcion: 'Ver tus gastos fijos, editarlos o desactivarlos' },
 
   // Cuentas y datos

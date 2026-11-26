@@ -559,8 +559,8 @@ La lista sale de un solo lugar (`server/telegram/comandos.js`), la misma de `/he
 
 - `/cuotas [nueva ... | cartola ...]` - Todas tus compras en cuotas (activas y terminadas) por titular
   Ej: `/cuotas`
-- `/fijo <nombre> <monto> [el <día>]` - Agregar un gasto fijo
-  Ej: `/fijo arriendo 350 mil el 5`
+- `/fijo <nombre> <monto> [a <quién>] [el <día>]` - Agregar un gasto fijo
+  Ej: `/fijo 24000 telefonía a Vivian el 5`
 - `/fijos` - Ver tus gastos fijos, editarlos o desactivarlos
   Ej: `/fijos`
 

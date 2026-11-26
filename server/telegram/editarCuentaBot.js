@@ -23,6 +23,7 @@ import {
   aplicarEdicion
 } from '../edicionCuentas.js';
 import { ETIQUETAS_TIPO_DB } from './cuentas.js';
+import { migrarStorage } from '../migrarStorage.js';
 
 const ESPERA_MS = 10 * 60 * 1000;
 const ES_TARJETA = (c) => String(c.tipo).startsWith('tarjeta');
@@ -43,6 +44,34 @@ export function crearEditarCuenta(ctx) {
 
   function errorBD(contexto, error) {
     console.error(`${contexto}:`, error.code ?? error.name);
+  }
+
+  // Cuentas cuyos archivos se están moviendo ahora (evita un doble clic)
+  const moviendo = new Set();
+
+  /**
+   * Tras cambiar tipo, titular o dígitos la carpeta de la cuenta cambia (cuentas/<tipo>-<titular>-<últimos4>/). Simula la migración de
+   * esa cuenta y, si hay archivos que mover, ofrece moverlos. No toca nada hasta que se pulsa el botón.
+   */
+  async function ofrecerMoverArchivos(chatId, cuentaId) {
+    try {
+      const sim = await migrarStorage({ aplicar: false, cuentaId });
+      if (sim.movidos === 0) return;
+      await enviar(chatId,
+        `Esta cuenta tiene <b>${sim.movidos}</b> ${sim.movidos === 1 ? 'archivo guardado' : 'archivos guardados'} en la carpeta anterior. ` +
+        '¿Los muevo a la carpeta nueva? Se verifica cada archivo, se actualiza la base de datos en una sola transacción y, si algo falla, todo vuelve a su lugar.',
+        {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: 'Mover sus archivos a la carpeta nueva', callback_data: `ecm_${cuentaId}` },
+              { text: 'Ahora no', callback_data: `ecn_${cuentaId}` }
+            ]]
+          }
+        }
+      );
+    } catch (error) {
+      errorBD('Error al revisar los archivos de una cuenta', error);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -294,7 +323,7 @@ export function crearEditarCuenta(ctx) {
 
   /** Botones de este módulo. Devuelve true si el callback era suyo. */
   async function manejarCallback(cb, chatId, data) {
-    const m = /^ec([sfvgcx])_(.+)$/.exec(data);
+    const m = /^ec([sfvgcxmn])_(.+)$/.exec(data);
     if (!m) return false;
     const [, tipo, valor] = m;
     const messageId = cb.message.message_id;
@@ -350,8 +379,42 @@ export function crearEditarCuenta(ctx) {
         }
         const listo = await aplicarEdicion(pendiente.cuentaId, pendiente.campo, v.valor);
         await responderCallback(cb.id, { text: listo ? 'Guardado' : 'Sin cambios' });
-        if (listo) await mostrarFicha(chatId, pendiente.cuentaId, messageId);
-        else await editar('No pude guardarlo: la cuenta ya no está activa.', { chat_id: chatId, message_id: messageId });
+        if (listo) {
+          await mostrarFicha(chatId, pendiente.cuentaId, messageId);
+          // Si el cambio mueve la carpeta de la cuenta (tipo, titular o dígitos), se ofrece llevar sus archivos a la carpeta nueva
+          if (['tipo', 'titular', 'ultimos4', 'cuenta'].includes(pendiente.campo)) await ofrecerMoverArchivos(chatId, pendiente.cuentaId);
+        } else await editar('No pude guardarlo: la cuenta ya no está activa.', { chat_id: chatId, message_id: messageId });
+        return true;
+      }
+
+      // Mover los archivos de la cuenta a su carpeta nueva (ecm_<id>) o dejarlos donde están (ecn_<id>)
+      if (tipo === 'n') {
+        await responderCallback(cb.id, { text: 'Los archivos se quedan donde están' });
+        await editar('Listo: los archivos de esta cuenta se quedan en su carpeta actual. Lo nuevo se guardará en la carpeta nueva.', { chat_id: chatId, message_id: messageId });
+        return true;
+      }
+      if (tipo === 'm') {
+        if (moviendo.has(valor)) {
+          await responderCallback(cb.id, { text: 'Ya los estoy moviendo' });
+          return true;
+        }
+        moviendo.add(valor);
+        try {
+          await responderCallback(cb.id, { text: 'Moviendo...' });
+          await editar('Moviendo los archivos de la cuenta...', { chat_id: chatId, message_id: messageId });
+          const r = await migrarStorage({ aplicar: true, cuentaId: Number(valor) });
+          await editar(
+            r.movidos > 0
+              ? `Moví ${r.movidos} ${r.movidos === 1 ? 'archivo' : 'archivos'} a la carpeta nueva de la cuenta. Dejé un log en la carpeta respaldos/.`
+              : 'No había archivos por mover.',
+            { chat_id: chatId, message_id: messageId }
+          );
+        } catch (error) {
+          errorBD('Error al mover los archivos de una cuenta', error);
+          await editar('No pude mover los archivos: devolví todo a su lugar. Inténtalo de nuevo más tarde.', { chat_id: chatId, message_id: messageId });
+        } finally {
+          moviendo.delete(valor);
+        }
         return true;
       }
 
