@@ -32,6 +32,7 @@ import { crearRegistros } from './registrosBot.js';
 import { crearReset } from './resetBot.js';
 import { crearStatus } from './statusBot.js';
 import { crearVistaCuentas } from './vistaCuentasBot.js';
+import { crearEstadoCuenta } from './estadoCuentaBot.js';
 import { crearEditarCuenta } from './editarCuentaBot.js';
 import { mensajesAyuda, COMANDOS_CONOCIDOS, COMANDOS_MENU } from './comandos.js';
 import { crearLoteTerceros } from './loteTerceros.js';
@@ -96,6 +97,8 @@ let reset = null;
 let status = null;
 // Vista de cuentas con vínculos, /cuentas (vistaCuentasBot.js); se crea al iniciar el bot
 let vistaCuentas = null;
+// Estados de cuenta guardados, /estadocuenta (estadoCuentaBot.js); se crea al iniciar el bot
+let estadoCuenta = null;
 // Editar una cuenta o tarjeta, /editarcuenta (editarCuentaBot.js); se crea al iniciar el bot
 let editarCuenta = null;
 // Cartola de una tarjeta ajena + comprobante de la transferencia (loteTerceros.js); se crea al iniciar el bot
@@ -355,6 +358,9 @@ export async function iniciarBot() {
       esc,
       cuentaPorDefecto: async (cuentas) => (await ultimaCuentaUsada(cuentas)) || cuentaPorDefecto(cuentas)
     });
+
+    estadoCuenta = crearEstadoCuenta({ bot, enviar, editar, responderCallback, esc, formatearMonto, esChatAutorizado });
+    estadoCuenta.configurarComandos();
 
     editarCuenta = crearEditarCuenta({ bot, enviar, editar, responderCallback, esc, esChatAutorizado, borrarMensaje });
     editarCuenta.configurarComandos();
@@ -710,6 +716,11 @@ function configurarManejadores() {
       return;
     }
 
+    // "estado de cuenta de la 8263", "historial de la tarjeta de Valeska", "cartolas de la 8263": revisar lo guardado
+    if (msg.text && !msg.reply_to_message && estadoCuenta && await estadoCuenta.manejarTexto(msg)) {
+      return;
+    }
+
     // "son de la tarjeta 8263", "cartola de la 8263": texto sobre las cartolas que mandé o voy a mandar
     if (msg.text && !msg.reply_to_message && cartolas && await cartolas.manejarTexto(chatId, msg.text)) {
       return;
@@ -856,6 +867,11 @@ function configurarManejadores() {
 
     // Botones de /editarcuenta (y el botón Editar de /cuentas)
     if (editarCuenta && await editarCuenta.manejarCallback(cb, chatId, data)) {
+      return;
+    }
+
+    // Botones de /estadocuenta (cuenta, año, mes y descarga de la cartola)
+    if (estadoCuenta && await estadoCuenta.manejarCallback(cb, chatId, data)) {
       return;
     }
 

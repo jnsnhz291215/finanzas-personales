@@ -195,6 +195,11 @@ CREATE TABLE IF NOT EXISTS archivos_importados (
   cantidad_movimientos INT DEFAULT 0,
   fecha_importacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   ruta_archivo VARCHAR(500),
+  periodo_desde DATE NULL,
+  periodo_hasta DATE NULL,
+  cargos_leidos INT NULL,
+  marcados_mios INT NULL,
+  ignorados INT NULL,
   FOREIGN KEY (cuenta_id) REFERENCES cuentas(id) ON DELETE SET NULL,
   INDEX idx_hash (hash_archivo)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

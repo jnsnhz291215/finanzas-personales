@@ -106,6 +106,18 @@ if (MOTOR_ELEGIDO === 'mariadb') {
     }
   }
 
+  /** Migración idempotente (MariaDB): período, cargos leídos, marcados como míos e ignorados de cada cartola importada */
+  async function migrarPeriodoArchivos(connection) {
+    const [filas] = await connection.query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'archivos_importados'`
+    );
+    const columnas = filas.map(f => f.COLUMN_NAME);
+    for (const [nombre, tipo] of [['periodo_desde', 'DATE'], ['periodo_hasta', 'DATE'], ['cargos_leidos', 'INT'], ['marcados_mios', 'INT'], ['ignorados', 'INT']]) {
+      if (!columnas.includes(nombre)) await connection.query(`ALTER TABLE archivos_importados ADD COLUMN ${nombre} ${tipo} NULL`);
+    }
+  }
+
   /**
    * Migración idempotente (MariaDB): agrega ultimos4_cuenta a cuentas, los últimos 4 dígitos del
    * número de cuenta (ultimos4 es el de la tarjeta). Nunca se guardan números completos.
@@ -386,6 +398,7 @@ if (MOTOR_ELEGIDO === 'mariadb') {
         await migrarDatosCuenta(connection);
         await migrarTipoEfectivo(connection);
         await migrarUltimos4Cuenta(connection);
+        await migrarPeriodoArchivos(connection);
         await migrarRegistros(connection);
         await migrarDestinatarios(connection);
         await migrarDatosTransferencia(connection);

@@ -299,7 +299,7 @@ export function separarDuplicados(movimientos, existentes) {
  * importado. `archivo` es la ruta relativa a la raíz del almacenamiento.
  * Devuelve { importados, registrados: [{ id, fecha, descripcion, monto, tipo }] }.
  */
-export async function registrarImportacion({ archivo, hash, cuentaId, movimientos: todos }) {
+export async function registrarImportacion({ archivo, hash, cuentaId, movimientos: todos, resumen = null }) {
   const { query } = await import('./db.js');
   const path = (await import('path')).default;
 
@@ -341,11 +341,20 @@ export async function registrarImportacion({ archivo, hash, cuentaId, movimiento
     registrados.push({ id: insercion.insertId, fecha: mov.fecha, descripcion: mov.descripcion, monto: mov.monto, tipo: mov.tipo });
   }
 
+  // Período que cubre la cartola (de todo lo que traía, no solo de lo que se importó)
+  const base = resumen?.movimientosLeidos ?? todos;
+  const fechasCartola = base.map(m => String(m.fecha).slice(0, 10)).sort();
+  const periodo = { desde: fechasCartola[0] ?? null, hasta: fechasCartola[fechasCartola.length - 1] ?? null };
+
   // Registrar archivo importado
   const [registro] = await query(
-    `INSERT INTO archivos_importados (nombre_archivo, hash_archivo, cuenta_id, cantidad_movimientos, ruta_archivo)
-     VALUES (?, ?, ?, ?, ?)`,
-    [path.basename(archivo), hash, cuentaId, registrados.length, archivo]
+    `INSERT INTO archivos_importados
+       (nombre_archivo, hash_archivo, cuenta_id, cantidad_movimientos, ruta_archivo, periodo_desde, periodo_hasta, cargos_leidos, marcados_mios, ignorados)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      path.basename(archivo), hash, cuentaId, registrados.length, archivo,
+      periodo.desde, periodo.hasta, resumen?.cargosLeidos ?? null, resumen?.marcadosMios ?? null, resumen?.ignorados ?? null
+    ]
   );
 
   return { importados: registrados.length, registrados, archivoId: registro.insertId, duplicados };

@@ -125,6 +125,7 @@ export async function inicializarDB() {
 
     // Migración: ultimos4_cuenta (últimos 4 del número de cuenta, distinto de ultimos4 de la tarjeta)
     migrarUltimos4Cuenta(database);
+    migrarPeriodoArchivos(database);
     migrarRegistros(database);
     migrarDestinatarios(database);
 
@@ -311,6 +312,14 @@ function migrarComprasCuotas(database) {
  * Migración idempotente (SQLite): agrega ultimos4_cuenta a cuentas, los últimos 4 dígitos del
  * número de cuenta (ultimos4 es el de la tarjeta). Nunca se guardan números completos.
  */
+/** Migración idempotente (SQLite): período, cargos leídos, marcados como míos e ignorados de cada cartola importada */
+function migrarPeriodoArchivos(database) {
+  const columnas = database.prepare('PRAGMA table_info(archivos_importados)').all().map(c => c.name);
+  for (const [nombre, tipo] of [['periodo_desde', 'TEXT'], ['periodo_hasta', 'TEXT'], ['cargos_leidos', 'INTEGER'], ['marcados_mios', 'INTEGER'], ['ignorados', 'INTEGER']]) {
+    if (!columnas.includes(nombre)) database.exec(`ALTER TABLE archivos_importados ADD COLUMN ${nombre} ${tipo}`);
+  }
+}
+
 function migrarUltimos4Cuenta(database) {
   const columnas = database.prepare('PRAGMA table_info(cuentas)').all().map(c => c.name);
   if (!columnas.includes('ultimos4_cuenta')) {

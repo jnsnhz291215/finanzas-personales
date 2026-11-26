@@ -831,6 +831,24 @@ Tipo y Predeterminada), con un resumen "antes → después" y botones **Guardar*
   "Débito Juan ****5555" (tipo, primer nombre del titular y los 4 dígitos). Una migración renombra con ese formato las cuentas que ya tenían solo dígitos
   como nombre.
 
+### Estados de cuenta guardados: /estadocuenta
+
+`/estadocuenta` (alias `/cartolas` y `/historial`) sirve para revisar lo que ya está guardado de cada cuenta. Acepta `/estadocuenta 8263`
+y frases como `estado cuenta tarjeta 8263`, `estado de cuenta de la 8263`, `historial de la tarjeta de Valeska` o `cartolas de la 8263`
+(siempre por reglas locales, sin Gemini). Sin cuenta indicada muestra botones con las cuentas que tienen movimientos o cartolas. El texto
+`cartola de la 8263` (en singular) o `son de la tarjeta 8263` sigue siendo la indicación para una cartola que estás mandando, no una consulta.
+
+- **Navegación con botones**, editando el mismo mensaje: cuenta, año (solo los que tienen registros; si hay uno solo se salta) y mes (solo
+  los meses con movimientos o cartolas). Año y mes tienen botón *Volver*.
+- **Al elegir un mes:** cuenta, titular y período; cargos (cantidad y total) y abonos; cuotas detectadas (por ejemplo `Macbook 6/12`, ya
+  sea porque el cargo está ligado a una compra en cuotas o porque la descripción trae el número de cuota); en las tarjetas de terceros,
+  cuántos cargos marcaste como tuyos y cuántos se ignoraron; y la lista de movimientos, dividida en varios mensajes si es larga (hasta 80).
+- **Descargar cartola:** si el mes tiene cartola guardada aparece un botón por archivo, que envía el original con `sendDocument`. Solo se
+  envía un archivo que esté dentro de `FINANZAS_STORAGE`, y la ruta nunca se muestra en el chat.
+- **A qué mes pertenece una cartola:** al del final de su período. Las cartolas se importan ahora con su período, los cargos leídos y los
+  marcados/ignorados (columnas nuevas de `archivos_importados`, con migración en SQLite y MariaDB). Las anteriores se ubican por el último
+  movimiento que se importó de ellas o, si no hay, por el mes en que se importaron; en ellas no hay conteo de marcados/ignorados.
+
 ### Cuentas, vínculos y datos guardados: /cuentas
 
 `/cuentas` (alias `/datosguardados`; también "qué cuentas tengo", "muéstrame mis cuentas" y "qué datos tienes guardados", siempre por reglas,

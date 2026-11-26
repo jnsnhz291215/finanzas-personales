@@ -37,6 +37,7 @@ export const COMANDOS = [
 
   // Cuentas y datos
   { seccion: 'Cuentas y datos', nombre: 'cuentas', alias: ['datosguardados'], descripcion: 'Tus cuentas con vínculos, titulares, cuotas y totales', menu: 3, menuDescripcion: 'Mis cuentas, vínculos y datos guardados' },
+  { seccion: 'Cuentas y datos', nombre: 'estadocuenta', alias: ['cartolas', 'historial'], uso: '[últimos 4 dígitos o titular]', descripcion: 'Revisar tus estados de cuenta guardados por año y mes, y descargar la cartola' },
   { seccion: 'Cuentas y datos', nombre: 'savecard', alias: ['nuevacuenta'], uso: '<descripción>', descripcion: 'Crear una cuenta o tarjeta (con los últimos 4 dígitos)' },
   { seccion: 'Cuentas y datos', nombre: 'editarcuenta', alias: ['editartarjeta'], descripcion: 'Editar una cuenta o tarjeta: nombre, tipo, banco, titular, dígitos, vínculo y predeterminada' },
   { seccion: 'Cuentas y datos', nombre: 'borrarcuenta', uso: '[número]', descripcion: 'Desactivar una cuenta (sus movimientos se conservan)' },
@@ -69,6 +70,7 @@ export const EJEMPLOS = [
   { titulo: 'Corregirlo (responde a su mensaje)', frase: 'eran 4690, o «elimina esto»' },
   { titulo: 'Guardar una tarjeta', frase: 'guarda la tarjeta crédito 8263 es de Valeska' },
   { titulo: 'Gasto fijo', frase: 'gasto fijo: 24 mil en telefonía, lo pago a Vivian' },
+  { titulo: 'Revisar estados de cuenta', frase: 'estado de cuenta de la 8263, o «historial de la tarjeta de Valeska»' },
   { titulo: 'Cartolas (en el mismo mensaje o justo antes)', frase: 'son de la tarjeta 8263, o «cartola de la crédito de Valeska»' }
 ];
 

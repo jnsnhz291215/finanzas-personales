@@ -341,7 +341,14 @@ export function crearLoteTerceros(ctx) {
         archivo: ruta,
         hash: item.hash,
         cuentaId: cuenta.id,
-        movimientos
+        movimientos,
+        // Lo que no se marcó como mío no se guarda: queda contado para /estadocuenta
+        resumen: {
+          movimientosLeidos: item.movimientos,
+          cargosLeidos: item.movimientos.filter(m => m.tipo === 'cargo').length,
+          marcadosMios: movimientos.length,
+          ignorados: Math.max(0, lista.otros.length - movimientos.length)
+        }
       });
       await vincular(chatId, [item.mensajeUsuarioId, lista?.messageId], 'importacion', archivoId);
       lote.gastos = importados;
