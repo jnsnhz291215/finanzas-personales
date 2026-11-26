@@ -262,6 +262,12 @@ export async function cartolaYaImportada(hash) {
   return existentes.length > 0 ? existentes[0] : null;
 }
 
+/** Fecha (YYYY-MM-DD) del último movimiento de una cartola: el mes al que pertenece su archivo */
+export function fechaFinDeMovimientos(movimientos) {
+  const fechas = (movimientos ?? []).map(m => String(m.fecha).slice(0, 10)).filter(Boolean).sort();
+  return fechas[fechas.length - 1] ?? null;
+}
+
 /** Clave con la que se reconoce el mismo movimiento en dos cartolas: fecha, tipo, monto y descripción normalizada */
 export function claveMovimiento(m) {
   const descripcion = String(m.descripcion ?? '').toLowerCase().replace(/\s+/g, ' ').trim();

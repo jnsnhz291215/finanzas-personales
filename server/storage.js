@@ -7,8 +7,19 @@
  *   <raíz>/archivos/{YYYY-MM}/       otros archivos que se mandan al bot
  *   <raíz>/tmp/                      temporales
  *
+ * Estructura nueva (la que usa todo lo que se guarda desde ahora):
+ *
+ *   <raíz>/cuentas/<tipo>-<titular>-<últimos4>/<año>/<mes 01-12>/cartola_2026-08.pdf
+ *                                                              /comprobante_2026-08-19_1.jpg
+ *                                                              /foto_2026-08-19_1.jpg
+ *   <raíz>/sin-cuenta/<año>/<mes>/   lo que no tiene cuenta
+ *   <raíz>/papelera/<fecha>/         archivos que /resetcuenta mueve en vez de borrar
+ *
+ * La carpeta de una cuenta NO usa su nombre (que se puede editar) sino el tipo, el titular y los últimos 4 dígitos. server/migrarStorage.js
+ * mueve a esta estructura lo que se guardó antes.
+ *
  * En la BD se guarda la ruta relativa a la raíz, por ejemplo
- * comprobantes/2026-11/respaldo_cuota_123_foto.jpg. Las variables CARTOLAS_PATH y
+ * comprobantes/2026-11/respaldo_cuota_123_foto.jpg (estructura anterior) o cuentas/credito-valeska-8263/2026/08/cartola_2026-08.pdf. Las variables CARTOLAS_PATH y
  * RESPALDOS_PATH están obsoletas: si están definidas siguen mandando para su tipo (con un
  * aviso). Las rutas anteriores (/uploads/respaldos/<archivo>, nombres sueltos y rutas
  * absolutas de cartolas) se siguen resolviendo; los archivos existentes no se mueven.
@@ -22,6 +33,7 @@ import crypto from 'crypto';
 import multer from 'multer';
 import { fileURLToPath } from 'url';
 import { fechaHoySantiago } from './telegram/fechas.js';
+import { normalizar } from './telegram/cuentas.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -153,6 +165,87 @@ export function rutaRelativaDeMulter(tipo, archivo) {
 }
 
 // ---------------------------------------------------------------------------
+// Estructura por cuenta: cuentas/<tipo>-<titular>-<últimos4>/<año>/<mes>/
+// ---------------------------------------------------------------------------
+
+const TIPO_CORTO = {
+  tarjeta_credito: 'credito', tarjeta_debito: 'debito', cuenta_corriente: 'corriente', cuenta_vista: 'vista', cuenta_ahorro: 'ahorro', efectivo: 'efectivo',
+  credito: 'credito', debito: 'debito', ahorro: 'ahorro'
+};
+
+const slug = (texto, largo = 30) => normalizar(texto ?? '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, largo).replace(/-+$/, '');
+
+/**
+ * Nombre de la carpeta de una cuenta: <tipo>-<titular>-<últimos4>, por ejemplo credito-valeska-8263. No usa el nombre de la cuenta (que se
+ * puede editar). Sin titular, "propio"; sin dígitos, "sin-digitos".
+ */
+export function slugCuenta(cuenta) {
+  const tipo = TIPO_CORTO[cuenta?.tipo] ?? (slug(cuenta?.tipo, 12) || 'cuenta');
+  const titular = slug(cuenta?.titular) || 'propio';
+  const digitos = [cuenta?.ultimos4, cuenta?.ultimos4_cuenta].find(d => /^\d{4}$/.test(String(d ?? ''))) ?? 'sin-digitos';
+  return `${tipo}-${titular}-${digitos}`;
+}
+
+/** Carpeta relativa donde va un archivo: cuentas/<slug>/<año>/<mes> o, sin cuenta, sin-cuenta/<año>/<mes>. `fecha` es YYYY-MM-DD (o YYYY-MM). */
+export function carpetaRelativaDeCuenta(cuenta, fecha = fechaHoySantiago()) {
+  const [anio, mes] = String(fecha).slice(0, 7).split('-');
+  return cuenta ? `cuentas/${slugCuenta(cuenta)}/${anio}/${mes}` : `sin-cuenta/${anio}/${mes}`;
+}
+
+/**
+ * Nombre del archivo: cartola_2026-08.pdf (por el mes de la cartola) o comprobante_2026-08-19_1.jpg / foto_2026-08-19_1.jpg (fecha y número).
+ * `ocupados` es el conjunto de nombres que ya existen en la carpeta; se elige el primero libre.
+ */
+export function nombreDeArchivo(clase, fecha, extension, ocupados = new Set()) {
+  const ext = String(extension ?? '').toLowerCase().replace(/^(?=[^.])/, '.').slice(0, 10);
+  if (clase === 'cartola') {
+    const base = `cartola_${String(fecha).slice(0, 7)}`;
+    for (let n = 1; ; n++) {
+      const nombre = `${base}${n === 1 ? '' : `_${n}`}${ext}`;
+      if (!ocupados.has(nombre)) return nombre;
+    }
+  }
+  const prefijo = clase === 'comprobante' ? 'comprobante' : 'foto';
+  for (let n = 1; ; n++) {
+    const nombre = `${prefijo}_${String(fecha).slice(0, 10)}_${n}${ext}`;
+    if (!ocupados.has(nombre)) return nombre;
+  }
+}
+
+/**
+ * Decide dónde va un archivo (sin escribirlo): { relativa, absoluta, carpeta }. Crea la carpeta. `clase`: cartola | comprobante | foto.
+ */
+export async function destinoEnCuenta({ cuenta = null, clase, fecha = fechaHoySantiago(), extension }) {
+  const carpetaRel = carpetaRelativaDeCuenta(cuenta, fecha);
+  const carpeta = path.join(rutaRaiz(), carpetaRel);
+  if (!dentroDe(rutaRaiz(), carpeta)) throw new Error('la ruta queda fuera del almacenamiento');
+  await fs.mkdir(carpeta, { recursive: true });
+  let ocupados = new Set();
+  try {
+    ocupados = new Set(await fs.readdir(carpeta));
+  } catch {
+    // carpeta recién creada
+  }
+  const nombre = nombreDeArchivo(clase, fecha, extension, ocupados);
+  return { relativa: `${carpetaRel}/${nombre}`, absoluta: path.join(carpeta, nombre), carpeta };
+}
+
+/** Guarda un buffer en la estructura por cuenta. Devuelve { ruta (relativa para la BD), absoluta, nombre }. Nunca sobrescribe. */
+export async function guardarEnCuenta({ cuenta = null, clase, fecha, nombreOriginal = '', buffer }) {
+  const extension = path.extname(nombreSeguro(nombreOriginal)) || (clase === 'cartola' ? '.pdf' : '.jpg');
+  for (let intento = 0; ; intento++) {
+    const d = await destinoEnCuenta({ cuenta, clase, fecha, extension });
+    try {
+      await fs.writeFile(d.absoluta, buffer, { flag: 'wx' });
+      return { ruta: d.relativa, absoluta: d.absoluta, nombre: path.basename(d.absoluta) };
+    } catch (error) {
+      // Otro archivo ocupó el nombre entre medio: se vuelve a elegir
+      if (error.code !== 'EEXIST' || intento >= 5) throw error;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Resolver y borrar (incluye las rutas anteriores)
 // ---------------------------------------------------------------------------
 
@@ -191,6 +284,9 @@ export async function resolverArchivo(valor) {
   const nueva = /^(cartolas|comprobantes|archivos)\/(.+)$/.exec(texto);
   if (nueva) {
     candidatas.push({ base: carpetaBase(nueva[1]), relativa: nueva[2] });
+  } else if (/^(?:cuentas|sin-cuenta|papelera)\//.test(texto)) {
+    // Estructura nueva: relativa a la raíz
+    candidatas.push({ base: rutaRaiz(), relativa: texto });
   } else if (/^\/?uploads\/respaldos\//.test(texto)) {
     const nombre = path.basename(texto);
     const bases = [path.join(UPLOADS_ANTERIOR, 'respaldos')];
@@ -293,9 +389,27 @@ async function resolverTemporal(ruta) {
  * Confirma un temporal: lo mueve a <tipo>/<mes de hoy>/ (mes de recepción en hora de Chile) y
  * devuelve la ruta relativa definitiva. Quita el prefijo de tiempo del nombre temporal.
  */
-export async function confirmarTemporal(ruta, tipo = 'cartolas', { prefijo = '' } = {}) {
+export async function confirmarTemporal(ruta, tipo = 'cartolas', { prefijo = '', destino: dondeVa = null } = {}) {
   const origen = await resolverTemporal(ruta);
   if (!origen) throw new Error('el archivo temporal ya no existe');
+
+  // Estructura por cuenta: cuentas/<tipo>-<titular>-<últimos4>/<año>/<mes>/cartola_YYYY-MM.pdf (o sin-cuenta/...)
+  if (dondeVa) {
+    const d = await destinoEnCuenta({
+      cuenta: dondeVa.cuenta ?? null,
+      clase: dondeVa.clase ?? 'cartola',
+      fecha: dondeVa.fecha ?? fechaHoySantiago(),
+      extension: path.extname(origen) || '.pdf'
+    });
+    try {
+      await fs.rename(origen, d.absoluta);
+    } catch (error) {
+      if (error.code !== 'EXDEV') throw error;
+      await fs.copyFile(origen, d.absoluta);
+      await fs.unlink(origen);
+    }
+    return d.relativa;
+  }
 
   const base = carpetaBase(tipo);
   const mes = mesRecepcion();
@@ -372,10 +486,12 @@ export async function enviarAPapelera(valor) {
 export async function restaurarDePapelera(rutaTmp, rutaOriginal) {
   try {
     const origen = await resolverTemporal(rutaTmp);
-    const m = /^(cartolas|comprobantes|archivos)\/(.+)$/.exec(String(rutaOriginal ?? '').replace(/\\/g, '/'));
+    const texto = String(rutaOriginal ?? '').replace(/\\/g, '/');
+    const m = /^(cartolas|comprobantes|archivos)\/(.+)$/.exec(texto) ?? /^((?:cuentas|sin-cuenta))\/(.+)$/.exec(texto);
     if (!origen || !m) return false;
-    const base = carpetaBase(m[1]);
-    const destino = path.resolve(base, m[2]);
+    // La estructura nueva cuelga de la raíz y la ruta se conserva entera
+    const base = TIPOS.includes(m[1]) ? carpetaBase(m[1]) : rutaRaiz();
+    const destino = path.resolve(base, TIPOS.includes(m[1]) ? m[2] : texto);
     if (!dentroDe(base, destino) || await existe(destino)) return false;
     await fs.mkdir(path.dirname(destino), { recursive: true });
     try {

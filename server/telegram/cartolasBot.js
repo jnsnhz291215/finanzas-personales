@@ -15,7 +15,7 @@
  * contenido de cartolas.
  */
 
-import { analizarCartola, analizarPDF, analizarTexto, calcularHashBuffer, cartolaYaImportada, registrarImportacion } from '../cartolas.js';
+import { fechaFinDeMovimientos, analizarCartola, analizarPDF, analizarTexto, calcularHashBuffer, cartolaYaImportada, registrarImportacion } from '../cartolas.js';
 import { listarCuentasConBanco, guardarDigitosCuenta } from '../gestion.js';
 import { fijarTitular } from '../resumenDatos.js';
 import { listarCompras } from '../cuotas.js';
@@ -811,7 +811,10 @@ export function crearCartolas(ctx) {
   /** Mueve el archivo a cartolas/{YYYY-MM}/ y registra sus movimientos en la cuenta */
   async function importarItem(lote, item, cuenta) {
     try {
-      const ruta = await confirmarTemporal(item.tmp, 'cartolas', { prefijo: 'telegram_' });
+      const ruta = await confirmarTemporal(item.tmp, 'cartolas', {
+        prefijo: 'telegram_',
+        destino: { cuenta, clase: 'cartola', fecha: fechaFinDeMovimientos(item.movimientos) ?? undefined }
+      });
       const { importados, registrados, archivoId, duplicados } = await registrarImportacion({
         archivo: ruta,
         hash: item.hash,
@@ -1058,7 +1061,10 @@ export function crearCartolas(ctx) {
       pendientes.delete(m[1]);
 
       try {
-        const ruta = await confirmarTemporal(pendiente.tmp, 'cartolas', { prefijo: 'telegram_' });
+        const ruta = await confirmarTemporal(pendiente.tmp, 'cartolas', {
+          prefijo: 'telegram_',
+          destino: { cuenta, clase: 'cartola', fecha: fechaFinDeMovimientos(pendiente.movimientos) ?? undefined }
+        });
         const { importados, registrados, archivoId, duplicados } = await registrarImportacion({
           archivo: ruta,
           hash: pendiente.hash,

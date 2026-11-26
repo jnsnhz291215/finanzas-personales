@@ -44,7 +44,7 @@ import { clavePorNombre } from '../transferencias.js';
 import { crearSistema } from './sistemaBot.js';
 import { crearIntenciones, clasificarPorReglas } from './intenciones.js';
 import { limitadorGemini } from './limiteGemini.js';
-import { guardarBuffer, borrarArchivo } from '../storage.js';
+import { guardarEnCuenta, borrarArchivo } from '../storage.js';
 import { categoriaPorReglas } from '../gestion.js';
 import { canonizarPersona } from '../deudas.js';
 import { detectarPrestamo } from './prestamo.js';
@@ -343,8 +343,9 @@ export async function iniciarBot() {
       vincularRegistro: vincularMensajes,
       ofrecerPagoPorCartola: (chatId, movimiento) => cuotas.ofrecerPagoPorCartola(chatId, movimiento),
       crearCuenta: guardarCuenta,
+      // Una cartola que no se pudo leer no tiene cuenta: queda en sin-cuenta/<año>/<mes>/
       guardarNoLeido: (nombre, buffer) =>
-        guardarBuffer('cartolas', nombre, buffer, { prefijo: `telegram_${Date.now()}_` })
+        guardarEnCuenta({ cuenta: null, clase: 'cartola', fecha: fechaHoySantiago(), nombreOriginal: nombre, buffer })
     });
 
     registros = crearRegistros({ enviar, editar, responderCallback, esc });
@@ -1693,8 +1694,10 @@ async function guardarRespaldoCuota(fileId, nombreSugerido, prefijo = 'respaldo_
   const respuesta = await fetch(fileLink);
   if (!respuesta.ok) throw new Error('la descarga del archivo falló');
 
-  const guardado = await guardarBuffer('comprobantes', nombreSugerido, Buffer.from(await respuesta.arrayBuffer()), {
-    prefijo: `${prefijo}${Date.now()}_`
+  // Todavía no se sabe la cuenta del movimiento: va a sin-cuenta/<año>/<mes>/comprobante_<fecha>_<n>.<ext>. migrarStorage.js lo pasa a la
+  // carpeta de su cuenta cuando el movimiento ya la tiene.
+  const guardado = await guardarEnCuenta({
+    cuenta: null, clase: 'comprobante', fecha: fechaHoySantiago(), nombreOriginal: nombreSugerido, buffer: Buffer.from(await respuesta.arrayBuffer())
   });
   return guardado.ruta;
 }
@@ -3343,7 +3346,7 @@ async function manejarFoto(msg) {
     const fileLink = await bot.getFileLink(foto.file_id);
     const response = await fetch(fileLink);
     if (!response.ok) throw new Error('la descarga del archivo falló');
-    await guardarBuffer('archivos', `telegram_${Date.now()}.jpg`, Buffer.from(await response.arrayBuffer()));
+    await guardarEnCuenta({ cuenta: null, clase: 'foto', fecha: fechaHoySantiago(), nombreOriginal: 'foto.jpg', buffer: Buffer.from(await response.arrayBuffer()) });
 
     await enviar(chatId, '✅ Foto guardada correctamente.');
   } catch (error) {

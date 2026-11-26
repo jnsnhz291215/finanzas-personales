@@ -21,7 +21,7 @@
  */
 
 import { listarCompras, obtenerCompra, registrarPagoCuota, crearCompra, fijarCuotasPagadas } from '../cuotas.js';
-import { registrarImportacion, buscarUltimos4 } from '../cartolas.js';
+import { registrarImportacion, buscarUltimos4, fechaFinDeMovimientos } from '../cartolas.js';
 import { confirmarTemporal, borrarTemporal } from '../storage.js';
 import { leerTextoDeImagen } from '../ocr.js';
 import { registrarPagosMultiples } from '../transferencias.js';
@@ -213,7 +213,7 @@ export function crearLoteTerceros(ctx) {
       `INSERT INTO cuentas (nombre, tipo, banco, ultimos4, titular) VALUES (?, 'tarjeta_credito', ?, ?, ?)`,
       [`Tarjeta de ${compra.acreedor}`.slice(0, 150), item.banco ?? null, digitos, compra.acreedor]
     );
-    const cuenta = { id: Number(r.insertId), nombre: `Tarjeta de ${compra.acreedor}`, titular: compra.acreedor };
+    const cuenta = { id: Number(r.insertId), nombre: `Tarjeta de ${compra.acreedor}`, titular: compra.acreedor, tipo: 'tarjeta_credito', ultimos4: digitos };
     await iniciarSeleccion(chatId, item, cuenta, compra, compra.acreedor);
   }
 
@@ -358,7 +358,10 @@ export function crearLoteTerceros(ctx) {
 
     try {
       const movimientos = elegidos.map(n => lista.otros[n - 1].mov);
-      const ruta = await confirmarTemporal(item.tmp, 'cartolas', { prefijo: 'telegram_' });
+      const ruta = await confirmarTemporal(item.tmp, 'cartolas', {
+        prefijo: 'telegram_',
+        destino: { cuenta, clase: 'cartola', fecha: fechaFinDeMovimientos(item.movimientos) ?? undefined }
+      });
       const { importados, archivoId, registrados } = await registrarImportacion({
         archivo: ruta,
         hash: item.hash,
