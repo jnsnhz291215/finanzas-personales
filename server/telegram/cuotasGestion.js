@@ -82,6 +82,23 @@ export function parsearAgrupar(texto) {
   return refs.length >= 2 && grupo ? { tipo: 'agrupar', refs, grupo } : null;
 }
 
+/**
+ * Fijar a mano cuántas cuotas van pagadas: { ref: { nombre, monto }, n } o null.
+ *   «del Mac van 6 pagadas»   «la última cuota pagada del Mac es la 6»   /cuotaspagadas Mac 6   /cuotaspagadas Apple 21.749 6
+ */
+export function parsearCuotasPagadas(texto) {
+  const original = String(texto ?? '').trim();
+  const esComando = /^\/cuotaspagadas\b/i.test(original);
+  const t = sinComando(original);
+  let m = /^del?\s+(?:la\s+|el\s+)?(.+?)\s+van\s+(\d{1,3})\s+(?:cuotas\s+)?pagadas?\s*[.!]?$/i.exec(t);
+  if (!m) m = /^la\s+[uú]ltima\s+cuota\s+pagada\s+del?\s+(?:la\s+|el\s+)?(.+?)\s+es\s+(?:la\s+)?(\d{1,3})\s*[.!]?$/i.exec(t);
+  if (!m && esComando) m = /^(.+?)\s+(?:van\s+|es\s+la\s+|en\s+)?(\d{1,3})\s*(?:pagadas?)?\s*$/i.exec(t);
+  if (!m) return null;
+  const ref = parsearReferencia(m[1]);
+  if (!ref.nombre && !ref.monto) return null;
+  return { ref, n: Number(m[2]), esComando };
+}
+
 /** ¿El valor de la cuota de la compra calza con el que dijo el usuario? Exacto (±1) o, si dijo "202 mil", dentro de esos mil pesos */
 export function montoCalza(montoCuota, dicho) {
   if (!dicho) return true;

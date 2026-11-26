@@ -11,7 +11,8 @@
 import {
   listarCompras, renombrarCompra, listarGrupos, crearGrupo, asignarGrupo, desagruparGrupo, limpiarGruposVacios, obtenerCompra
 } from '../cuotas.js';
-import { parsearRenombrar, parsearAgrupar, buscarPorReferencia, parsearReferencia } from './cuotasGestion.js';
+import { parsearRenombrar, parsearAgrupar, parsearCuotasPagadas, buscarPorReferencia, parsearReferencia } from './cuotasGestion.js';
+import { fijarContador, textoContador } from './contadorCuotas.js';
 import { nombreConReal, nombreDeCompra, normalizar } from './cuotas.js';
 import { describirError } from './errores.js';
 import { botonCerrar, conCerrar } from './cerrar.js';
@@ -71,6 +72,48 @@ export function crearCuotasGestion(ctx) {
       reply_markup: {
         inline_keyboard: [
           ...candidatas.slice(0, 20).map(c => [{ text: etiqueta(c), callback_data: `cgr_${key}_${c.id}` }]),
+          [{ text: 'Cancelar', callback_data: 'cgx_x' }],
+          botonCerrar()
+        ]
+      }
+    });
+    return true;
+  }
+
+  // -------------------------------------------------------------------------
+  // Cuántas cuotas van pagadas (a mano, fuera de las cartolas)
+  // -------------------------------------------------------------------------
+
+  async function aplicarContador(chatId, compra, n) {
+    const total = Number(compra.total_cuotas);
+    if (!Number.isInteger(n) || n < 0 || n > total) {
+      await enviar(chatId, `${esc(nombreDeCompra(compra))} tiene ${total} cuotas: el número de pagadas debe estar entre 0 y ${total}.`, { reply_markup: { inline_keyboard: [botonCerrar()] } });
+      return;
+    }
+    const r = await fijarContador(compra, n);
+    await enviar(chatId, textoContador(r, nombreConReal(r.compra), dinero, esc), { reply_markup: { inline_keyboard: [botonCerrar()] } });
+  }
+
+  /** true si atendió el mensaje */
+  async function cuotasPagadasPorOrden(chatId, orden) {
+    const compras = await listarCompras({ incluirTerminadas: true });
+    const candidatas = buscarPorReferencia(compras, orden.ref);
+    if (candidatas.length === 0) {
+      if (!orden.esComando) return false;
+      await enviar(chatId, `No encontré una compra en cuotas que calce con «${esc(orden.ref.nombre)}»${orden.ref.monto ? ` de ${dinero(orden.ref.monto)}` : ''}. Revisa /cuotas.`, { reply_markup: { inline_keyboard: [botonCerrar()] } });
+      return true;
+    }
+    if (candidatas.length === 1) {
+      await aplicarContador(chatId, candidatas[0], orden.n);
+      return true;
+    }
+    const key = `${chatId}_${Date.now()}_${contador++}`;
+    pendientes.set(key, { chatId, n: orden.n, hasta: Date.now() + ESPERA_MS });
+    setTimeout(() => pendientes.delete(key), ESPERA_MS).unref?.();
+    await enviar(chatId, `Hay ${candidatas.length} compras que calzan. ¿A cuál le pongo ${orden.n} cuotas pagadas?`, {
+      reply_markup: {
+        inline_keyboard: [
+          ...candidatas.slice(0, 20).map(c => [{ text: etiqueta(c), callback_data: `cgp_${key}_${c.id}` }]),
           [{ text: 'Cancelar', callback_data: 'cgx_x' }],
           botonCerrar()
         ]
@@ -221,6 +264,9 @@ export function crearCuotasGestion(ctx) {
         }
       }
 
+      const pagadas = parsearCuotasPagadas(t);
+      if (pagadas && await cuotasPagadasPorOrden(chatId, pagadas)) return true;
+
       const renombre = parsearRenombrar(t);
       if (renombre && await renombrarPorOrden(chatId, { ...renombre, textoOriginal: t })) return true;
 
@@ -257,6 +303,27 @@ export function crearCuotasGestion(ctx) {
       }
     });
 
+    bot.onText(/^\/cuotaspagadas(?:@\w+)?(?:\s+([\s\S]+))?$/i, async (msg, match) => {
+      const chatId = msg.chat.id;
+      if (!esChatAutorizado(chatId)) return enviar(chatId, 'No estás autorizado para usar este bot.');
+      try {
+        const orden = match[1] ? parsearCuotasPagadas(msg.text) : null;
+        if (!orden) {
+          await enviar(chatId,
+            '<b>Fijar cuántas cuotas van pagadas</b>\n' +
+            'Corrige el contador de una compra a mano (por ejemplo si la app va adelantada o atrasada).\n\n' +
+            '/cuotaspagadas Mac 6\n«del Mac van 6 pagadas»\n«la última cuota pagada del Mac es la 6»\n\n' +
+            'Si hay varias compras con el mismo nombre, di también el valor de la cuota: /cuotaspagadas Apple 21.749 6',
+            { reply_markup: { inline_keyboard: [botonCerrar()] } }
+          );
+          return;
+        }
+        await cuotasPagadasPorOrden(chatId, { ...orden, esComando: true });
+      } catch (error) {
+        await enviar(chatId, describirError(error, 'actualizar', 'el contador de cuotas').usuario);
+      }
+    });
+
     bot.onText(/^\/agruparcuotas(?:@\w+)?(?:\s+([\s\S]+))?$/i, async (msg, match) => {
       const chatId = msg.chat.id;
       if (!esChatAutorizado(chatId)) return enviar(chatId, 'No estás autorizado para usar este bot.');
@@ -275,7 +342,7 @@ export function crearCuotasGestion(ctx) {
   // -------------------------------------------------------------------------
 
   async function manejarCallback(cb, chatId, data) {
-    const m = /^cg([nrdx])_(.+)$/.exec(data);
+    const m = /^cg([nrdxp])_(.+)$/.exec(data);
     if (!m) return false;
     if (!esChatAutorizado(chatId)) {
       await responderCallback(cb.id, { text: 'No autorizado' });
@@ -321,6 +388,22 @@ export function crearCuotasGestion(ctx) {
         return true;
       }
 
+      // Elegir a cuál de varias compras fijarle las cuotas pagadas
+      if (m[1] === 'p') {
+        const partes = /^(.+)_(\d+)$/.exec(m[2]);
+        const pendiente = partes ? pendientes.get(partes[1]) : null;
+        const compra = partes ? await obtenerCompra(Number(partes[2])) : null;
+        if (!pendiente || !compra) {
+          await responderCallback(cb.id, { text: 'Este botón ya expiró' });
+          return true;
+        }
+        pendientes.delete(partes[1]);
+        await responderCallback(cb.id, {});
+        await editar(`Compra elegida: ${texto(compra)}`, { chat_id: chatId, message_id: messageId });
+        await aplicarContador(chatId, compra, pendiente.n);
+        return true;
+      }
+
       // Desagrupar
       const grupo = (await listarGrupos()).find(g => g.id === Number(m[2]));
       await responderCallback(cb.id, {});
@@ -337,5 +420,12 @@ export function crearCuotasGestion(ctx) {
     }
   }
 
-  return { configurarComandos, manejarTexto, manejarCallback, limpiarGruposVacios };
+  /** Cierra lo que este módulo espera del chat (un nombre, una elección). Devuelve cuántas cosas cerró. */
+  function cancelarFlujo(chatId) {
+    let n = esperandoNombre.delete(chatId) ? 1 : 0;
+    for (const [key, p] of [...pendientes.entries()]) if (p.chatId === chatId && pendientes.delete(key)) n++;
+    return n;
+  }
+
+  return { cancelarFlujo, configurarComandos, manejarTexto, manejarCallback, limpiarGruposVacios };
 }

@@ -44,6 +44,9 @@ import { instalarBufferErrores } from './bufferErrores.js';
 import { crearLimpiar } from './limpiarBot.js';
 import { crearCuotasGestion } from './cuotasGestionBot.js';
 import { crearDeudas } from './deudasBot.js';
+import {
+  esPreguntaDeLote, iniciarLote, hayLote, registrarPregunta, estaCancelado, marcarDescargando, cancelarLote, cerrarPreguntas, textoCancelacion, esOrdenDeCancelar
+} from './loteEnCurso.js';
 import { registrarMensaje, registrarSalidas, programarPurga } from './mensajesChat.js';
 import { crearEditarCuenta } from './editarCuentaBot.js';
 import { mensajesAyuda, COMANDOS_CONOCIDOS, COMANDOS_MENU } from './comandos.js';
@@ -237,7 +240,16 @@ async function limpiarPreguntas(chatId, { hasta, flujo = null, excepto = null, r
 /** sendMessage con HTML por defecto; nunca lanza */
 async function enviar(chatId, texto, opts = {}) {
   try {
+    // Una pregunta de un lote de cartolas lleva un botón «Cancelar lote» y se recuerda para poder cerrarla si se cancela
+    const preguntaDeLote = esPreguntaDeLote(opts) && hayLote(chatId);
+    if (preguntaDeLote) {
+      opts = {
+        ...opts,
+        reply_markup: { ...opts.reply_markup, inline_keyboard: [...opts.reply_markup.inline_keyboard, [{ text: 'Cancelar lote', callback_data: 'cnl_x' }]] }
+      };
+    }
     const enviado = await bot.sendMessage(chatId, texto, { parse_mode: 'HTML', ...opts });
+    if (preguntaDeLote) registrarPregunta(chatId, enviado?.message_id, texto);
     const cancelar = cancelarSolitario(opts);
     if (cancelar) recordarPregunta(chatId, enviado?.message_id, texto, cancelar);
     return enviado;
@@ -461,6 +473,11 @@ export async function iniciarBot() {
     mantenimiento.configurarComandos();
     limpiar = crearLimpiar({ bot, enviar, editar, responderCallback, esChatAutorizado });
     limpiar.configurarComandos();
+    // /cancelar (alias /parar y /stop): cancela el lote en curso y los flujos de conversación abiertos
+    bot.onText(/^\/(?:cancelar|parar|stop)(?:@\w+)?\s*$/i, async (msg) => {
+      if (!esChatAutorizado(msg.chat.id)) return enviar(msg.chat.id, 'No estás autorizado para usar este bot.');
+      await cancelarTodo(msg.chat.id);
+    });
     configurarManejadores();
 
     // Quita los botones que vencieron mientras el bot estaba apagado y reprograma los que siguen pendientes
@@ -739,10 +756,18 @@ function configurarManejadores() {
     const varios = mensajes.length > 1;
 
     // La cola de cartolas no se cierra mientras se descargan los archivos: así salen en un solo lote y con un solo aviso
+    iniciarLote(chatId, mensajes.length);
+    marcarDescargando(chatId, true);
     cartolas?.retenerCola(chatId, { avisado: varios });
-    if (varios) await enviar(chatId, `Recibí ${mensajes.length} archivos, los estoy leyendo.`);
+    if (varios) {
+      await enviar(chatId, `Recibí ${mensajes.length} archivos, los estoy leyendo.`, {
+        reply_markup: { inline_keyboard: [[{ text: 'Cancelar lote', callback_data: 'cnl_x' }]] }
+      });
+    }
     try {
       for (const m of mensajes) {
+        // /cancelar o «Cancelar lote»: no se descarga ni se lee nada más
+        if (estaCancelado(chatId)) break;
         try {
           await procesarMensaje(compartir ? { ...m, caption } : m);
         } catch (error) {
@@ -751,6 +776,7 @@ function configurarManejadores() {
         }
       }
     } finally {
+      marcarDescargando(chatId, false);
       await cartolas?.soltarCola(chatId);
     }
   }
@@ -805,6 +831,12 @@ function configurarManejadores() {
       if (msg.text && !msg.text.startsWith('/miid')) {
         await enviar(chatId, '❌ No estás autorizado para usar este bot. Usa /miid para obtener tu chat ID.');
       }
+      return;
+    }
+
+    // «cancela», «para», «detente»: cancela lo que está en curso
+    if (msg.text && esOrdenDeCancelar(msg.text)) {
+      await cancelarTodo(chatId);
       return;
     }
 
@@ -979,6 +1011,13 @@ function configurarManejadores() {
 
     if (!esChatAutorizado(chatId)) {
       await responderCallback(cb.id, { text: '❌ No autorizado' });
+      return;
+    }
+
+    // «Cancelar lote»
+    if (data === 'cnl_x') {
+      await responderCallback(cb.id, { text: 'Cancelando...' });
+      await cancelarTodo(chatId);
       return;
     }
 
@@ -3445,6 +3484,50 @@ async function manejarCallbackFijos(cb, chatId, data) {
   }
 
   return false;
+}
+
+/**
+ * Cancela lo que está en curso en el chat: el lote de archivos (descargas, lectura, preguntas pendientes) y los flujos de conversación abiertos
+ * (esperando un número, un nombre, una confirmación). Nunca deshace lo ya guardado.
+ */
+async function cancelarTodo(chatId) {
+  try {
+    const hayAlgoEnModulos = Boolean(cartolas?.tienePendientes(chatId) || terceros?.tienePendientes(chatId));
+    const lote = cancelarLote(chatId);
+    const loteActivo = Boolean(lote && (lote.descargando || lote.preguntas.length > 0 || lote.procesados < lote.recibidos || hayAlgoEnModulos));
+
+    // Detiene las colas del lote: archivos en espera, importaciones y cartolas de tarjetas ajenas con sus preguntas
+    let cerradas = 0;
+    cerradas += (await cartolas?.cancelarChat(chatId)) ?? 0;
+    cerradas += (await terceros?.cancelarChat(chatId)) ?? 0;
+    const sinResponder = lote ? await cerrarPreguntas(bot, chatId, lote.preguntas) : 0;
+
+    // Flujos de conversación abiertos
+    let flujos = 0;
+    for (const mapa of [esperandoFijo, esperandoNombreCuenta, esperandoComprobante, esperandoDato, esperandoPersona]) {
+      if (mapa.delete(chatId)) flujos++;
+    }
+    for (const [txId, tx] of [...pendingTransactions.entries()]) {
+      if (!txId.startsWith(`${chatId}_`)) continue;
+      pendingTransactions.delete(txId);
+      if (tx.archivo_respaldo) await eliminarRespaldoCuota(tx.archivo_respaldo).catch(() => {});
+      if (tx.messageId) await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: tx.messageId }).catch(() => {});
+      flujos++;
+    }
+    for (const modulo of [cuotas, cuotasGestion, deudas, editarCuenta, admin]) {
+      flujos += (await modulo?.cancelarFlujo?.(chatId)) ?? 0;
+    }
+
+    if (loteActivo) {
+      await enviar(chatId, textoCancelacion({ total: lote.total, procesados: lote.procesados, sinResponder }));
+    } else if (cerradas > 0 || flujos > 0) {
+      await enviar(chatId, 'Cancelé lo que estaba haciendo. Lo ya guardado sigue guardado.');
+    } else {
+      await enviar(chatId, 'No hay nada en curso.');
+    }
+  } catch (error) {
+    await enviar(chatId, describirError(error, 'procesar', 'la cancelación').usuario);
+  }
 }
 
 /**

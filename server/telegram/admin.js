@@ -990,5 +990,12 @@ export function crearAdmin(ctx) {
     comando(/^\/fijos(?:@\w+)?\s*$/i, listarFijos);
   }
 
-  return { configurarComandos, manejarCallback, manejarTexto, mostrarUltimos, planConArgumentos, buscar, consultarGastos };
+  /** Cierra lo que este módulo espera del chat (un monto, un nombre, un pago por confirmar). Devuelve cuántas cosas cerró. */
+  function cancelarFlujo(chatId) {
+    let n = esperando.delete(chatId) ? 1 : 0;
+    for (const key of [...pagosPendientes.keys()]) if (String(key).startsWith(`${chatId}_`) && pagosPendientes.delete(key)) n++;
+    return n;
+  }
+
+  return { cancelarFlujo, configurarComandos, manejarCallback, manejarTexto, mostrarUltimos, planConArgumentos, buscar, consultarGastos };
 }

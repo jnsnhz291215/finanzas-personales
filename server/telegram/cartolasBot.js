@@ -16,6 +16,7 @@
  */
 
 import { describirError } from './errores.js';
+import { sumarRecibido, marcarProcesado, loteActual } from './loteEnCurso.js';
 import { fechaFinDeMovimientos, analizarCartola, analizarPDF, analizarTexto, calcularHashBuffer, cartolaYaImportada, registrarImportacion } from '../cartolas.js';
 import { listarCuentasConBanco, guardarDigitosCuenta } from '../gestion.js';
 import { fijarTitular } from '../resumenDatos.js';
@@ -295,6 +296,7 @@ export function crearCartolas(ctx) {
     }
     const contexto = caption ? leerContextoCartola(caption, { caption: true }) : null;
     cola.items.push({ nombre, buffer, ext, mediaGroupId, mensajeId, contexto: contextoUtil(contexto) ? contexto : null });
+    sumarRecibido(chatId);
     // Un comprobante que llegue junto con la cartola espera a que se analice (ver loteTerceros.js)
     ctx.terceros?.avisarArchivo(chatId);
 
@@ -306,7 +308,9 @@ export function crearCartolas(ctx) {
     }
 
     if (primero && !cola.avisado && !cola.retenida) {
-      await enviar(chatId, 'Recibí el archivo, lo estoy leyendo. Si mandas más seguidos los agrupo en un solo resumen.');
+      await enviar(chatId, 'Recibí el archivo, lo estoy leyendo. Si mandas más seguidos los agrupo en un solo resumen.', {
+        reply_markup: { inline_keyboard: [[{ text: 'Cancelar lote', callback_data: 'cnl_x' }]] }
+      });
     }
   }
 
@@ -337,7 +341,9 @@ export function crearCartolas(ctx) {
       return;
     }
     cola.timer = setTimeout(() => cerrarCola(chatId), 800);
-    if (cola.items.length === 1 && !cola.avisado) await enviar(chatId, 'Recibí el archivo, lo estoy leyendo.');
+    if (cola.items.length === 1 && !cola.avisado) {
+      await enviar(chatId, 'Recibí el archivo, lo estoy leyendo.', { reply_markup: { inline_keyboard: [[{ text: 'Cancelar lote', callback_data: 'cnl_x' }]] } });
+    }
   }
 
   /**
@@ -387,6 +393,9 @@ export function crearCartolas(ctx) {
   }
 
   async function procesarLote(chatId, archivos) {
+    // El lote en curso: si se cancela (/cancelar o el botón), se deja de leer y de preguntar
+    const loteRef = loteActual(chatId);
+    const cancelado = () => Boolean(loteRef?.cancelado);
     const unico = archivos.length === 1;
     const vistos = new Set();
     const avisos = [];
@@ -401,6 +410,7 @@ export function crearCartolas(ctx) {
     };
 
     for (let i = 0; i < archivos.length; i++) {
+      if (cancelado()) break;
       const archivo = archivos[i];
       const prefijo = unico ? '' : `Archivo ${i + 1} (${archivo.nombre}): `;
       try {
@@ -474,6 +484,13 @@ export function crearCartolas(ctx) {
         // Un archivo que falla no detiene al resto del lote: se dice cuál y por qué
         avisos.push(`${describirError(error, 'procesar', archivo.nombre).plano} Los demás siguen.`);
       }
+      marcarProcesado(chatId);
+    }
+
+    // Cancelado: lo que quedó esperando en tmp/ se descarta; lo ya guardado no se toca
+    if (cancelado()) {
+      for (const item of validos) await borrarTemporal(item.tmp);
+      return;
     }
 
     if (validos.length === 0) {
@@ -499,7 +516,11 @@ export function crearCartolas(ctx) {
     // Un lote de varios archivos tiene un solo resumen; los avisos de los archivos descartados van dentro de él
     if (archivos.length > 1) await enviarResumenLote(chatId, archivos.length, validos, avisos);
     const seguir = async () => {
-      await continuarLote(chatId, validos, archivos.length > 1 ? [] : avisos, cuentas);
+      if (cancelado()) {
+        for (const item of validos) await borrarTemporal(item.tmp);
+        return;
+      }
+      await continuarLote(chatId, validos, archivos.length > 1 ? [] : avisos, cuentas, loteRef);
       await sincronizarReenviadas();
     };
     if (dudas.length === 0) {
@@ -528,7 +549,10 @@ export function crearCartolas(ctx) {
   }
 
   /** Lo que sigue una vez resuelta la cuenta de cada cartola: las de otra persona, y el resto al flujo de siempre */
-  async function continuarLote(chatId, validos, avisos, cuentas) {
+  async function continuarLote(chatId, validos, avisos, cuentas, loteRef = null) {
+    // Las cartolas se revisan por período, de la más antigua a la más reciente: así la cuota más reciente de cada compra es la que decide
+    validos.sort((a, b) => String(fechaFinDeMovimientos(a.movimientos) ?? '').localeCompare(String(fechaFinDeMovimientos(b.movimientos) ?? '')));
+
     // Las cuotas de la misma compra que aparecen en varias cartolas del lote se preguntan una sola vez, con la cuota más alta
     if (validos.length > 1) {
       const cuotasLote = { mejores: mejoresCuotasDeLote(validos), procesadas: new Set() };
@@ -548,9 +572,14 @@ export function crearCartolas(ctx) {
     if (ctx.terceros) {
       propios = [];
       for (const item of validos) {
+        if (loteRef?.cancelado) {
+          await borrarTemporal(item.tmp);
+          continue;
+        }
         const tomada = await ctx.terceros.procesarCartola(chatId, item, cuentas, (it) => ofrecerUno(chatId, it, cuentas));
         if (!tomada) propios.push(item);
       }
+      if (loteRef?.cancelado) return;
       if (propios.length === 0) {
         if (avisos.length > 0) await enviar(chatId, avisos.map(a => esc(a)).join('\n'));
         return;
@@ -1347,5 +1376,45 @@ export function crearCartolas(ctx) {
     }
   }
 
-  return { pendientesDeCuenta, descartarPendientes, recibirArchivo, retenerCola, soltarCola, recibirFoto, esFotoDeCartola, manejarTexto, manejarCallback, proponerDigitos };
+  /** Cancela lo que este módulo tiene en curso para el chat: cola de archivos, importaciones y preguntas sin responder. Devuelve cuántas cosas cerró. */
+  async function cancelarChat(chatId) {
+    let cerradas = 0;
+    const cola = colas.get(chatId);
+    if (cola) {
+      clearTimeout(cola.timer);
+      colas.delete(chatId);
+      cerradas++;
+    }
+    previos.delete(chatId);
+    const prefijo = `${chatId}_`;
+    for (const [key, p] of [...pendientes.entries()]) {
+      if (!key.startsWith(prefijo)) continue;
+      pendientes.delete(key);
+      if (p.tmp) await borrarTemporal(p.tmp);
+      cerradas++;
+    }
+    for (const [key, lote] of [...lotes.entries()]) {
+      if (!key.startsWith(prefijo)) continue;
+      lotes.delete(key);
+      for (const item of lote.items) if (item.estado === 'pendiente' && item.tmp) await borrarTemporal(item.tmp);
+      cerradas++;
+    }
+    for (const [key, pregunta] of [...preguntasContexto.entries()]) {
+      if (pregunta.chatId !== chatId) continue;
+      preguntasContexto.delete(key);
+      if (pregunta.item?.tmp) await borrarTemporal(pregunta.item.tmp);
+      cerradas++;
+    }
+    for (const [key] of [...digitosPendientes.entries()]) if (key.startsWith(prefijo)) digitosPendientes.delete(key);
+    return cerradas;
+  }
+
+  /** ¿Hay algo en curso de este módulo para el chat? */
+  function tienePendientes(chatId) {
+    const prefijo = `${chatId}_`;
+    return colas.has(chatId) || [...pendientes.keys(), ...lotes.keys()].some(k => k.startsWith(prefijo)) ||
+      [...preguntasContexto.values()].some(p => p.chatId === chatId);
+  }
+
+  return { cancelarChat, tienePendientes, pendientesDeCuenta, descartarPendientes, recibirArchivo, retenerCola, soltarCola, recibirFoto, esFotoDeCartola, manejarTexto, manejarCallback, proponerDigitos };
 }

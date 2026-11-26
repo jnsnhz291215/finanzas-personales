@@ -23,6 +23,8 @@
 import { listarCompras, obtenerCompra, registrarPagoCuota, crearCompra, fijarCuotasPagadas } from '../cuotas.js';
 import { registrarImportacion, buscarUltimos4, fechaFinDeMovimientos, fechaPlausible } from '../cartolas.js';
 import { describirError, describirMotivo, registrarError } from './errores.js';
+import { fijarContador, textoContador } from './contadorCuotas.js';
+import { botonCerrar } from './cerrar.js';
 import { confirmarTemporal, borrarTemporal } from '../storage.js';
 import { leerTextoDeImagen } from '../ocr.js';
 import { registrarPagosMultiples } from '../transferencias.js';
@@ -87,6 +89,17 @@ export function crearLoteTerceros(ctx) {
   const preguntas = new Map();
   // Cartolas de tarjetas ajenas que esperan a que termine la anterior: chatId -> [{ item, detectada, compra }]
   const colaCartolas = new Map();
+  // Lo que ya se decidió sobre el contador de una compra: "chatId:compraId" -> { numero, hasta }. Una cartola con una cuota menor o igual a la
+  // decidida ya no pregunta (queda como historial); una con una cuota mayor pregunta una sola vez más.
+  const decisiones = new Map();
+  const VIDA_DECISION_MS = 24 * 60 * 60 * 1000;
+  const claveDecision = (chatId, compraId) => `${chatId}:${compraId}`;
+  const decisionVigente = (chatId, compraId) => {
+    const d = decisiones.get(claveDecision(chatId, compraId));
+    return d && d.hasta > Date.now() ? d : null;
+  };
+  const recordarDecision = (chatId, compraId, numero) =>
+    decisiones.set(claveDecision(chatId, compraId), { numero: Number(numero), hasta: Date.now() + VIDA_DECISION_MS });
   let contador = 0;
 
   function nuevoLote(chatId) {
@@ -274,7 +287,12 @@ export function crearLoteTerceros(ctx) {
         const mov = item.movimientos[r.indice];
         const eva = evaluarNumeroCuota(compra, r.numero);
         indiceCuota = r.indice;
-        lote.cuota = {
+        // Solo la cuota más reciente de cada compra se compara con el contador: las de cartolas más antiguas (o ya decididas) son historial
+        const numeroCartola = r.numero ?? mov.cuota?.actual ?? extraerNumeroCuota(mov.descripcion)?.actual ?? null;
+        const historial = esCuotaDeHistorial(chatId, compra, mov, numeroCartola, item);
+        if (historial) {
+          lote.cuotaHistorial = { alias: compra.alias, numero: numeroCartola, total: Number(compra.total_cuotas), masReciente: historial.masReciente };
+        } else lote.cuota = {
           alias: compra.alias,
           total: Number(compra.total_cuotas),
           numero: eva.numero,
@@ -285,7 +303,8 @@ export function crearLoteTerceros(ctx) {
           estado: eva.accion === 'duplicada' ? 'duplicada' : 'pendiente',
           // Si la cartola no calza con el contador (número menor o salto de más de una), se pregunta antes de cambiar
           consulta: eva.accion === 'menor' || eva.accion === 'salto',
-          pagadas: Number(compra.cuotas_pagadas)
+          pagadas: Number(compra.cuotas_pagadas),
+          compraId: compra.id
         };
       }
     }
@@ -306,7 +325,12 @@ export function crearLoteTerceros(ctx) {
     await atenderCuotas(lote, cuotasOtras);
 
     const encabezado = [`<b>Cartola de ${esc(titular)}</b>`];
-    if (lote.cuota) {
+    if (lote.cuotaHistorial) {
+      encabezado.push(
+        `La cuota ${lote.cuotaHistorial.numero} de <b>${esc(lote.cuotaHistorial.alias)}</b> de esta cartola es anterior a otra que ya revisé ` +
+        `(la ${lote.cuotaHistorial.masReciente}): queda guardada como historial de la tarjeta, sin preguntar ni mover el contador.`
+      );
+    } else if (lote.cuota) {
       encabezado.push(
         `Reconocí la cuota de <b>${esc(lote.cuota.alias)}</b>: cuota ${lote.cuota.numero} de ${lote.cuota.total} ` +
         `(${dinero(lote.cuota.montoCargo)}, ${formatearFechaCL(lote.cuota.fechaCargo)}). ` +
@@ -354,14 +378,17 @@ export function crearLoteTerceros(ctx) {
 
     // La cartola no calza con el contador: se pregunta antes de cambiarlo
     if (lote.cuota?.consulta) {
+      // Una sola pregunta por compra y por lote, y solo con la cuota más reciente
       await enviar(chatId,
-        `La cartola muestra la cuota <b>${lote.cuota.numero} de ${lote.cuota.total}</b> de ${esc(lote.cuota.alias)}, pero en la app llevas ` +
-        `${lote.cuota.pagadas} pagadas (la que toca es la ${lote.cuota.esperada}). ¿Con cuál sincronizo el contador?`,
+        `La cartola más reciente muestra la cuota <b>${lote.cuota.numero} de ${lote.cuota.total}</b> de ${esc(lote.cuota.alias)}, pero en la app llevas ` +
+        `${lote.cuota.pagadas} pagadas. ¿Qué hago con el contador?`,
         {
           reply_markup: {
             inline_keyboard: [
               [{ text: `Usar la ${lote.cuota.numero}/${lote.cuota.total} de la cartola`, callback_data: 'lcy_s' }],
-              [{ text: `Dejarlo como está (la ${lote.cuota.esperada})`, callback_data: 'lcy_n' }]
+              [{ text: `Dejar en ${lote.cuota.pagadas} pagadas`, callback_data: 'lcy_n' }],
+              [{ text: 'Corregir: van … pagadas', callback_data: 'lcy_c' }],
+              [{ text: 'Cerrar', callback_data: 'lcy_x' }]
             ]
           }
         }
@@ -434,7 +461,7 @@ export function crearLoteTerceros(ctx) {
   async function ofrecerPagoSinComprobante(chatId) {
     const lote = obtenerLote(chatId);
     if (!lote?.cuota || lote.cuota.consulta || lote.seleccionEstado !== 'listo') return;
-    if (lote.cuota.accion === 'duplicada' || lote.comprobante || lote.pagoEstado !== 'sin') return;
+    if (['duplicada', 'omitida', 'sincronizada'].includes(lote.cuota.accion) || lote.comprobante || lote.pagoEstado !== 'sin') return;
 
     lote.pagoEstado = 'confirmando';
     lote.confirmacion = { tipo: 'sin_comprobante' };
@@ -982,7 +1009,9 @@ export function crearLoteTerceros(ctx) {
         ? { estado: 'registrada', ...lote.cuotaRegistrada }
         : lote.cuota
           ? { estado: lote.cuota.estado, numero: lote.cuota.numero, total: lote.cuota.total, alias: lote.cuota.alias }
-          : null;
+          : lote.cuotaHistorial
+            ? { estado: 'historial', numero: lote.cuotaHistorial.numero, total: lote.cuotaHistorial.total, alias: lote.cuotaHistorial.alias }
+            : null;
       const pago = lote.pagoEstado === 'registrado' ? 'registrado' : lote.pagoEstado === 'cancelado' ? 'cancelado' : lote.comprobante ? 'cancelado' : 'sin';
       await enviar(chatId, esc(textoResumenLote({ titular: lote.titular, cuota, gastos: lote.gastos, pago, otras: lote.otras })));
     }
@@ -990,6 +1019,101 @@ export function crearLoteTerceros(ctx) {
     clearTimeout(lote.timerEspera);
     lotes.delete(chatId);
     await seguirConLaCola(chatId);
+  }
+
+  /**
+   * ¿La cuota de esta cartola es historial? Sí si en el mismo lote hay otra cartola con una cuota mayor de la misma compra, si ya se decidió el
+   * contador con una cuota mayor o igual, o si es la misma cuota repetida en dos cartolas. Devuelve { masReciente } o null.
+   */
+  function esCuotaDeHistorial(chatId, compra, mov, numero, item) {
+    if (numero === null || numero === undefined) return null;
+    const delLote = item.cuotasLote;
+    if (delLote) {
+      const clave = claveCuotaDeLote(mov);
+      const mejor = delLote.mejores.get(clave)?.actual ?? null;
+      if (mejor !== null && numero < mejor) return { masReciente: mejor };
+      if (delLote.procesadas.has(`p:${compra.id}`) && mejor !== null && numero === mejor) return { masReciente: mejor };
+      delLote.procesadas.add(`p:${compra.id}`);
+    }
+    const decidida = decisionVigente(chatId, compra.id);
+    if (decidida && numero <= decidida.numero) return { masReciente: decidida.numero };
+    return null;
+  }
+
+  /** Aplica la decisión sobre el contador: s = usar la de la cartola, n = dejarlo, x = cerrar (igual que dejarlo), c = corregir a `n` */
+  async function resolverContador(chatId, messageId, lote, eleccion, n = null) {
+    const cuota = lote.cuota;
+    const compra = await obtenerCompra(cuota.compraId);
+    cuota.consulta = false;
+    recordarDecision(chatId, cuota.compraId, cuota.numero);
+    const hayComprobante = Boolean(lote.comprobante && lote.pagoEstado === 'esperando');
+    let texto;
+
+    if (eleccion === 's' && hayComprobante) {
+      // Con el comprobante de la transferencia, el pago se registra y el contador queda en el número de la cartola
+      cuota.accion = 'forzar';
+      texto = `Listo: el contador de ${esc(cuota.alias)} se sincroniza con la cartola (${cuota.numero}/${cuota.total}) al registrar el pago.`;
+    } else if (eleccion === 's') {
+      const r = await fijarContador(compra, cuota.numero);
+      cuota.accion = 'sincronizada';
+      cuota.estado = 'sincronizada';
+      texto = textoContador(r, cuota.alias, dinero, esc);
+    } else if (eleccion === 'c') {
+      const r = await fijarContador(compra, n);
+      cuota.accion = 'omitida';
+      cuota.estado = 'omitida';
+      if (hayComprobante) {
+        cuota.accion = 'registrar';
+        cuota.numero = r.despues + 1;
+      }
+      texto = textoContador(r, cuota.alias, dinero, esc);
+    } else if (hayComprobante) {
+      // Dejarlo, con el comprobante: se registra la cuota que toca
+      cuota.accion = 'registrar';
+      cuota.numero = cuota.esperada;
+      texto = `Listo: dejo el contador de ${esc(cuota.alias)} en ${cuota.pagadas}/${cuota.total} y registro la cuota ${cuota.numero} con tu comprobante.`;
+    } else {
+      cuota.accion = 'omitida';
+      cuota.estado = 'omitida';
+      texto =
+        `El contador queda en ${cuota.pagadas}/${cuota.total}. La cuota ${cuota.numero} de la cartola queda guardada como cargo de la tarjeta, ` +
+        'sin contarla como pagada.';
+    }
+    await editar(texto, { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [botonCerrar()] } });
+    if (hayComprobante) await resolverPago(chatId);
+    else await ofrecerPagoSinComprobante(chatId);
+    await cerrarSiListo(chatId);
+  }
+
+  /** Cancela todo lo que este módulo tiene en curso para el chat (cartolas en espera, selección abierta, preguntas). Devuelve cuántas cosas cerró. */
+  async function cancelarChat(chatId) {
+    let cerradas = 0;
+    const lote = lotes.get(chatId);
+    if (lote) {
+      clearTimeout(lote.timerEspera);
+      clearTimeout(lote.timerVida);
+      lotes.delete(chatId);
+      if (lote.seleccionEstado === 'pendiente' && lote.item?.tmp) await borrarTemporal(lote.item.tmp);
+      if (lote.comprobante?.archivo && ['esperando', 'confirmando'].includes(lote.pagoEstado)) await eliminarRespaldo(lote.comprobante.archivo);
+      cerradas++;
+    }
+    for (const x of colaCartolas.get(chatId) ?? []) {
+      if (x.item?.tmp) await borrarTemporal(x.item.tmp);
+      cerradas++;
+    }
+    colaCartolas.delete(chatId);
+    for (const [clave, p] of [...preguntas.entries()]) {
+      if (p.chatId !== chatId) continue;
+      preguntas.delete(clave);
+      if (p.item?.tmp) await borrarTemporal(p.item.tmp);
+      cerradas++;
+    }
+    return cerradas;
+  }
+
+  /** ¿Hay algo en curso de este módulo para el chat? */
+  function tienePendientes(chatId) {
+    return Boolean(lotes.get(chatId)) || (colaCartolas.get(chatId)?.length ?? 0) > 0 || [...preguntas.values()].some(p => p.chatId === chatId);
   }
 
   /** Termina un lote: sigue con la próxima cartola ajena que estaba esperando */
@@ -1158,22 +1282,25 @@ export function crearLoteTerceros(ctx) {
       // La cartola no calza con el contador: usar su número o dejarlo como está
       if (tipo === 'y' && lote.cuota?.consulta) {
         await responderCallback(cb.id, {});
-        lote.cuota.consulta = false;
-        if (valor === 's') {
-          lote.cuota.accion = 'forzar';
-        } else {
-          lote.cuota.accion = 'registrar';
-          lote.cuota.numero = lote.cuota.esperada;
+        if (valor === 'c') {
+          // Corregir: se elige cuántas van pagadas
+          const total = lote.cuota.total;
+          const botones = Array.from({ length: total + 1 }, (_, n) => ({ text: String(n), callback_data: `lcu_${n}` }));
+          const filas = [];
+          for (let i = 0; i < botones.length; i += 6) filas.push(botones.slice(i, i + 6));
+          await editar(`¿Cuántas cuotas de <b>${esc(lote.cuota.alias)}</b> van pagadas? (hoy ${lote.cuota.pagadas}/${total})`, {
+            chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [...filas, [{ text: 'Dejar en ' + lote.cuota.pagadas, callback_data: 'lcy_n' }], botonCerrar()] }
+          });
+          return true;
         }
-        await editar(
-          valor === 's'
-            ? `Listo: el contador de ${esc(lote.cuota.alias)} se sincroniza con la cartola (${lote.cuota.numero}/${lote.cuota.total}) al registrar el pago.`
-            : `Listo: dejo el contador como está y registro la cuota ${lote.cuota.numero}.`,
-          { chat_id: chatId, message_id: messageId }
-        );
-        if (lote.comprobante && lote.pagoEstado === 'esperando') await resolverPago(chatId);
-        else await ofrecerPagoSinComprobante(chatId);
-        await cerrarSiListo(chatId);
+        await resolverContador(chatId, messageId, lote, valor);
+        return true;
+      }
+
+      // Corregir: van N pagadas
+      if (tipo === 'u' && lote.cuota?.consulta) {
+        await responderCallback(cb.id, {});
+        await resolverContador(chatId, messageId, lote, 'c', Number(valor));
         return true;
       }
 
@@ -1202,7 +1329,10 @@ export function crearLoteTerceros(ctx) {
         } else {
           lote.pagoEstado = 'sin';
           lote.confirmacion = null;
-          await editar('Entendido: la cuota queda sin registrar.', { chat_id: chatId, message_id: messageId });
+          await editar(
+            `Entendido: no registré la cuota ${lote.cuota?.numero ?? ''} de ${esc(lote.cuota?.alias ?? 'la compra')} como pago; el contador no cambia.`,
+            { chat_id: chatId, message_id: messageId }
+          );
           await cerrarSiListo(chatId);
         }
         return true;
@@ -1217,5 +1347,5 @@ export function crearLoteTerceros(ctx) {
     }
   }
 
-  return { avisarArchivo, procesarCartola, sincronizarSoloCuotas, pendientesDeCuenta, descartarPendientes, manejarFoto, manejarReply, manejarCallback, acreedoresDe };
+  return { cancelarChat, tienePendientes, avisarArchivo, procesarCartola, sincronizarSoloCuotas, pendientesDeCuenta, descartarPendientes, manejarFoto, manejarReply, manejarCallback, acreedoresDe };
 }

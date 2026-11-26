@@ -941,6 +941,21 @@ npm run reparar-fechas -- --aplicar # repara, en una transacción
   coma, opcional). Con 400 (`API_KEY_INVALID`), 401 o 403 no sigue probando. El log dice qué modelo falló y cuál respondió; si todos fallan, el bot
   sigue con las reglas locales. Un modelo que da 404 se omite durante 10 minutos. Para agregar otra tarea, se suma una entrada a `TAREAS`.
 
+### Una sola decisión por compra, contador a mano y /cancelar
+
+- **Un lote de cartolas** se revisa de la más antigua a la más reciente. De cada compra en cuotas solo se compara con el contador la cuota de la
+  cartola más reciente (la de número mayor); las de cartolas anteriores quedan como historial en `cargos_cartola`, sin preguntar ni mover el
+  contador. Se pregunta como máximo **una vez por compra**, después del resumen del lote, con: *Usar la N/12 de la cartola*, *Dejar en X pagadas*,
+  *Corregir: van … pagadas* (botones 0..total) y *Cerrar*. Una vez decidido, las cartolas que lleguen después con una cuota menor o igual no vuelven a
+  preguntar; con una cuota mayor, pregunta una sola vez más. «Dejar» dice: «El contador queda en X/12. La cuota N de la cartola queda guardada como
+  cargo de la tarjeta, sin contarla como pagada.»
+- **`/cuotaspagadas`** (o «del Mac van 6 pagadas», «la última cuota pagada del Mac es la 6») fija `cuotas_pagadas` de una compra (por su nombre mostrado o
+  real; con botones si es ambiguo). «Pagado» = el mayor entre los pagos vinculados y cuotas pagadas × cuota: al bajar el contador baja «pagado» salvo que
+  haya pagos vinculados que lo justifiquen, y en ese caso se avisa.
+- **`/cancelar`** (alias `/parar` y `/stop`; también «cancela», «para», «detente», y el botón **Cancelar lote** del aviso «Recibí N archivos» y de cada
+  pregunta de un lote) detiene la cola del lote (descargas, lectura de PDF, preguntas por mandar), quita el teclado de las preguntas pendientes y les agrega
+  «Cancelado.», y cierra los flujos de conversación abiertos. No deshace nada de lo ya guardado.
+
 ### Renombrar y agrupar cuotas, y deudas con abonos
 
 - **Renombrar** (`/renombrarcuota`, alias `/renombrar`, o «renombra la cuota Apple de 21.749 a AppleCare», «la de apple de 202 mil es el Mac», o el

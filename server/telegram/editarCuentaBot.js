@@ -449,5 +449,14 @@ export function crearEditarCuenta(ctx) {
     return false;
   }
 
-  return { configurarComandos, manejarCallback, manejarTexto, listar, abrirPorDigitos, cambiarCampoPorDigitos, mostrarFicha, proponerCambio };
+  /** Cierra lo que este módulo espera del chat (un valor nuevo o un cambio por confirmar). Devuelve cuántas cosas cerró. */
+  function cancelarFlujo(chatId) {
+    let n = esperando.delete(chatId) ? 1 : 0;
+    for (const [key, p] of [...pendientes.entries()]) {
+      if (String(key).startsWith(`${chatId}_`) && pendientes.delete(key)) n++;
+    }
+    return n;
+  }
+
+  return { cancelarFlujo, configurarComandos, manejarCallback, manejarTexto, listar, abrirPorDigitos, cambiarCampoPorDigitos, mostrarFicha, proponerCambio };
 }

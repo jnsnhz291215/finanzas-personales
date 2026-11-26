@@ -387,5 +387,12 @@ export function crearDeudas(ctx) {
     return true;
   }
 
-  return { manejarTexto, manejarEnvio, manejarCallback, enviarDeudas, vincularAbono };
+  /** Cierra lo que este módulo espera del chat (un nombre, un alias, una elección con botones). Devuelve cuántas cosas cerró. */
+  function cancelarFlujo(chatId) {
+    let n = esperando.delete(chatId) ? 1 : 0;
+    for (const [key, p] of [...pendientes.entries()]) if (p.chatId === chatId && pendientes.delete(key)) n++;
+    return n;
+  }
+
+  return { cancelarFlujo, manejarTexto, manejarEnvio, manejarCallback, enviarDeudas, vincularAbono };
 }

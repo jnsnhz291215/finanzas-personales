@@ -240,6 +240,9 @@ export function textoResumenLote({ titular, cuota, gastos, pago, otras = [], avi
   if (cuota?.estado === 'registrada') lineas.push(`Cuota registrada: ${etiqueta}${cuota.terminada ? ' (compra terminada)' : ''}`);
   else if (cuota?.estado === 'duplicada') lineas.push(`Cuota ${etiqueta}: ya estaba registrada, no la dupliqué`);
   else if (cuota?.estado === 'pendiente') lineas.push(`Cuota ${etiqueta}: sin registrar`);
+  else if (cuota?.estado === 'historial') lineas.push(`Cuota ${etiqueta}: anterior a otra cartola del lote, guardada como historial`);
+  else if (cuota?.estado === 'sincronizada') lineas.push(`Cuota ${etiqueta}: contador sincronizado con la cartola`);
+  else if (cuota?.estado === 'omitida') lineas.push(`Cuota ${etiqueta}: el contador no cambió; la cuota queda como cargo de la tarjeta, sin contarla como pagada`);
   else lineas.push('No reconocí la cuota en la cartola');
   lineas.push(`${gastos} ${gastos === 1 ? 'gasto tuyo agregado' : 'gastos tuyos agregados'}`);
   for (const o of otras) {

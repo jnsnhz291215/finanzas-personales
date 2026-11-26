@@ -35,6 +35,7 @@ export const COMANDOS = [
   // Cuotas y fijos
   { seccion: 'Cuotas y fijos', nombre: 'cuotas', uso: '[nueva ... | cartola ...]', ejemplo: '/cuotas', descripcion: 'Todas tus compras en cuotas (activas y terminadas) por titular', menu: 4, menuDescripcion: 'Mis compras en cuotas' },
   { seccion: 'Cuotas y fijos', nombre: 'renombrarcuota', alias: ['renombrar'], uso: '<compra> [valor de la cuota] a <nombre nuevo>', ejemplo: '/renombrarcuota Apple 21.749 a AppleCare', descripcion: 'Cambiar el nombre con que se muestra una compra en cuotas (el real sigue emparejando con las cartolas)' },
+  { seccion: 'Cuotas y fijos', nombre: 'cuotaspagadas', uso: '<compra> [valor de la cuota] <cuántas van>', ejemplo: '/cuotaspagadas Mac 6', descripcion: 'Fijar a mano cuántas cuotas van pagadas de una compra (también: «del Mac van 6 pagadas»)' },
   { seccion: 'Cuotas y fijos', nombre: 'agruparcuotas', uso: '[<compra> y <compra> como <grupo> | desagrupar <grupo>]', ejemplo: '/agruparcuotas Apple 202.332 y Apple 21.749 como Mac', descripcion: 'Juntar compras en cuotas en un grupo con su total (solo visual)' },
   { seccion: 'Cuotas y fijos', nombre: 'fijo', uso: '<nombre> <monto> [a <quién>] [el <día>]', ejemplo: '/fijo 24000 telefonía a Vivian el 5', descripcion: 'Agregar un gasto fijo' },
   { seccion: 'Cuotas y fijos', nombre: 'fijos', ejemplo: '/fijos', descripcion: 'Ver tus gastos fijos, editarlos o desactivarlos' },
@@ -58,6 +59,7 @@ export const COMANDOS = [
 
   // Sistema
   { seccion: 'Sistema', nombre: 'update', ejemplo: '/update', descripcion: 'Actualizar la app y reiniciarla (solo en el servidor)', menu: 6, menuDescripcion: 'Actualizar y reiniciar la app' },
+  { seccion: 'Sistema', nombre: 'cancelar', alias: ['parar', 'stop'], ejemplo: '/cancelar', descripcion: 'Cancelar el lote de archivos en curso y las preguntas abiertas (también: «cancela», «para», «detente»). No deshace lo ya guardado' },
   { seccion: 'Sistema', nombre: 'limpiar', alias: ['limpiarchat'], uso: '[todo menos lo último]', ejemplo: '/limpiar todo menos lo último', descripcion: 'Borrar los mensajes de este chat de las últimas 48 h (Telegram no deja borrar más antiguos). No toca archivos ni datos' },
   { seccion: 'Sistema', nombre: 'mantenimiento', ejemplo: '/mantenimiento', descripcion: 'Tareas fijas de mantenimiento (por ejemplo reparar fechas) sin abrir una terminal' },
   { seccion: 'Sistema', nombre: 'reboot', ejemplo: '/reboot', descripcion: 'Reiniciar la app (solo en el servidor)' },

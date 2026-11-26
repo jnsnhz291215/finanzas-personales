@@ -806,5 +806,16 @@ export function crearCuotas(ctx) {
     });
   }
 
-  return { configurarComandos, manejarCallback, manejarTexto, intentarMensaje, manejarEnvio, ofrecerPagoPorCartola, enviarLista };
+  /** Cierra las conversaciones abiertas de este chat (alta de una compra, pagos por confirmar, fotos por clasificar). Devuelve cuántas. */
+  function cancelarFlujo(chatId) {
+    let n = esperando.delete(chatId) ? 1 : 0;
+    const prefijo = `${chatId}_`;
+    for (const mapa of [pendientesAlta, fotosPendientes]) {
+      for (const key of [...mapa.keys()]) if (String(key).startsWith(prefijo) && mapa.delete(key)) n++;
+    }
+    for (const [key, p] of [...pendientesPago.entries()]) if (p.chatId === chatId && pendientesPago.delete(key)) n++;
+    return n;
+  }
+
+  return { cancelarFlujo, configurarComandos, manejarCallback, manejarTexto, intentarMensaje, manejarEnvio, ofrecerPagoPorCartola, enviarLista };
 }
