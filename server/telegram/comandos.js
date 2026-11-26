@@ -68,7 +68,8 @@ export const EJEMPLOS = [
   { titulo: 'Anotar un gasto', frase: 'almuerzo 5500 débito' },
   { titulo: 'Corregirlo (responde a su mensaje)', frase: 'eran 4690, o «elimina esto»' },
   { titulo: 'Guardar una tarjeta', frase: 'guarda la tarjeta crédito 8263 es de Valeska' },
-  { titulo: 'Gasto fijo', frase: 'gasto fijo: 24 mil en telefonía, lo pago a Vivian' }
+  { titulo: 'Gasto fijo', frase: 'gasto fijo: 24 mil en telefonía, lo pago a Vivian' },
+  { titulo: 'Cartolas (en el mismo mensaje o justo antes)', frase: 'son de la tarjeta 8263, o «cartola de la crédito de Valeska»' }
 ];
 
 const LIMITE_MENSAJE = 3500;

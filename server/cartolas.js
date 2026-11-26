@@ -262,14 +262,59 @@ export async function cartolaYaImportada(hash) {
   return existentes.length > 0 ? existentes[0] : null;
 }
 
+/** Clave con la que se reconoce el mismo movimiento en dos cartolas: fecha, tipo, monto y descripción normalizada */
+export function claveMovimiento(m) {
+  const descripcion = String(m.descripcion ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+  return `${String(m.fecha).slice(0, 10)}|${m.tipo}|${Math.round(Number(m.monto))}|${descripcion}`;
+}
+
+/**
+ * Separa los movimientos que ya existen. Cuenta repeticiones: si la cuenta tiene 1 compra igual y la cartola trae 2,
+ * se importa 1 (la segunda es otra compra real); si no hay ninguna, se importan las 2.
+ * Devuelve { nuevos, duplicados }.
+ */
+export function separarDuplicados(movimientos, existentes) {
+  const disponibles = new Map();
+  for (const e of existentes) {
+    const k = claveMovimiento(e);
+    disponibles.set(k, (disponibles.get(k) ?? 0) + 1);
+  }
+  const nuevos = [];
+  let duplicados = 0;
+  for (const m of movimientos) {
+    const k = claveMovimiento(m);
+    const n = disponibles.get(k) ?? 0;
+    if (n > 0) {
+      disponibles.set(k, n - 1);
+      duplicados++;
+    } else {
+      nuevos.push(m);
+    }
+  }
+  return { nuevos, duplicados };
+}
+
 /**
  * Registra los movimientos de una cartola (con la autocategorización por reglas) y el archivo
  * importado. `archivo` es la ruta relativa a la raíz del almacenamiento.
  * Devuelve { importados, registrados: [{ id, fecha, descripcion, monto, tipo }] }.
  */
-export async function registrarImportacion({ archivo, hash, cuentaId, movimientos }) {
+export async function registrarImportacion({ archivo, hash, cuentaId, movimientos: todos }) {
   const { query } = await import('./db.js');
   const path = (await import('path')).default;
+
+  // Dos cartolas que se traslapan (por ejemplo el mismo mes en dos envíos) no duplican cargos: los que ya están
+  // en la cuenta (misma fecha, monto, tipo y descripción) se descartan
+  let movimientos = todos;
+  let duplicados = 0;
+  if (todos.length > 0) {
+    const fechas = todos.map(m => String(m.fecha).slice(0, 10)).sort();
+    const [existentes] = await query(
+      'SELECT fecha, descripcion, monto, tipo FROM movimientos WHERE cuenta_id = ? AND fecha >= ? AND fecha <= ?',
+      [cuentaId, fechas[0], fechas[fechas.length - 1]]
+    );
+    ({ nuevos: movimientos, duplicados } = separarDuplicados(todos, existentes));
+  }
 
   // Aplicar autocategorización a los movimientos
   const [reglas] = await query('SELECT * FROM reglas_categoria WHERE activa = true');
@@ -303,7 +348,7 @@ export async function registrarImportacion({ archivo, hash, cuentaId, movimiento
     [path.basename(archivo), hash, cuentaId, registrados.length, archivo]
   );
 
-  return { importados: registrados.length, registrados, archivoId: registro.insertId };
+  return { importados: registrados.length, registrados, archivoId: registro.insertId, duplicados };
 }
 
 // ---------------------------------------------------------------------------
@@ -450,6 +495,13 @@ export async function analizarPDF(buffer, { interpretarConIA = null } = {}) {
   }
 
   return { movimientos: [], origen: null, legible: true, banco, ultimos4 };
+}
+
+/** Lee el texto de una cartola ya extraído (por ejemplo el OCR de una foto): solo reglas, sin IA. */
+export function analizarTexto(texto) {
+  const banco = buscarBanco(normalizar(texto))?.nombre ?? null;
+  const reglas = movimientosDesdeTextoPDF(texto);
+  return { movimientos: reglas.movimientos, banco, ultimos4: buscarUltimos4(texto), sinTipo: reglas.sinTipo };
 }
 
 // ---------------------------------------------------------------------------

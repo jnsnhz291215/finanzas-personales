@@ -110,7 +110,7 @@ const SELECT_MOVIMIENTO = `
 export async function listarCuentasConBanco() {
   const query = await consulta();
   const [filas] = await query(
-    'SELECT id, nombre, banco, tipo, ultimos4, ultimos4_cuenta FROM cuentas WHERE activa = 1 ORDER BY nombre'
+    'SELECT id, nombre, banco, tipo, ultimos4, ultimos4_cuenta, titular FROM cuentas WHERE activa = 1 ORDER BY nombre'
   );
   return filas;
 }

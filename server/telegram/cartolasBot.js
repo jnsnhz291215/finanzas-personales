@@ -15,7 +15,7 @@
  * contenido de cartolas.
  */
 
-import { analizarCartola, analizarPDF, calcularHashBuffer, cartolaYaImportada, registrarImportacion } from '../cartolas.js';
+import { analizarCartola, analizarPDF, analizarTexto, calcularHashBuffer, cartolaYaImportada, registrarImportacion } from '../cartolas.js';
 import { listarCuentasConBanco, guardarDigitosCuenta } from '../gestion.js';
 import { listarCompras } from '../cuotas.js';
 import { calzarConCartola, normalizar } from './cuotas.js';
@@ -23,6 +23,8 @@ import { guardarTemporal, confirmarTemporal, borrarTemporal } from '../storage.j
 import { interpretarMovimientosCartola } from './gemini.js';
 import { formatearFechaCL } from './fechas.js';
 import { buscarCuentaPorTexto } from './intenciones.js';
+import { leerContextoCartola, contextoUtil, cruzarContextoConCuentas, VENTANA_CONTEXTO_MS } from './contextoCartola.js';
+import { TIPO_DB, nombreAutomatico } from './cuentas.js';
 
 // Tiempo que se recuerda una importación pendiente en memoria (el archivo en tmp/ dura 24 horas)
 const ESPERA_MS = 2 * 60 * 60 * 1000;
@@ -87,6 +89,28 @@ export function candidatoDigitos(ultimos4, cuenta, cuentas) {
   return null;
 }
 
+/**
+ * La cartola trae otro número de cuenta distinto del que la tarjeta tiene vinculado (y que no es de otra cuenta):
+ * { digitos, tipo: 'cuenta', reemplaza } o null. Solo se ofrece cambiarlo, nunca se cambia solo.
+ */
+export function candidatoVinculo(ultimos4, cuenta, cuentas) {
+  if (!cuenta?.ultimos4_cuenta) return null;
+  for (const u of ultimos4 ?? []) {
+    if (u.tipo !== 'cuenta' || u.digitos === cuenta.ultimos4_cuenta) continue;
+    if (cuentas.some(c => c.id !== cuenta.id && (c.ultimos4 === u.digitos || c.ultimos4_cuenta === u.digitos))) continue;
+    return { digitos: u.digitos, tipo: 'cuenta', reemplaza: cuenta.ultimos4_cuenta };
+  }
+  return null;
+}
+
+/** Texto corto de lo que dijo el mensaje: "crédito ****8263 de Valeska" */
+export function describirContexto(c) {
+  const tipos = { credito: 'crédito', debito: 'débito', cuenta_corriente: 'cuenta corriente', cuenta_vista: 'cuenta vista', ahorro: 'cuenta de ahorro' };
+  return [tipos[c.tipo], c.digitos ? `****${c.digitos}` : null, c.titular ? `de ${c.titular}` : null].filter(Boolean).join(' ');
+}
+
+const EXT_IMAGEN = ['.jpg', '.jpeg', '.png'];
+
 export function crearCartolas(ctx) {
   const { enviar, editar, responderCallback, esc, formatearMonto, ofrecerPagoPorCartola, guardarNoLeido } = ctx;
   // Guarda qué mensajes de Telegram crearon cada importación (para eliminarla respondiéndoles)
@@ -102,10 +126,18 @@ export function crearCartolas(ctx) {
   const lotes = new Map();
   // Dígitos que se ofrecen guardar en una cuenta: clave -> { cuentaId, nombre, digitos, tipo }
   const digitosPendientes = new Map();
+  // Texto que llegó antes de las cartolas ("son de la tarjeta 8263"): chatId -> { contexto, hasta }
+  const previos = new Map();
+  // Álbumes de fotos que se declararon cartola por el caption de una de ellas: "chatId_grupo"
+  const albumesCartola = new Set();
+  // Preguntas de cruce de cuenta: clave -> { chatId, item, cuentas, tipo, espera, ... }
+  const preguntasContexto = new Map();
   let contador = 0;
 
   const nuevaClave = (chatId) => `${chatId}_${Date.now()}_${contador++}`;
   const dinero = (n) => `$${formatearMonto(n)}`;
+  /** " (3 ya estaban registrados de otra cartola, no los dupliqué)" o vacío */
+  const textoDuplicados = (n) => (n > 0 ? ` (${n} ya ${n === 1 ? 'estaba registrado' : 'estaban registrados'} de otra cartola, no ${n === 1 ? 'lo' : 'los'} dupliqué)` : '');
 
   // -------------------------------------------------------------------------
   // Texto
@@ -144,13 +176,15 @@ export function crearCartolas(ctx) {
     return filas.join('\n') + (resto > 0 ? `\n... y ${resto} más` : '');
   }
 
-  const etiquetaFuente = (item) => (item.esPDF ? 'PDF' : item.ext === '.csv' ? 'CSV' : 'Excel');
+  const etiquetaFuente = (item) => (EXT_IMAGEN.includes(item.ext) ? 'Foto' : item.esPDF ? 'PDF' : item.ext === '.csv' ? 'CSV' : 'Excel');
 
   /** "Falabella débito •6958" (el nombre de la cuenta y la terminación que coincidió) */
-  const cuentaConDigitos = (deteccion) => `${esc(deteccion.cuenta.nombre)} •${esc(deteccion.digitos)}`;
+  const cuentaConDigitos = (deteccion) => `${esc(deteccion.cuenta.nombre)}${deteccion.digitos ? ` •${esc(deteccion.digitos)}` : ''}`;
 
   /** Línea de detección de cuenta para el resumen de un archivo (vacía si no hay nada que decir) */
   function lineaDeteccion(item) {
+    if (item.notaContexto) return esc(item.notaContexto);
+    if (item.deteccion?.por === 'texto') return `Cuenta según tu mensaje: ${cuentaConDigitos(item.deteccion)}`;
     if (item.deteccion?.por === 'digitos') return `Cuenta detectada: ${cuentaConDigitos(item.deteccion)}`;
     if (item.deteccion?.por === 'banco') return `Cuenta sugerida por el banco: ${esc(item.deteccion.cuenta.nombre)}`;
     if (item.ultimos4?.length > 0) return `Terminación detectada: •${esc(item.ultimos4[0].digitos)} (no coincide con ninguna de tus cuentas)`;
@@ -163,7 +197,7 @@ export function crearCartolas(ctx) {
     return (
       `${numero}. ${esc(item.formato)} (${etiquetaFuente(item)}) - ${formatearFechaCL(t.desde)} al ${formatearFechaCL(t.hasta)} - ` +
       `${item.movimientos.length} mov. - cargos ${dinero(t.sumaCargos)}, abonos ${dinero(t.sumaAbonos)}` +
-      (item.deteccion?.por === 'digitos'
+      (item.deteccion?.por === 'digitos' || item.deteccion?.por === 'texto'
         ? ` - cuenta detectada: ${cuentaConDigitos(item.deteccion)}`
         : item.cuentaSugerida ? ` - cuenta sugerida: ${esc(item.cuentaSugerida.nombre)}` : '')
     );
@@ -190,6 +224,16 @@ export function crearCartolas(ctx) {
   /** Lee un archivo. Devuelve { estado: 'ok'|'escaneado'|'ilegible', movimientos, origen, banco, formato } */
   async function analizarArchivo({ buffer, ext }) {
     try {
+      if (EXT_IMAGEN.includes(ext)) {
+        // Foto de una cartola: OCR local y las mismas reglas del PDF (sin IA). Las tablas salen peor que en un PDF.
+        const { leerTextoDeImagen } = await import('../ocr.js');
+        const r = analizarTexto(await leerTextoDeImagen(buffer));
+        if (r.movimientos.length === 0) return { estado: 'ilegible' };
+        return {
+          estado: 'ok', movimientos: r.movimientos, origen: 'ocr', banco: r.banco,
+          ultimos4: r.ultimos4 ?? [], formato: r.banco ?? 'Foto de cartola'
+        };
+      }
       if (ext === '.pdf') {
         const r = await analizarPDF(buffer, { interpretarConIA: interpretarMovimientosCartola });
         if (r.escaneado) return { estado: 'escaneado' };
@@ -221,18 +265,30 @@ export function crearCartolas(ctx) {
   // Cola por chat
   // -------------------------------------------------------------------------
 
+  /** Texto sobre las cartolas que llegó hace poco (antes de los archivos), si sigue vigente */
+  function contextoPrevio(chatId) {
+    const previo = previos.get(chatId);
+    if (!previo) return null;
+    if (previo.hasta < Date.now()) {
+      previos.delete(chatId);
+      return null;
+    }
+    return previo.contexto;
+  }
+
   /**
    * Recibe un archivo ya descargado. Lo agrupa con los que lleguen seguidos y, cuando pasa la
-   * ventana sin más archivos, analiza el lote completo.
+   * ventana sin más archivos, analiza el lote completo. `caption` es el texto con que llegó ("son de la tarjeta 8263").
    */
-  async function recibirArchivo(chatId, { nombre, buffer, ext, mediaGroupId = null, mensajeId = null }) {
+  async function recibirArchivo(chatId, { nombre, buffer, ext, mediaGroupId = null, mensajeId = null, caption = null }) {
     let cola = colas.get(chatId);
     const primero = !cola;
     if (!cola) {
-      cola = { items: [], timer: null };
+      cola = { items: [], timer: null, contextoTexto: null };
       colas.set(chatId, cola);
     }
-    cola.items.push({ nombre, buffer, ext, mediaGroupId, mensajeId });
+    const contexto = caption ? leerContextoCartola(caption) : null;
+    cola.items.push({ nombre, buffer, ext, mediaGroupId, mensajeId, contexto: contextoUtil(contexto) ? contexto : null });
     // Un comprobante que llegue junto con la cartola espera a que se analice (ver loteTerceros.js)
     ctx.terceros?.avisarArchivo(chatId);
 
@@ -245,10 +301,40 @@ export function crearCartolas(ctx) {
     }
   }
 
+  /**
+   * ¿Esta foto es una cartola? Sí si su caption lo dice ("cartola de la 8263", "son de la tarjeta 8263"), si es del álbum cuyo
+   * caption lo dijo o si llega sin texto justo después de un mensaje que lo dice.
+   */
+  function esFotoDeCartola(chatId, { caption = null, mediaGroupId = null } = {}) {
+    const grupo = mediaGroupId ? `${chatId}_${mediaGroupId}` : null;
+    if (caption && leerContextoCartola(caption).esCartola) {
+      if (grupo) albumesCartola.add(grupo);
+      return true;
+    }
+    if (grupo && albumesCartola.has(grupo)) return true;
+    if (!caption && contextoPrevio(chatId)?.esCartola) return true;
+    return false;
+  }
+
+  /** Recibe la foto de una cartola (ya descargada): se lee con OCR como una cartola más */
+  async function recibirFoto(chatId, { buffer, mediaGroupId = null, mensajeId = null, caption = null }) {
+    return recibirArchivo(chatId, { nombre: `foto_cartola_${Date.now()}.jpg`, buffer, ext: '.jpg', mediaGroupId, mensajeId, caption });
+  }
+
   function cerrarCola(chatId) {
     const cola = colas.get(chatId);
     if (!cola) return;
     colas.delete(chatId);
+
+    // El texto de un envío vale para todas sus cartolas: el de cada archivo, si no el de su álbum o el de alguno de
+    // los archivos del envío, el que se escribió después y, por último, el que llegó justo antes
+    const previo = contextoPrevio(chatId);
+    const delEnvio = cola.items.find(i => i.contexto)?.contexto ?? null;
+    for (const item of cola.items) {
+      const delAlbum = item.mediaGroupId ? cola.items.find(i => i.mediaGroupId === item.mediaGroupId && i.contexto)?.contexto : null;
+      item.contexto = item.contexto ?? delAlbum ?? delEnvio ?? cola.contextoTexto ?? previo ?? null;
+    }
+    if (previo) previos.delete(chatId);
 
     // Un lote espera al anterior del mismo chat: nunca se pisan
     const previa = tareas.get(chatId) ?? Promise.resolve();
@@ -289,10 +375,13 @@ export function crearCartolas(ctx) {
       if (analisis.estado !== 'ok') {
         // No se pudo leer de ninguna forma: queda guardada en cartolas/{YYYY-MM}/
         await guardarNoLeido(archivo.nombre, archivo.buffer);
+        const esFoto = EXT_IMAGEN.includes(archivo.ext);
         avisos.push(
           analisis.estado === 'escaneado'
             ? `${prefijo}este PDF parece escaneado y no tiene texto, mándame la cartola descargada desde el banco. Dejé el archivo guardado.`
-            : `${prefijo}no pude leer los movimientos${archivo.ext === '.pdf' ? ' de este PDF (no reconozco su formato)' : ''}. Dejé el archivo guardado.`
+            : esFoto
+              ? `${prefijo}no pude leer los movimientos de esta foto (las tablas se leen mal en una imagen). Mándame el PDF de la cartola. Dejé la foto guardada.`
+              : `${prefijo}no pude leer los movimientos${archivo.ext === '.pdf' ? ' de este PDF (no reconozco su formato)' : ''}. Dejé el archivo guardado.`
         );
         continue;
       }
@@ -302,7 +391,7 @@ export function crearCartolas(ctx) {
         tmp: tmp.ruta,
         hash,
         ext: archivo.ext,
-        esPDF: archivo.ext === '.pdf',
+        esPDF: archivo.ext === '.pdf' || EXT_IMAGEN.includes(archivo.ext),
         origen: analisis.origen,
         banco: analisis.banco,
         ultimos4: analisis.ultimos4 ?? [],
@@ -310,7 +399,9 @@ export function crearCartolas(ctx) {
         movimientos: analisis.movimientos,
         estado: 'pendiente',
         importados: 0,
+        duplicados: 0,
         cuentaNombre: null,
+        contexto: archivo.contexto ?? null,
         mensajeUsuarioId: archivo.mensajeId ?? null,
         archivoId: null
       });
@@ -322,7 +413,7 @@ export function crearCartolas(ctx) {
     }
 
     const cuentas = await listarCuentasConBanco();
-    if (cuentas.length === 0) {
+    if (cuentas.length === 0 && !validos.some(i => contextoUtil(i.contexto))) {
       for (const item of validos) await borrarTemporal(item.tmp);
       await enviar(chatId, 'No tienes cuentas activas. Crea una con /savecard y vuelve a enviar la cartola.');
       return;
@@ -330,6 +421,34 @@ export function crearCartolas(ctx) {
     for (const item of validos) {
       item.deteccion = detectarCuenta({ banco: item.banco, ultimos4: item.ultimos4 }, cuentas);
       item.cuentaSugerida = item.deteccion?.cuenta ?? null;
+    }
+
+    // El texto que acompañó a las cartolas se cruza con las cuentas y con lo que trae cada archivo. Si algo no calza
+    // se pregunta con botones y el envío sigue cuando todo está respondido.
+    const dudas = validos.filter(item => evaluarContexto(item, cuentas));
+    const seguir = () => continuarLote(chatId, validos, avisos, cuentas);
+    if (dudas.length === 0) {
+      await seguir();
+      return;
+    }
+    const espera = { restantes: dudas.length, seguir, timer: null };
+    espera.timer = setTimeout(() => {
+      if (espera.restantes > 0) {
+        espera.restantes = 0;
+        seguir().catch(() => {});
+      }
+    }, ESPERA_MS / 12);
+    espera.timer.unref?.();
+    for (const item of dudas) await preguntarContexto(chatId, item, cuentas, espera);
+  }
+
+  /** Lo que sigue una vez resuelta la cuenta de cada cartola: las de otra persona, y el resto al flujo de siempre */
+  async function continuarLote(chatId, validos, avisos, cuentas) {
+    // Cuenta con un vínculo distinto al de la cartola: se ofrece actualizarlo (nunca se cambia sin confirmar)
+    for (const item of validos) {
+      const cuenta = item.cuentaSugerida;
+      const candidato = cuenta ? candidatoVinculo(item.ultimos4, cuenta, cuentas) : null;
+      if (candidato) await preguntarGuardarDigitos(chatId, cuenta, candidato);
     }
 
     // Cartolas de la tarjeta de otra persona (por ejemplo la tía Valeska): flujo propio, sin importarlas
@@ -357,6 +476,208 @@ export function crearCartolas(ctx) {
   }
 
   // -------------------------------------------------------------------------
+  // Texto que acompaña a las cartolas
+  // -------------------------------------------------------------------------
+
+  /**
+   * Cruza el texto con las cuentas. Si todo calza fija la cuenta del item (y la nota de una línea) y devuelve null; si hay
+   * algo que preguntar devuelve la duda: { tipo: 'conflicto' | 'sin_cuenta', cruce }.
+   */
+  function evaluarContexto(item, cuentas) {
+    if (!contextoUtil(item.contexto)) return null;
+    const delArchivo = (item.ultimos4 ?? []).map(u => u.digitos);
+    const cruce = cruzarContextoConCuentas(item.contexto, cuentas, delArchivo);
+
+    if (cruce.estado === 'coincide' || cruce.estado === 'segun_texto') {
+      const cuenta = cruce.cuenta;
+      const digitos = delArchivo.find(d => d === cuenta.ultimos4 || d === cuenta.ultimos4_cuenta) ?? item.contexto.digitos ?? cuenta.ultimos4 ?? cuenta.ultimos4_cuenta ?? null;
+      item.deteccion = { cuenta, por: cruce.estado === 'coincide' ? 'digitos' : 'texto', digitos };
+      item.cuentaSugerida = cuenta;
+      item.notaContexto = cruce.estado === 'coincide'
+        ? `Cartola de ${cuenta.nombre}${digitos ? ` ****${digitos}` : ''}, los dígitos coinciden`
+        : `Cartola de ${cuenta.nombre}${digitos ? ` ****${digitos}` : ''}, según tu mensaje`;
+      return null;
+    }
+    if (cruce.estado === 'no_coincide') return (item.duda = { tipo: 'conflicto', cruce });
+    if (cruce.estado === 'sin_cuenta') return (item.duda = { tipo: 'sin_cuenta', cruce });
+    return null;
+  }
+
+  async function preguntarContexto(chatId, item, cuentas, espera) {
+    const key = nuevaClave(chatId);
+    const { tipo, cruce } = item.duda;
+    const c = item.contexto;
+    const delArchivo = item.ultimos4?.[0]?.digitos ?? null;
+    preguntasContexto.set(key, { chatId, item, cuentas, tipo, cruce, espera });
+    setTimeout(() => preguntasContexto.delete(key), ESPERA_MS).unref?.();
+
+    const botones = [];
+    let texto;
+    if (tipo === 'conflicto') {
+      texto =
+        `Dices que la cartola es de <b>${esc(cruce.cuenta.nombre)}</b> (****${esc(c.digitos ?? cruce.cuenta.ultimos4 ?? '')}), ` +
+        `pero el archivo trae ****${esc(delArchivo ?? '')}${cruce.otraCuenta ? ` (${esc(cruce.otraCuenta.nombre)})` : ''}. ¿Cuál uso?`;
+      botones.push([{ text: `Usar ${cruce.cuenta.nombre}`.slice(0, 50), callback_data: `cxt_${key}` }]);
+      if (cruce.otraCuenta) botones.push([{ text: `Usar ${cruce.otraCuenta.nombre}`.slice(0, 50), callback_data: `cxc_${key}` }]);
+      botones.push([{ text: 'Elegir otra cuenta', callback_data: `cxo_${key}` }]);
+    } else {
+      const detectada = item.deteccion?.cuenta ?? null;
+      texto =
+        `No tengo ninguna cuenta con ****${esc(c.digitos)}. ¿Creo ${esc(describirContexto(c))}?` +
+        (detectada ? `\nLa cartola calza con ${esc(detectada.nombre)}.` : '');
+      botones.push([{ text: 'Crear la cuenta', callback_data: `cxn_${key}` }]);
+      if (detectada) {
+        botones.push([{ text: `Usar ${detectada.nombre}`.slice(0, 50), callback_data: `cxu_${key}` }]);
+        // El texto habló de una cuenta (corriente, vista...) y la tarjeta detectada tiene vinculada otra
+        if (String(c.tipo ?? '').startsWith('cuenta') && detectada.ultimos4_cuenta && detectada.ultimos4_cuenta !== c.digitos) {
+          botones.push([{ text: `Actualizar cuenta de ${detectada.nombre} a ****${c.digitos}`.slice(0, 60), callback_data: `cxv_${key}` }]);
+        }
+      }
+      botones.push([{ text: 'Elegir otra cuenta', callback_data: `cxo_${key}` }]);
+    }
+    await enviar(chatId, texto, { reply_markup: { inline_keyboard: botones } });
+  }
+
+  /** Crea la cuenta que mencionó el texto (con su titular) y la deja disponible para el envío */
+  async function crearCuentaDeContexto(item, cuentas) {
+    const c = item.contexto;
+    const tipo = c.tipo ?? 'credito';
+    const esTarjeta = tipo === 'credito' || tipo === 'debito';
+    const datos = {
+      tipo,
+      banco: item.banco ?? null,
+      titular: c.titular ?? null,
+      ultimos4: esTarjeta ? c.digitos : null,
+      ultimos4Cuenta: esTarjeta ? null : c.digitos
+    };
+    datos.nombre = nombreAutomatico({ tipo, titular: datos.titular, ultimos4: datos.ultimos4, ultimos4Cuenta: datos.ultimos4Cuenta });
+    const id = await ctx.crearCuenta(datos);
+    const cuenta = {
+      id: Number(id), nombre: datos.nombre, banco: datos.banco, tipo: TIPO_DB[tipo], titular: datos.titular,
+      ultimos4: datos.ultimos4, ultimos4_cuenta: datos.ultimos4Cuenta
+    };
+    cuentas.push(cuenta);
+    return cuenta;
+  }
+
+  /** Una cuenta fija la detección del item: "digitos" (vino del archivo) o "texto" (la dijo el mensaje) */
+  function fijarCuentaDeContexto(item, cuenta, por) {
+    const digitos = cuenta.ultimos4 ?? cuenta.ultimos4_cuenta ?? null;
+    item.deteccion = { cuenta, por, digitos };
+    item.cuentaSugerida = cuenta;
+    item.notaContexto = `Cartola de ${cuenta.nombre}${digitos ? ` ****${digitos}` : ''}, según tu mensaje`;
+  }
+
+  async function resolverContexto(cb, chatId, accion, key) {
+    const messageId = cb.message.message_id;
+    const pregunta = preguntasContexto.get(key);
+    if (!pregunta) {
+      await responderCallback(cb.id, { text: 'Solicitud expirada' });
+      return;
+    }
+    preguntasContexto.delete(key);
+    const { item, cuentas, cruce, espera } = pregunta;
+    let cierre;
+
+    try {
+      if (accion === 't') {
+        fijarCuentaDeContexto(item, cruce.cuenta, 'texto');
+        cierre = `Uso ${esc(cruce.cuenta.nombre)}.`;
+      } else if (accion === 'c') {
+        item.deteccion = { cuenta: cruce.otraCuenta, por: 'digitos', digitos: item.ultimos4?.[0]?.digitos ?? null };
+        item.cuentaSugerida = cruce.otraCuenta;
+        item.notaContexto = null;
+        cierre = `Uso ${esc(cruce.otraCuenta.nombre)}.`;
+      } else if (accion === 'u') {
+        item.notaContexto = null;
+        cierre = `Uso ${esc(item.cuentaSugerida?.nombre ?? 'la cuenta detectada')}.`;
+      } else if (accion === 'n') {
+        const cuenta = await crearCuentaDeContexto(item, cuentas);
+        fijarCuentaDeContexto(item, cuenta, 'texto');
+        cierre = `Creé la cuenta <b>${esc(cuenta.nombre)}</b>${cuenta.titular ? ` (titular ${esc(cuenta.titular)})` : ''}.`;
+      } else if (accion === 'v') {
+        const cuenta = item.deteccion?.cuenta;
+        const guardado = cuenta ? await guardarDigitosCuenta(cuenta.id, 'cuenta', item.contexto.digitos) : false;
+        if (guardado) cuenta.ultimos4_cuenta = item.contexto.digitos;
+        cierre = guardado ? `Listo: la cuenta de ${esc(cuenta.nombre)} ahora termina en ****${esc(item.contexto.digitos)}.` : 'No pude actualizar la cuenta vinculada.';
+      } else {
+        // Elegir otra: se pregunta la cuenta como siempre, sin sugerencia
+        item.deteccion = null;
+        item.cuentaSugerida = null;
+        item.notaContexto = null;
+        cierre = 'Entendido, te pregunto la cuenta al importar.';
+      }
+    } catch (error) {
+      console.error('Error al resolver el texto de una cartola:', error.code ?? error.name);
+      item.deteccion = null;
+      item.cuentaSugerida = null;
+      cierre = 'No pude hacerlo; te pregunto la cuenta al importar.';
+    }
+
+    item.duda = null;
+    await editar(cierre, { chat_id: pregunta.chatId, message_id: messageId });
+    await responderCallback(cb.id, {});
+    espera.restantes--;
+    if (espera.restantes === 0) {
+      clearTimeout(espera.timer);
+      await espera.seguir();
+    }
+  }
+
+  const descripcionVacia = (c) => !contextoUtil(c);
+
+  /**
+   * Texto suelto sobre las cartolas ("son de la tarjeta 8263", "cartola de la 8263", "es de la crédito de Valeska").
+   * Si hay archivos esperando o ya mostrados (menos de 2 minutos) se aplica a ellos; si no, se recuerda para las que
+   * lleguen en los próximos 2 minutos. Devuelve true si el mensaje era de eso.
+   */
+  async function manejarTexto(chatId, texto) {
+    const contexto = leerContextoCartola(texto);
+    if (!contexto.esCartola || descripcionVacia(contexto)) return false;
+
+    // 1) Archivos que todavía se están agrupando
+    const cola = colas.get(chatId);
+    if (cola) {
+      cola.contextoTexto = contexto;
+      await enviar(chatId, `Anotado: ${esc(describirContexto(contexto))}. Lo aplico a las cartolas de este envío.`);
+      return true;
+    }
+
+    // 2) Cartolas ya mostradas que esperan una respuesta
+    const limite = Date.now() - VENTANA_CONTEXTO_MS;
+    const unos = [...pendientes.entries()].filter(([, p]) => p.chatId === chatId && p.creadoEn >= limite && !p.contexto);
+    const lote = [...lotes.entries()].find(([, l]) => l.chatId === chatId && l.creadoEn >= limite && !l.modo);
+    if (unos.length > 0 || lote) {
+      const cuentas = await listarCuentasConBanco();
+      const items = [...unos.map(([, p]) => p), ...(lote ? lote[1].items.filter(i => i.estado === 'pendiente') : [])];
+      for (const item of items) item.contexto = contexto;
+      const dudas = items.filter(item => evaluarContexto(item, cuentas));
+
+      const seguir = async () => {
+        // Las cartolas sueltas se vuelven a mostrar con la cuenta ya resuelta; las de un lote la leen al preguntar
+        for (const [key, p] of unos) {
+          pendientes.delete(key);
+          await ofrecerUno(chatId, p, cuentas);
+        }
+      };
+      if (dudas.length === 0) {
+        const hay = items.some(i => i.cuentaSugerida);
+        await enviar(chatId, hay ? esc(items.find(i => i.notaContexto)?.notaContexto ?? 'Anotado.') : 'Anotado, pero con eso no pude identificar la cuenta. Te la pregunto al importar.');
+        await seguir();
+        return true;
+      }
+      const espera = { restantes: dudas.length, seguir, timer: null };
+      for (const item of dudas) await preguntarContexto(chatId, item, cuentas, espera);
+      return true;
+    }
+
+    // 3) Todavía no llegaron: vale para las próximas
+    previos.set(chatId, { contexto, hasta: Date.now() + VENTANA_CONTEXTO_MS });
+    await enviar(chatId, `Anotado: ${esc(describirContexto(contexto))}. Mándame la cartola (foto o PDF) en los próximos 2 minutos y la tomo como esa.`);
+    return true;
+  }
+
+  // -------------------------------------------------------------------------
   // Un solo archivo (flujo de siempre)
   // -------------------------------------------------------------------------
 
@@ -376,7 +697,7 @@ export function crearCartolas(ctx) {
 
   async function ofrecerUno(chatId, item, cuentas) {
     const key = nuevaClave(chatId);
-    pendientes.set(key, { ...item, cuentas });
+    pendientes.set(key, { ...item, cuentas, chatId, creadoEn: Date.now() });
     setTimeout(async () => {
       if (pendientes.delete(key)) await borrarTemporal(item.tmp);
     }, ESPERA_MS);
@@ -393,8 +714,8 @@ export function crearCartolas(ctx) {
 
     // PDF: lectura menos confiable, se muestra una vista previa y se pide confirmar antes de elegir cuenta
     await enviar(chatId,
-      '<b>Cartola en PDF leída</b>\n\n' +
-      `Lectura automática ${item.origen === 'ia' ? 'con ayuda de IA' : 'por reglas'}: revisa que los datos sean correctos.\n\n` +
+      `<b>${EXT_IMAGEN.includes(item.ext) ? 'Cartola en foto leída' : 'Cartola en PDF leída'}</b>\n\n` +
+      `Lectura automática ${item.origen === 'ia' ? 'con ayuda de IA' : item.origen === 'ocr' ? 'con OCR de la foto (las tablas se leen peor que en un PDF)' : 'por reglas'}: revisa que los datos sean correctos.\n\n` +
       `${resumenTexto(item.movimientos)}${lineaDeteccion(item) ? `\n${lineaDeteccion(item)}` : ''}\n\n<b>Primeros movimientos:</b>\n${vistaPrevia(item.movimientos)}`,
       {
         reply_markup: {
@@ -413,7 +734,7 @@ export function crearCartolas(ctx) {
 
   async function ofrecerLote(chatId, items, avisos, cuentas) {
     const key = nuevaClave(chatId);
-    const lote = { chatId, items, cuentas, modo: null, ocupado: false, registrados: [], grupos: [], digitosPorPreguntar: [] };
+    const lote = { chatId, creadoEn: Date.now(), items, cuentas, modo: null, ocupado: false, registrados: [], grupos: [], digitosPorPreguntar: [] };
     lotes.set(key, lote);
     setTimeout(async () => {
       if (lotes.delete(key)) {
@@ -466,12 +787,13 @@ export function crearCartolas(ctx) {
   async function importarItem(lote, item, cuenta) {
     try {
       const ruta = await confirmarTemporal(item.tmp, 'cartolas', { prefijo: 'telegram_' });
-      const { importados, registrados, archivoId } = await registrarImportacion({
+      const { importados, registrados, archivoId, duplicados } = await registrarImportacion({
         archivo: ruta,
         hash: item.hash,
         cuentaId: cuenta.id,
         movimientos: item.movimientos
       });
+      item.duplicados = duplicados ?? 0;
       item.archivoId = archivoId;
       item.estado = 'importado';
       item.importados = importados;
@@ -507,7 +829,7 @@ export function crearCartolas(ctx) {
     lotes.delete(key);
 
     const lineas = lote.items.map((item, i) => {
-      if (item.estado === 'importado') return `${i + 1}. ${item.importados} movimientos en ${esc(item.cuentaNombre)}`;
+      if (item.estado === 'importado') return `${i + 1}. ${item.importados} movimientos en ${esc(item.cuentaNombre)}${textoDuplicados(item.duplicados)}`;
       if (item.estado === 'error') return `${i + 1}. no se pudo importar (el archivo quedó pendiente)`;
       return `${i + 1}. omitido`;
     });
@@ -549,7 +871,9 @@ export function crearCartolas(ctx) {
     setTimeout(() => digitosPendientes.delete(key), ESPERA_MS);
 
     await enviar(chatId,
-      `¿Guardo •${esc(candidato.digitos)} en esta cuenta (${esc(cuenta.nombre)}) para reconocerla la próxima vez?`,
+      candidato.reemplaza
+        ? `${esc(cuenta.nombre)} tiene vinculada la cuenta •${esc(candidato.reemplaza)}, pero esta cartola trae •${esc(candidato.digitos)}. ¿Actualizo el vínculo a •${esc(candidato.digitos)}?`
+        : `¿Guardo •${esc(candidato.digitos)} en esta cuenta (${esc(cuenta.nombre)}) para reconocerla la próxima vez?`,
       {
         reply_markup: {
           inline_keyboard: [[
@@ -669,6 +993,13 @@ export function crearCartolas(ctx) {
     const messageId = cb.message.message_id;
     let m;
 
+    // ---- Cruce del texto con las cuentas ----
+
+    if ((m = data.match(/^cx([tcnuvo])_(.+)$/))) {
+      await resolverContexto(cb, chatId, m[1], m[2]);
+      return true;
+    }
+
     // ---- Un solo archivo ----
 
     // PDF: confirmada la vista previa, se elige la cuenta
@@ -703,13 +1034,13 @@ export function crearCartolas(ctx) {
 
       try {
         const ruta = await confirmarTemporal(pendiente.tmp, 'cartolas', { prefijo: 'telegram_' });
-        const { importados, registrados, archivoId } = await registrarImportacion({
+        const { importados, registrados, archivoId, duplicados } = await registrarImportacion({
           archivo: ruta,
           hash: pendiente.hash,
           cuentaId: cuenta.id,
           movimientos: pendiente.movimientos
         });
-        await editar(`Importé ${importados} movimientos en <b>${esc(cuenta.nombre)}</b>.`, { chat_id: chatId, message_id: messageId });
+        await editar(`Importé ${importados} movimientos en <b>${esc(cuenta.nombre)}</b>.${textoDuplicados(duplicados)}`, { chat_id: chatId, message_id: messageId });
         await vincular(chatId, [pendiente.mensajeUsuarioId, messageId], 'importacion', archivoId);
         await responderCallback(cb.id, { text: 'Importada' });
 
@@ -828,7 +1159,7 @@ export function crearCartolas(ctx) {
         }
         await editar(
           item.estado === 'importado'
-            ? `Importé ${item.importados} movimientos en <b>${esc(cuenta.nombre)}</b>.`
+            ? `Importé ${item.importados} movimientos en <b>${esc(cuenta.nombre)}</b>.${textoDuplicados(item.duplicados)}`
             : 'No pude importar este archivo.',
           { chat_id: chatId, message_id: messageId }
         );
@@ -879,5 +1210,5 @@ export function crearCartolas(ctx) {
     return false;
   }
 
-  return { recibirArchivo, manejarCallback, proponerDigitos };
+  return { recibirArchivo, recibirFoto, esFotoDeCartola, manejarTexto, manejarCallback, proponerDigitos };
 }

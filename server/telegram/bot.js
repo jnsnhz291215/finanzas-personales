@@ -336,6 +336,7 @@ export async function iniciarBot() {
       formatearMonto,
       vincularRegistro: vincularMensajes,
       ofrecerPagoPorCartola: (chatId, movimiento) => cuotas.ofrecerPagoPorCartola(chatId, movimiento),
+      crearCuenta: guardarCuenta,
       guardarNoLeido: (nombre, buffer) =>
         guardarBuffer('cartolas', nombre, buffer, { prefijo: `telegram_${Date.now()}_` })
     });
@@ -639,6 +640,11 @@ function configurarManejadores() {
       return;
     }
 
+    // Foto de una cartola (caption "cartola de la 8263", álbum o texto justo antes): se lee con OCR como una cartola más
+    if (msg.photo && cartolas?.esFotoDeCartola(chatId, { caption: msg.caption, mediaGroupId: msg.media_group_id }) && await manejarFotoCartola(msg)) {
+      return;
+    }
+
     // Foto o documento con un pago de cuota (caption) o foto sin caption con compras en cuotas
     // Captura del comprobante de una transferencia a quien le pagas una compra en cuotas (OCR local)
     if (msg.photo && terceros && await terceros.manejarFoto(msg)) {
@@ -659,6 +665,11 @@ function configurarManejadores() {
       // Foto con caption que es un gasto ("almuerzo 5500"): se registra y la foto queda de respaldo
       if (await manejarFotoConGasto(msg)) return;
       await manejarFoto(msg);
+      return;
+    }
+
+    // "son de la tarjeta 8263", "cartola de la 8263": texto sobre las cartolas que mandé o voy a mandar
+    if (msg.text && !msg.reply_to_message && cartolas && await cartolas.manejarTexto(chatId, msg.text)) {
       return;
     }
 
@@ -3191,12 +3202,28 @@ async function manejarArchivo(msg) {
     // CSV, Excel y PDF se agrupan en una cola por chat (álbum o archivos seguidos), se analizan y se
     // importan desde aquí. Los archivos esperan en tmp/ y pasan a cartolas/{YYYY-MM}/ al confirmar
     // (ver cartolasBot.js)
-    await cartolas.recibirArchivo(chatId, { nombre: nombreArchivo, buffer, ext, mediaGroupId: msg.media_group_id ?? null, mensajeId: msg.message_id });
+    await cartolas.recibirArchivo(chatId, {
+      nombre: nombreArchivo, buffer, ext, mediaGroupId: msg.media_group_id ?? null, mensajeId: msg.message_id, caption: msg.caption ?? null
+    });
   } catch (error) {
     // No imprimir el objeto completo: puede incluir la URL con el token
     logErrorTelegram('procesar archivo', error);
     await enviar(chatId, '❌ Error al procesar el archivo.');
   }
+}
+
+/** Foto de una cartola: se descarga y entra a la cola de cartolas (OCR local). Devuelve true si la tomó. */
+async function manejarFotoCartola(msg) {
+  const chatId = msg.chat.id;
+  try {
+    const foto = msg.photo[msg.photo.length - 1];
+    const buffer = await descargarBuffer(foto.file_id);
+    await cartolas.recibirFoto(chatId, { buffer, mediaGroupId: msg.media_group_id ?? null, mensajeId: msg.message_id, caption: msg.caption ?? null });
+  } catch (error) {
+    logErrorTelegram('procesar foto de cartola', error);
+    await enviar(chatId, '❌ Error al procesar la foto de la cartola.');
+  }
+  return true;
 }
 
 /**

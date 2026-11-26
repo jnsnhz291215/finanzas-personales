@@ -69,6 +69,8 @@ export function crearLoteTerceros(ctx) {
   const lotes = new Map();
   // Cartolas que esperan saber de quién son: clave -> { chatId, item, cuentas, candidato }
   const preguntas = new Map();
+  // Cartolas de tarjetas ajenas que esperan a que termine la anterior: chatId -> [{ item, detectada, compra }]
+  const colaCartolas = new Map();
   let contador = 0;
 
   function nuevoLote(chatId) {
@@ -112,6 +114,7 @@ export function crearLoteTerceros(ctx) {
     if (lote.comprobante?.archivo && ['esperando', 'confirmando'].includes(lote.pagoEstado)) {
       await eliminarRespaldo(lote.comprobante.archivo);
     }
+    await seguirConLaCola(chatId);
   }
 
   const obtenerLote = (chatId) => lotes.get(chatId) ?? null;
@@ -140,7 +143,25 @@ export function crearLoteTerceros(ctx) {
       // a) La cuenta detectada por los 4 dígitos o el banco tiene otro titular: es de esa persona
       if (detectada) {
         if (esTitularPropio(detectada.titular)) return false;
-        const compra = comprasDeTitular(compras, detectada.titular)[0] ?? null;
+        // Varias compras del mismo titular: se elige la que se reconoce mejor en esta cartola (un cargo por compra)
+        const delTitular = comprasDeTitular(compras, detectada.titular);
+        let compra = delTitular[0] ?? null;
+        let mejorPuntaje = -1;
+        for (const candidata of delTitular) {
+          const r = reconocerCuota(item.movimientos, candidata);
+          if (r && r.puntaje > mejorPuntaje) {
+            compra = candidata;
+            mejorPuntaje = r.puntaje;
+          }
+        }
+        // Una cartola de otro titular ya en curso: esta espera su turno (nunca se pisan)
+        if (obtenerLote(chatId)?.item) {
+          const espera = colaCartolas.get(chatId) ?? [];
+          espera.push({ item, detectada, compra });
+          colaCartolas.set(chatId, espera);
+          await enviar(chatId, `Dejé en espera otra cartola de ${esc(detectada.titular)}: sigo con ella cuando termines la actual.`);
+          return true;
+        }
         await iniciarSeleccion(chatId, item, detectada, compra, detectada.titular);
         return true;
       }
@@ -751,6 +772,15 @@ export function crearLoteTerceros(ctx) {
     clearTimeout(lote.timerVida);
     clearTimeout(lote.timerEspera);
     lotes.delete(chatId);
+    await seguirConLaCola(chatId);
+  }
+
+  /** Termina un lote: sigue con la próxima cartola ajena que estaba esperando */
+  async function seguirConLaCola(chatId) {
+    const espera = colaCartolas.get(chatId);
+    const siguiente = espera?.shift();
+    if (espera && espera.length === 0) colaCartolas.delete(chatId);
+    if (siguiente) await iniciarSeleccion(chatId, siguiente.item, siguiente.detectada, siguiente.compra, siguiente.detectada.titular);
   }
 
   // -------------------------------------------------------------------------

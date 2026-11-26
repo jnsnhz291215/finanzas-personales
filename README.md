@@ -627,6 +627,21 @@ El bot se usa casi sin comandos: escribe como hablas o manda un archivo. Un enru
   (formato o banco, fechas, movimientos y totales). Con *Importar todo* se usa la cuenta sugerida según el contenido (por ejemplo
   Falabella) y se pregunta solo por los que no tienen sugerencia; con *Revisar uno por uno* ves cada archivo (con vista previa si
   es PDF). Las preguntas de cuotas se hacen al final, todas juntas.
+- **Texto junto a las cartolas:** si mandas una o varias cartolas (PDF, CSV/Excel o fotos, sueltas o en álbum) con un texto como
+  `son de la tarjeta 8263`, `cartola de la 8263` o `es de la crédito de Valeska`, el bot lo usa con reglas locales (nunca Gemini).
+  Vale el caption del archivo o del álbum, y también un mensaje de texto justo antes o justo después (hasta 2 minutos); se aplica a
+  todas las cartolas de ese envío. De ahí saca los 4 dígitos, el tipo (crédito, débito, cuenta...) y el titular, y los cruza con
+  tus cuentas y con lo que trae cada archivo:
+  - si los dígitos coinciden, lo dice en una línea (`Cartola de Crédito Valeska ****8263, los dígitos coinciden`);
+  - si el texto y el archivo dicen dígitos distintos, avisa y pregunta con botones cuál usar;
+  - si no existe ninguna cuenta con esos dígitos, ofrece crearla (con el titular que mencionaste) o usar la detectada;
+  - si la tarjeta tiene una cuenta vinculada distinta de la que mencionan el texto o la cartola, ofrece actualizar el vínculo
+    (nunca lo cambia sin que toques el botón).
+  Si la cuenta tiene otro titular, la cartola sigue el flujo de tarjeta ajena (marcas cuáles cargos son tuyos); varias cartolas ajenas
+  en un mismo envío se atienden de a una. Las **fotos** de cartola se leen con OCR local: las tablas salen peor que en un PDF, así que
+  se muestra una vista previa antes de importar, y una foto sin caption solo se toma como cartola si es del mismo álbum o va justo
+  después de un texto que lo diga. Al importar, los movimientos que ya estaban en la cuenta (misma fecha, tipo, monto y descripción,
+  por ejemplo de una cartola que se traslapa con otra) se descartan y el bot indica cuántos fueron.
 - **Cuenta:** el gasto usa la cuenta que mencionas (por ejemplo "débito"); si no mencionas ninguna, la última cuenta con que
   registraste un gasto a mano, y si no hay, la cuenta activa más antigua. No se pregunta antes: el botón *Cambiar cuenta* de la
   confirmación permite corregirla.
