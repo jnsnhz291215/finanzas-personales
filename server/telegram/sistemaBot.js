@@ -164,12 +164,14 @@ export function titulosParaIA(titulos) {
 }
 
 /** Mensaje de "volví" según el hash esperado guardado antes de reiniciar */
-export function textoVuelta({ hashActual, hashEsperado, motivo }, esc = (t) => t) {
+export function textoVuelta({ hashActual, hashEsperado, motivo, sinCambios = false }, esc = (t) => t) {
   const corto = hashActual ? hashActual.slice(0, 7) : null;
   let texto = `Listo, volví a estar en línea.${corto ? `\nVersión: ${esc(corto)}` : ''}`;
   if (motivo === 'update' && hashEsperado) {
     if (hashActual && hashActual === hashEsperado) {
-      texto += '\nActualización confirmada: la versión es la esperada.';
+      texto += sinCambios
+        ? '\nSin cambios en el código: reinicio completado.'
+        : '\nActualización confirmada: la versión es la esperada.';
     } else {
       texto += `\nAlgo no calzó: esperaba la versión ${esc(hashEsperado.slice(0, 7))}` +
         `${corto ? ` y estoy en ${esc(corto)}` : ' y no pude leer la actual'}. Revisa el servidor.`;
@@ -233,14 +235,14 @@ export function crearSistema(ctx) {
    * el proceso (PM2 lo vuelve a levantar). `progreso` es el mensaje de avance; sin él, el mensaje de
    * confirmación pasa a decir "Reiniciando...".
    */
-  async function reiniciar(chatId, mensajeId, motivo, { esperado = null, anterior = null, progreso = null, conScript = false } = {}) {
+  async function reiniciar(chatId, mensajeId, motivo, { esperado = null, anterior = null, progreso = null, conScript = false, sinCambios = false } = {}) {
     if (progreso) await progreso.paso('Reiniciando');
     else await editar('Reiniciando...', { chat_id: chatId, message_id: mensajeId });
     try {
       await fs.mkdir(carpetaTmp(), { recursive: true });
       await fs.writeFile(
         archivoReinicio(),
-        JSON.stringify({ chatId, motivo, esperado, anterior, en: new Date().toISOString() })
+        JSON.stringify({ chatId, motivo, esperado, anterior, sinCambios, en: new Date().toISOString() })
       );
     } catch (error) {
       console.error(`[sistema] no se pudo escribir el aviso de reinicio: error_code=${error.code ?? 'desconocido'}`);
@@ -303,7 +305,8 @@ export function crearSistema(ctx) {
       await enviar(chatId, textoVuelta({
         hashActual: actual && esHashGit(actual) ? actual : null,
         hashEsperado: esperado,
-        motivo: datos?.motivo
+        motivo: datos?.motivo,
+        sinCambios: Boolean(datos?.sinCambios)
       }, esc));
     } catch {
       // el aviso es opcional
@@ -475,8 +478,11 @@ export function crearSistema(ctx) {
     if (!nuevo || !esHashGit(nuevo)) {
       return detener('Actualicé, pero no pude leer la versión nueva. No reinicié.');
     }
+    // Sin cambios en git, se reinicia igual (como bash update.sh a mano): sirve para levantar un bot caído
+    // o recargar el .env; no hay prueba del cambio ni resumen que mostrar
     if (nuevo === anterior) {
-      return detener(`Ya estaba al día (versión ${anterior.slice(0, 7)}). No reinicié.`, null, false);
+      await enviar(chatId, `Ya estaba al día (versión ${esc(anterior.slice(0, 7))}). Reinicio igual.`);
+      return { reiniciar: true, esperado: nuevo, anterior, progreso, conScript, sinCambios: true };
     }
 
     // 4. Prueba del cambio
@@ -519,7 +525,7 @@ export function crearSistema(ctx) {
 
     const texto = accion === 'reboot'
       ? '¿Reiniciar la app? Estará unos segundos sin responder.'
-      : '¿Actualizar la app? Verifico git, node, npm y el repositorio, hago git pull (o ejecuto update.sh si existe), instalo dependencias si cambiaron y reinicio solo si todo sale bien.';
+      : '¿Actualizar la app? Verifico git, node, npm y el repositorio, hago git pull (o ejecuto update.sh si existe), instalo dependencias si cambiaron y reinicio siempre (aunque no haya cambios) si todo sale bien.';
     await enviar(chatId, texto, {
       reply_markup: {
         inline_keyboard: [[
@@ -566,7 +572,7 @@ export function crearSistema(ctx) {
 
       const r = await actualizar(chatId, messageId);
       if (r.reiniciar) {
-        await reiniciar(chatId, messageId, 'update', { esperado: r.esperado, anterior: r.anterior, progreso: r.progreso, conScript: r.conScript });
+        await reiniciar(chatId, messageId, 'update', { esperado: r.esperado, anterior: r.anterior, progreso: r.progreso, conScript: r.conScript, sinCambios: Boolean(r.sinCambios) });
         return true;
       }
     } catch (error) {

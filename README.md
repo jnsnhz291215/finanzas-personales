@@ -685,7 +685,7 @@ Solo para los chats de `TELEGRAM_ALLOWED_CHAT_IDS` y solo con `NODE_ENV=producti
      (`git ls-remote --heads origin`, 20 s de tiempo máximo y `GIT_TERMINAL_PROMPT=0`) y la rama actual. Si algo falla lo explica en
      simple ("PM2 no encuentra npm: revisa el PATH o nvm", "no hay acceso al repositorio: falta la deploy key") y no sigue.
   2. Ejecuta `git pull --ff-only` en la raíz del repositorio; si falla o hay conflictos, no reinicia y manda las últimas líneas del
-     error (sin rutas del servidor ni nada de `.env`). Si no hubo cambios, avisa "Ya estaba al día" y no reinicia.
+     error (sin rutas del servidor ni nada de `.env`). Si no hubo cambios, avisa "Ya estaba al día. Reinicio igual" y reinicia de todos modos (sin prueba del cambio ni resumen).
   3. **Prueba del cambio:** rama, hash anterior y nuevo, fecha (hora de Chile) y autor del último commit y total de archivos
      cambiados (`git diff --stat`).
   4. Si cambió `package.json` o `package-lock.json`, ejecuta `npm ci --omit=dev` (si falla, no reinicia).
@@ -717,8 +717,9 @@ Solo para los chats de `TELEGRAM_ALLOWED_CHAT_IDS` y solo con `NODE_ENV=producti
     El bot lo llama en dos partes (`--sin-reinicio` al comienzo y `--solo-reiniciar` al final) para poder mandar antes la prueba del cambio y
     el resumen con IA. Como PM2 mata al bot y a sus procesos hijos al recargar, la segunda parte se lanza desacoplada (`nohup`, en segundo
     plano) y su salida completa queda en `tmp/update-reinicio.log` (dentro de storage): si el bot no vuelve, ahí está el motivo. Si PM2
-    no reinicia al bot en 40 segundos, el bot se cierra solo y PM2 lo levanta (autorestart). Sin cambios en git, `/update` sigue diciendo
-    "Ya estaba al día" y no reinicia; el reinicio incondicional es el de `bash update.sh` a mano.
+    no reinicia al bot en 40 segundos, el bot se cierra solo y PM2 lo levanta (autorestart). Sin cambios en git, `/update` dice
+    "Ya estaba al día. Reinicio igual" y también reinicia, igual que `bash update.sh` a mano (sirve para levantar un bot que quedó mal o recargar el
+    `.env`); al volver dice "Sin cambios en el código: reinicio completado".
   - **Motor de BD en el script:** `update.sh` toma `DB_ENGINE` del entorno; si no está, lee solo esa línea del `.env` de la raíz (sin cargar
     el archivo ni mostrar otras variables); si tampoco está, asume `sqlite` y avisa "DB_ENGINE no definido en .env, se asume sqlite".
     Imprime de dónde salió: `(entorno)`, `(.env)` o `(por defecto)`. Con `mariadb` revisa que existan `mysqldump` y `mysql`.

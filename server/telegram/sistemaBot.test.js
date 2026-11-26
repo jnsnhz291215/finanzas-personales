@@ -106,6 +106,9 @@ describe('mensajes de /update', () => {
     const b = 'b'.repeat(40);
     expect(textoVuelta({ hashActual: a, hashEsperado: a, motivo: 'update' })).toMatch(/Actualización confirmada/);
     expect(textoVuelta({ hashActual: a, hashEsperado: b, motivo: 'update' })).toMatch(/Algo no calzó/);
+    expect(textoVuelta({ hashActual: a, hashEsperado: a, motivo: 'update', sinCambios: true })).toMatch(/Sin cambios en el código/);
+    expect(textoVuelta({ hashActual: a, hashEsperado: a, motivo: 'update', sinCambios: true })).not.toMatch(/Actualización confirmada/);
+    expect(textoVuelta({ hashActual: a, hashEsperado: b, motivo: 'update', sinCambios: true })).toMatch(/Algo no calzó/);
     expect(textoVuelta({ hashActual: a, hashEsperado: null, motivo: 'reboot' })).not.toMatch(/confirmada|no calzó/);
     expect(textoVuelta({ hashActual: a, hashEsperado: null, motivo: 'reboot' })).toContain('Versión: aaaaaaa');
   });
