@@ -344,7 +344,7 @@ export function calzarConCartola(descripcion, compras) {
 const mayuscula = (t) => { const s = String(t ?? '').trim(); return s ? s[0].toUpperCase() + s.slice(1) : s; };
 
 /**
- * Cada compra con lo pagado y lo que se debe. Pagado = suma real de los pagos ligados a la compra si existe; si no, cuotas
+ * Cada compra con lo pagado y lo que se debe. Pagado = el mayor entre la suma real de los pagos ligados a la compra y cuotas
  * pagadas x valor de la cuota. Se debe = total de la compra menos lo pagado (nunca negativo). `pagosReales`: Map compraId -> suma.
  */
 export function detalleCompra(c, pagosReales = new Map()) {
@@ -353,7 +353,8 @@ export function detalleCompra(c, pagosReales = new Map()) {
   const cuota = Number(c.monto_cuota);
   const totalCompra = c.monto_total ? Number(c.monto_total) : cuota * total;
   const real = pagosReales.get(Number(c.id)) ?? 0;
-  const pagado = real > 0 ? real : pagadas * cuota;
+  // El mayor entre lo registrado y cuotas pagadas x cuota: pagos registrados a medias no lo dejan por debajo
+  const pagado = Math.max(real, pagadas * cuota);
   const terminada = Boolean(c.terminada) || pagadas >= total;
   return { compra: c, total, pagadas, cuota, pagado, debe: terminada ? 0 : Math.max(0, totalCompra - pagado), quedan: Math.max(0, total - pagadas), terminada };
 }

@@ -221,8 +221,9 @@ describe('lista completa de cuotas', () => {
     expect(lineas[lineas.length - 1]).toContain('Total general');
   });
 
-  test('usa la suma real de pagos si existe', () => {
-    expect(lineasListaCuotas(compras, new Map([[1, 550]]), d)[1]).toContain('pagado $550');
+  test('pagado es el mayor entre la suma real y cuotas pagadas x cuota', () => {
+    expect(lineasListaCuotas(compras, new Map([[1, 700]]), d)[1]).toContain('pagado $700');
+    expect(lineasListaCuotas(compras, new Map([[1, 550]]), d)[1]).toContain('pagado $600');
   });
 
   test('parte los mensajes sin cortar líneas', () => {
