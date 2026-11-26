@@ -125,6 +125,7 @@ export async function inicializarDB() {
     // Migración: ultimos4_cuenta (últimos 4 del número de cuenta, distinto de ultimos4 de la tarjeta)
     migrarUltimos4Cuenta(database);
     migrarRegistros(database);
+    migrarDestinatarios(database);
 
     // Migración: tabla datos_transferencia
     migrarDatosTransferencia(database);
@@ -340,6 +341,22 @@ function migrarRegistros(database) {
       deshecho INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_historial_cambios_reg ON historial_cambios(tipo, registro_id);
+  `);
+}
+
+/**
+ * Migración idempotente (SQLite): destinatarios_transferencia, la clasificación que Juan eligió para las
+ * transferencias a cada destinatario (gasto, préstamo o pago), para no volver a preguntar.
+ */
+function migrarDestinatarios(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS destinatarios_transferencia (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      clave TEXT NOT NULL UNIQUE,
+      nombre TEXT NOT NULL,
+      clasificacion TEXT NOT NULL,
+      actualizado_en DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 }
 

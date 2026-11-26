@@ -413,7 +413,7 @@ export function crearCartolas(ctx) {
 
   async function ofrecerLote(chatId, items, avisos, cuentas) {
     const key = nuevaClave(chatId);
-    const lote = { chatId, items, cuentas, modo: null, ocupado: false, registrados: [], digitosPorPreguntar: [] };
+    const lote = { chatId, items, cuentas, modo: null, ocupado: false, registrados: [], grupos: [], digitosPorPreguntar: [] };
     lotes.set(key, lote);
     setTimeout(async () => {
       if (lotes.delete(key)) {
@@ -477,6 +477,7 @@ export function crearCartolas(ctx) {
       item.importados = importados;
       item.cuentaNombre = cuenta.nombre;
       lote.registrados.push(...registrados);
+      lote.grupos.push({ cuentaId: cuenta.id, registrados });
     } catch (error) {
       console.error('Error al importar una cartola del lote:', error.code ?? error.name);
       item.estado = 'error';
@@ -522,7 +523,7 @@ export function crearCartolas(ctx) {
 
     // Dígitos nuevos de las cuentas elegidas a mano, y luego las preguntas de cuotas, todas juntas al final
     await vaciarPreguntasDigitos(chatId, lote);
-    await preguntarPorCuotas(chatId, lote.registrados);
+    await procesarImportados(chatId, lote.grupos);
   }
 
   async function cancelarLote(chatId, key, messageId) {
@@ -534,7 +535,7 @@ export function crearCartolas(ctx) {
     await editar('Importación cancelada. Descarté los archivos pendientes.', { chat_id: chatId, message_id: messageId });
     // Lo que ya se había importado sigue su camino: dígitos nuevos y preguntas de cuotas
     if (lote) await vaciarPreguntasDigitos(chatId, lote);
-    if (lote?.registrados.length > 0) await preguntarPorCuotas(chatId, lote.registrados);
+    if (lote?.registrados.length > 0) await procesarImportados(chatId, lote.grupos);
   }
 
   // -------------------------------------------------------------------------
@@ -625,6 +626,20 @@ export function crearCartolas(ctx) {
   // Cuotas (siempre con botones, al final)
   // -------------------------------------------------------------------------
 
+  /**
+   * Lo importado pasa primero por la clasificación de transferencias (internas, pagos de cuotas, destinatarios
+   * recordados o por preguntar) y lo que sobra, por la búsqueda de cuotas por alias de cartola.
+   */
+  async function procesarImportados(chatId, grupos) {
+    let restantes = [];
+    for (const { cuentaId, registrados } of grupos) {
+      restantes.push(...(ctx.transferencias
+        ? await ctx.transferencias.procesarMovimientos(chatId, registrados, { cuentaId })
+        : registrados));
+    }
+    await preguntarPorCuotas(chatId, restantes);
+  }
+
   async function preguntarPorCuotas(chatId, registrados) {
     const compras = await listarCompras();
     if (compras.every(c => !c.alias_cartola)) return;
@@ -702,7 +717,7 @@ export function crearCartolas(ctx) {
         const candidato = candidatoDigitos(pendiente.ultimos4, cuenta, pendiente.cuentas);
         if (candidato) await preguntarGuardarDigitos(chatId, cuenta, candidato);
 
-        await preguntarPorCuotas(chatId, registrados);
+        await procesarImportados(chatId, [{ cuentaId: cuenta.id, registrados }]);
       } catch (error) {
         console.error('Error al importar la cartola:', error.code ?? error.name);
         await editar('El archivo venció o no se pudo importar. Envíalo de nuevo.', { chat_id: chatId, message_id: messageId });

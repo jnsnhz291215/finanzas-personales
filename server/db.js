@@ -154,6 +154,22 @@ if (MOTOR_ELEGIDO === 'mariadb') {
   }
 
   /**
+   * Migración idempotente (MariaDB): destinatarios_transferencia, la clasificación que Juan eligió para las
+   * transferencias a cada destinatario (gasto, préstamo o pago), para no volver a preguntar.
+   */
+  async function migrarDestinatarios(connection) {
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS destinatarios_transferencia (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        clave VARCHAR(100) NOT NULL UNIQUE,
+        nombre VARCHAR(100) NOT NULL,
+        clasificacion VARCHAR(20) NOT NULL,
+        actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+  }
+
+  /**
    * Migración idempotente (MariaDB): plan_ahorro (una sola fila, id = 1) y gastos_fijos.
    */
   async function migrarPlanAhorro(connection) {
@@ -330,6 +346,7 @@ if (MOTOR_ELEGIDO === 'mariadb') {
         await migrarTipoEfectivo(connection);
         await migrarUltimos4Cuenta(connection);
         await migrarRegistros(connection);
+        await migrarDestinatarios(connection);
         await migrarDatosTransferencia(connection);
         await migrarPlanAhorro(connection);
         await migrarComprasCuotas(connection);

@@ -32,6 +32,7 @@ import { crearReset } from './resetBot.js';
 import { crearStatus } from './statusBot.js';
 import { crearVistaCuentas } from './vistaCuentasBot.js';
 import { crearLoteTerceros } from './loteTerceros.js';
+import { crearTransferencias } from './transferenciasBot.js';
 import { crearSistema } from './sistemaBot.js';
 import { crearIntenciones, clasificarPorReglas } from './intenciones.js';
 import { limitadorGemini } from './limiteGemini.js';
@@ -88,6 +89,8 @@ let status = null;
 let vistaCuentas = null;
 // Cartola de una tarjeta ajena + comprobante de la transferencia (loteTerceros.js); se crea al iniciar el bot
 let terceros = null;
+// Clasificación de transferencias salientes (transferenciasBot.js); se crea al iniciar el bot
+let transferencias = null;
 // Enrutador de intenciones para mensajes libres (intenciones.js); se crea al iniciar el bot
 let intenciones = null;
 // Foto que espera el texto de un gasto para quedar como su respaldo: chatId -> { fileId, nombre, hasta }
@@ -233,8 +236,11 @@ export async function iniciarBot() {
       vincularRegistro: vincularMensajes
     });
 
+    transferencias = crearTransferencias({ enviar, editar, responderCallback, esc, formatearMonto });
+
     cartolas = crearCartolas({
       terceros,
+      transferencias,
       enviar,
       editar,
       responderCallback,
@@ -355,6 +361,10 @@ function textoAyuda() {
     '• busca uber de octubre\n' +
     '• qué cuentas tengo, qué datos tienes guardados\n' +
     '• pásame los datos de la mercado pago\n\n' +
+    '<b>Transferencias</b>\n' +
+    '• a una cuenta tuya: movimiento interno, no suma como gasto\n' +
+    '• a quien le pagas cuotas (Valeska): la vinculo a la cuota del mes o a la suma de varias, y te aviso si falta o sobra\n' +
+    '• a otra persona: te pregunto si es gasto, préstamo o pago y lo recuerdo\n\n' +
     '<b>Estado de la app</b>\n' +
     '• /status, «estado» o «todo bien?»: revisa servidor, base de datos, Gemini, Telegram, storage y más\n\n' +
     '<b>Empezar de cero</b>\n' +
@@ -700,6 +710,11 @@ function configurarManejadores() {
       return;
     }
 
+    // Botones de la clasificación de transferencias (gasto, préstamo, pago, cuotas)
+    if (transferencias && await transferencias.manejarCallback(cb, chatId, data)) {
+      return;
+    }
+
     // Botones del lote de una tarjeta ajena (cartola y comprobante)
     if (terceros && await terceros.manejarCallback(cb, chatId, data)) {
       return;
@@ -787,8 +802,18 @@ function configurarManejadores() {
 
         await responderCallback(cb.id, { text: '✅ Guardado' });
 
+        // Transferencia a un tercero: ¿pago de cuotas, gasto, préstamo o pago? (se recuerda por destinatario)
+        let sinTratar = true;
+        if (tx.tipo_movimiento === 'transferencia_terceros' && transferencias) {
+          const restantes = await transferencias.procesarMovimientos(
+            chatId,
+            [{ id: movimientoId, fecha: tx.fecha, descripcion: tx.descripcion, monto: tx.monto, tipo: tx.tipo }],
+            { cuentaId: tx.cuenta_id }
+          );
+          sinTratar = restantes.length > 0;
+        }
         // Si parece el pago de una cuota (alias de la cartola), se pregunta; nunca se asigna sola
-        if (tx.tipo_movimiento === 'transferencia_terceros' && cuotas) {
+        if (sinTratar && tx.tipo_movimiento === 'transferencia_terceros' && cuotas) {
           await cuotas.ofrecerPagoPorCartola(chatId, { id: movimientoId, descripcion: tx.descripcion });
         }
       } catch (error) {

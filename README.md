@@ -653,6 +653,22 @@ o "borrar todo".
 `RESTAURAR RESPALDO`). Antes de restaurar hace otro respaldo del estado actual (`respaldos/antes-de-restaurar-...`). Con MariaDB
 necesita el cliente `mysql` en el PATH.
 
+### Transferencias salientes
+
+Una transferencia a otra persona no es siempre un gasto. Al registrarla por texto ("transferí 50 mil a Camila") o al importar una cartola
+(cargos "TRANSFERENCIA A ..."), el bot la clasifica:
+
+- **A una cuenta propia** (tu nombre o el de una de tus cuentas): movimiento interno (`transferencia_propia`): no suma como gasto ni como ingreso.
+- **A quien le pagas una compra en cuotas** (por ejemplo Valeska): pago de cuotas. Cruza el monto con la cuota del mes de ese titular (la
+  siguiente de cada compra en curso): si calza con **una cuota**, la vincula y avanza su contador; si calza con la **suma de varias**, reparte la
+  transferencia en un movimiento por cuota (el total no cambia) y avanza cada compra. Si es **parcial** o **sobra** plata, avisa la diferencia y
+  pregunta (vincular a una cuota o dejarla sin vincular). Siempre con botones; nada se vincula solo. El gasto sigue siendo la transferencia.
+- **A cualquier otra persona:** pregunta si fue **gasto**, **préstamo** (queda anotado a esa persona) o **pago**, y **recuerda la respuesta por
+  destinatario** (tabla `destinatarios_transferencia`, por nombre sin tildes ni mayúsculas): la próxima vez la aplica sin preguntar. Pregunta
+  como máximo por 5 transferencias en cada importación. Nunca se guarda un RUT ni un número de cuenta: del destinatario solo queda el nombre.
+
+Alcance de esta versión: no junta varias transferencias separadas del mes para sumar una cuota.
+
 ### Compra en cuotas con la tarjeta de otra persona (cartola + comprobante)
 
 Caso: pagas un Mac en 12 cuotas con la tarjeta de crédito de la tía Valeska y le transfieres cada mes. Puedes mandar juntos, sin comandos, la

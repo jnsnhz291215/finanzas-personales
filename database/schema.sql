@@ -221,3 +221,12 @@ CREATE TABLE IF NOT EXISTS historial_cambios (
   deshecho BOOLEAN NOT NULL DEFAULT FALSE,
   INDEX idx_historial_cambios_reg (tipo, registro_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Clasificación elegida para las transferencias a cada destinatario (gasto, préstamo o pago)
+CREATE TABLE IF NOT EXISTS destinatarios_transferencia (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  clave VARCHAR(100) NOT NULL UNIQUE,
+  nombre VARCHAR(100) NOT NULL,
+  clasificacion VARCHAR(20) NOT NULL,
+  actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
