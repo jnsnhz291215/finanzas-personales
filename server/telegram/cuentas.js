@@ -156,7 +156,7 @@ function titularPorDefecto() {
 }
 
 /** Valor de un marcador de titular: "yo" -> titular por defecto; si no, el nombre capitalizado */
-function valorTitular(valor) {
+export function valorTitular(valor) {
   return TITULAR_PROPIO.has(normalizar(valor).trim()) ? titularPorDefecto() : capitalizarNombre(valor);
 }
 

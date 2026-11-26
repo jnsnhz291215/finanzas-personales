@@ -79,6 +79,16 @@ export function limpiarBusqueda(texto) {
 const VERBO_ELIMINAR = /\b(?:elimin\w*|borr\w*|sac(?:a|alo|ala|ar)|quit(?:a|alo|ala|ar)|anul\w*)\b/;
 const VERBO_DESHACER = /\b(?:deshac\w*|deshaz\w*|revert\w*|restaur\w*|recuper\w*|vuelve atras|volver atras)\b/;
 
+/**
+ * "qué datos tienes guardados", "datos guardados", "qué tienes registrado": pide la vista de
+ * /cuentas (cuentas, vínculos, cuotas y totales). No confundir con los datos de transferencia
+ * ("pásame los datos de la mercado pago"), que llevan un nombre de cuenta.
+ */
+export function detectarDatosGuardados(texto) {
+  const norm = normalizar(texto).replace(/[¿?¡!.,;:]/g, ' ').replace(/\s+/g, ' ').trim();
+  return /^(?:(?:que|cuales)\s+(?:datos|cosas)\s+(?:tienes|tengo|hay)\s+(?:guardad[oa]s?|registrad[oa]s?)|(?:mis\s+)?datos\s+(?:guardad[oa]s?|registrad[oa]s?)|que\s+tienes\s+(?:guardad[oa]|registrad[oa])|que\s+(?:cuentas\s+y\s+tarjetas|tarjetas\s+y\s+cuentas)\s+tengo)$/.test(norm);
+}
+
 /** "estado", "status", "todo bien?": pide el chequeo de /status. Solo calza el mensaje completo. */
 export function detectarEstado(texto) {
   const norm = normalizar(texto).replace(/[¿?¡!.,;:]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -340,6 +350,9 @@ export function clasificarPorReglas(texto) {
 
   // "elimina el último gasto" sin responder a ningún mensaje
   if (detectarEliminarUltimo(original)) return resultado('eliminar_ultimo');
+
+  // "qué datos tienes guardados": la vista de /cuentas (siempre por reglas, sin Gemini)
+  if (detectarDatosGuardados(original)) return resultado('cuentas');
 
   // "estado", "todo bien?": el chequeo de /status
   if (detectarEstado(original)) return resultado('estado');

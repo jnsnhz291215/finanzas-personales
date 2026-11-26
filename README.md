@@ -648,6 +648,25 @@ o "borrar todo".
 `RESTAURAR RESPALDO`). Antes de restaurar hace otro respaldo del estado actual (`respaldos/antes-de-restaurar-...`). Con MariaDB
 necesita el cliente `mysql` en el PATH.
 
+### Cuentas, vínculos y datos guardados: /cuentas
+
+`/cuentas` (alias `/datosguardados`; también "qué cuentas tengo", "muéstrame mis cuentas" y "qué datos tienes guardados", siempre por reglas,
+sin Gemini) muestra en un mensaje lo que la app tiene registrado. `/datos` y `/misdatos` **no cambian**: siguen siendo los datos de transferencia.
+
+- **Por cada cuenta, un bloque:** titular, banco y tipo, "Tarjeta terminada en XXXX vinculada a la cuenta terminada en YYYY" (o "sin tarjeta
+  vinculada" / "sin número de cuenta vinculado"), si es la cuenta por defecto y cuántos movimientos y cartolas tiene. Las desactivadas se
+  nombran al final.
+- **Avisos** (`Aviso:`) cuando falta el titular, falta el vínculo que le corresponde a ese tipo de cuenta, o hay datos que no se pueden mostrar.
+- **Cuotas activas** (descripción, titular, cuota N de total, monto y próxima fecha), **titular por defecto** (`TITULAR_POR_DEFECTO`),
+  **categorías en uso** (solo nombres) y **totales** de movimientos con el primero y el último por fecha.
+- **Privacidad:** solo 4 últimos dígitos. Si en `cuentas.numero_cuenta` quedó un número completo guardado, no se muestra y la vista avisa en qué
+  cuenta está; otros dígitos que no sean exactamente 4 tampoco se muestran. Un número de más de 4 dígitos escrito en una corrección se rechaza.
+- **Sin datos:** "Todavía no tengo cuentas ni cuotas guardadas".
+- **Corregir respondiendo al mensaje**, en lenguaje natural y con confirmación por botones: `esta es de Valeska`, `la 2 es de Valeska`,
+  `la FAN es de Valeska`, `la tarjeta 1234 es de Valeska` o `la tarjeta 1234 es de la cuenta 5678` (completa el dato que falta en la cuenta
+  que ya tiene el otro; si son dos cuentas distintas no las une). Solo se puede responder a los mensajes de `/cuentas` enviados desde el último
+  reinicio y hasta 6 horas después.
+
 ### Estado de la app: /status
 
 `/status` (o escribir "estado", "status" o "todo bien?") revisa cada parte y responde **en un solo mensaje**, por secciones, con ✅ lo

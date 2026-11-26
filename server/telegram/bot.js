@@ -30,6 +30,7 @@ import { crearCartolas } from './cartolasBot.js';
 import { crearRegistros } from './registrosBot.js';
 import { crearReset } from './resetBot.js';
 import { crearStatus } from './statusBot.js';
+import { crearVistaCuentas } from './vistaCuentasBot.js';
 import { crearSistema } from './sistemaBot.js';
 import { crearIntenciones, clasificarPorReglas } from './intenciones.js';
 import { limitadorGemini } from './limiteGemini.js';
@@ -82,6 +83,8 @@ let registros = null;
 let reset = null;
 // Chequeo de estado de la app, /status (statusBot.js); se crea al iniciar el bot
 let status = null;
+// Vista de cuentas con vínculos, /cuentas (vistaCuentasBot.js); se crea al iniciar el bot
+let vistaCuentas = null;
 // Enrutador de intenciones para mensajes libres (intenciones.js); se crea al iniciar el bot
 let intenciones = null;
 // Foto que espera el texto de un gasto para quedar como su respaldo: chatId -> { fileId, nombre, hasta }
@@ -230,6 +233,15 @@ export async function iniciarBot() {
     reset = crearReset({ bot, enviar, editar, responderCallback, esc, esChatAutorizado });
     reset.configurarComandos();
 
+    // Cuenta por defecto al registrar un gasto: la última usada o, si no hay, la primera que no es crédito
+    vistaCuentas = crearVistaCuentas({
+      enviar,
+      editar,
+      responderCallback,
+      esc,
+      cuentaPorDefecto: async (cuentas) => (await ultimaCuentaUsada(cuentas)) || cuentaPorDefecto(cuentas)
+    });
+
     status = crearStatus({ bot, enviar, editar, esc, esChatAutorizado, chatIds: () => allowedChatIds });
     status.configurarComandos();
 
@@ -323,7 +335,7 @@ function textoAyuda() {
     '• cuánto puedo gastar\n' +
     '• cuánto debería ahorrar\n' +
     '• busca uber de octubre\n' +
-    '• qué cuentas tengo\n' +
+    '• qué cuentas tengo, qué datos tienes guardados\n' +
     '• pásame los datos de la mercado pago\n\n' +
     '<b>Estado de la app</b>\n' +
     '• /status, «estado» o «todo bien?»: revisa servidor, base de datos, Gemini, Telegram, storage y más\n\n' +
@@ -345,6 +357,7 @@ function textoAyuda() {
     '/help - Esta ayuda\n' +
     '/plan - Tu plan de ahorro del mes\n' +
     '/cuotas - Tus compras en cuotas\n' +
+    '/cuentas - Tus cuentas, vínculos tarjeta-cuenta, titulares, cuotas y totales (también /datosguardados)\n' +
     '/status - Estado de la app\n' +
     '/update - Actualizar y reiniciar la app (solo en el servidor)\n\n' +
     'Por seguridad, las cuentas y tus datos de transferencia se guardan solo con comandos: ' +
@@ -357,6 +370,7 @@ function textoAyuda() {
 const COMANDOS_MENU = [
   { command: 'help', description: 'Qué puedo hacer y ejemplos' },
   { command: 'plan', description: 'Mi plan de ahorro del mes' },
+  { command: 'cuentas', description: 'Mis cuentas, vínculos y datos guardados' },
   { command: 'cuotas', description: 'Mis compras en cuotas' },
   { command: 'status', description: 'Estado de la app' },
   { command: 'update', description: 'Actualizar y reiniciar la app' }
@@ -581,6 +595,11 @@ function configurarManejadores() {
       return;
     }
 
+    // Respuesta (reply) al mensaje de /cuentas: corregir un titular o el vínculo tarjeta-cuenta
+    if (msg.text && msg.reply_to_message && vistaCuentas && await vistaCuentas.manejarReply(msg)) {
+      return;
+    }
+
     // Respuesta (reply) a un mensaje que creó un registro: eliminar, corregir o deshacer
     if (msg.text && msg.reply_to_message && registros && await registros.manejarReply(msg)) {
       return;
@@ -650,6 +669,11 @@ function configurarManejadores() {
 
     // Botones de /reboot y /update
     if (sistema && await sistema.manejarCallback(cb, chatId, data)) {
+      return;
+    }
+
+    // Botones de las correcciones de /cuentas
+    if (vistaCuentas && await vistaCuentas.manejarCallback(cb, chatId, data)) {
       return;
     }
 
@@ -1678,17 +1702,8 @@ function pedirConfirmacionBorrarCuenta(chatId, cuenta) {
 
 /** Lista de cuentas activas numeradas (/cuentas y "qué cuentas tengo") */
 async function enviarCuentas(chatId) {
-  try {
-    const cuentas = await listarCuentasActivas();
-    if (cuentas.length === 0) {
-      await enviar(chatId, 'No tienes cuentas activas. Crea una con /savecard.');
-      return;
-    }
-    await enviar(chatId, '<b>Tus cuentas:</b>\n\n' + cuentas.map((c, i) => lineaCuenta(c, `${i + 1}. `)).join('\n'));
-  } catch (error) {
-    console.error('Error al listar cuentas:', error.code ?? '', error.message);
-    await enviar(chatId, '❌ Error al obtener las cuentas.');
-  }
+  // Vista completa: cuentas con vínculos, cuotas, categorías y totales (vistaCuentasBot.js)
+  await vistaCuentas.responder(chatId);
 }
 
 function configurarComandosCuentas() {
@@ -1745,7 +1760,7 @@ function configurarComandosCuentas() {
   });
 
   // /cuentas: cuentas activas numeradas
-  bot.onText(/^\/cuentas(?:@\w+)?\s*$/i, async (msg) => {
+  bot.onText(/^\/(?:cuentas|datosguardados)(?:@\w+)?\s*$/i, async (msg) => {
     const chatId = msg.chat.id;
 
     if (!esChatAutorizado(chatId)) {
