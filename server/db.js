@@ -4,6 +4,7 @@ dotenv.config();
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { nombreAutomatico, esNombreSoloDigitos } from './telegram/cuentas.js';
 import { elegirMotor, variablesFaltantesMariaDB, sentenciasDeEsquema } from './motorDB.js';
 
 // Motor de BD según DB_ENGINE ('sqlite' por defecto, 'mariadb' en el servidor)
@@ -151,6 +152,26 @@ if (MOTOR_ELEGIDO === 'mariadb') {
         INDEX idx_historial_cambios_reg (tipo, registro_id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
+  }
+
+  /**
+   * Migración idempotente (MariaDB): cuentas.predeterminada (la cuenta que se usa por defecto al registrar un gasto) y renombra
+   * las cuentas cuyo nombre son solo dígitos (se guardaron con el número de la tarjeta como nombre) con el formato
+   * "Crédito Valeska ****8263".
+   */
+  async function migrarEdicionCuentas(connection) {
+    const [existe] = await connection.query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'cuentas' AND COLUMN_NAME = 'predeterminada'`
+    );
+    if (existe.length === 0) await connection.query('ALTER TABLE cuentas ADD COLUMN predeterminada BOOLEAN NOT NULL DEFAULT FALSE');
+
+    const [cuentas] = await connection.query('SELECT id, nombre, tipo, titular, ultimos4, ultimos4_cuenta FROM cuentas');
+    for (const c of cuentas.filter(x => esNombreSoloDigitos(x.nombre))) {
+      await connection.query('UPDATE cuentas SET nombre = ? WHERE id = ?', [
+        nombreAutomatico({ tipo: c.tipo, titular: c.titular, ultimos4: c.ultimos4, ultimos4Cuenta: c.ultimos4_cuenta }), c.id
+      ]);
+    }
   }
 
   /**
@@ -371,6 +392,7 @@ if (MOTOR_ELEGIDO === 'mariadb') {
         await migrarPlanAhorro(connection);
         await migrarComprasCuotas(connection);
         await migrarGastoFijoDestinatario(connection);
+        await migrarEdicionCuentas(connection);
         await asegurarClaveCompraCuota(connection);
         
         const [usuarios] = await connection.query('SELECT * FROM usuario LIMIT 1');

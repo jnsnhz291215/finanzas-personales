@@ -3,6 +3,7 @@ import bcrypt from 'bcrypt';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import path from 'path';
+import { nombreAutomatico, esNombreSoloDigitos } from './telegram/cuentas.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -138,6 +139,9 @@ export async function inicializarDB() {
 
     // Migración: destinatario de los gastos fijos y la marca de pago de un gasto fijo en movimientos
     migrarGastoFijoDestinatario(database);
+
+    // Migración: cuenta predeterminada y nombres que eran solo dígitos
+    migrarEdicionCuentas(database);
 
     // Insertar categorías por defecto
     const categorias = [
@@ -345,6 +349,22 @@ function migrarRegistros(database) {
     );
     CREATE INDEX IF NOT EXISTS idx_historial_cambios_reg ON historial_cambios(tipo, registro_id);
   `);
+}
+
+/**
+ * Migración idempotente (SQLite): cuentas.predeterminada (la cuenta que se usa por defecto al registrar un gasto) y renombra
+ * las cuentas cuyo nombre son solo dígitos (se guardaron con el número de la tarjeta como nombre) con el formato
+ * "Crédito Valeska ****8263".
+ */
+function migrarEdicionCuentas(database) {
+  const columnas = database.prepare('PRAGMA table_info(cuentas)').all().map(c => c.name);
+  if (!columnas.includes('predeterminada')) database.exec('ALTER TABLE cuentas ADD COLUMN predeterminada INTEGER NOT NULL DEFAULT 0');
+
+  const cuentas = database.prepare('SELECT id, nombre, tipo, titular, ultimos4, ultimos4_cuenta FROM cuentas').all();
+  const renombrar = database.prepare('UPDATE cuentas SET nombre = ? WHERE id = ?');
+  for (const c of cuentas.filter(x => esNombreSoloDigitos(x.nombre))) {
+    renombrar.run(nombreAutomatico({ tipo: c.tipo, titular: c.titular, ultimos4: c.ultimos4, ultimos4Cuenta: c.ultimos4_cuenta }), c.id);
+  }
 }
 
 /**

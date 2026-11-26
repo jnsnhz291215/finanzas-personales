@@ -1,4 +1,4 @@
-import { clasificarPorReglas, puedeEnviarseAGemini, limpiarBusqueda, clasificarReply, detectarEliminarUltimo, replyDesdeGemini, detectarAsignarDigitos, detectarReset, detectarGuardarCuenta } from './intenciones.js';
+import { clasificarPorReglas, puedeEnviarseAGemini, limpiarBusqueda, clasificarReply, detectarEliminarUltimo, replyDesdeGemini, detectarAsignarDigitos, detectarReset, detectarGuardarCuenta, detectarEditarCuenta } from './intenciones.js';
 
 const intencion = (texto) => clasificarPorReglas(texto)?.intencion ?? null;
 
@@ -245,5 +245,23 @@ describe('guardar una cuenta o tarjeta con una frase', () => {
     expect(detectarGuardarCuenta('la FAN termina en 6958')).toBeNull();
     expect(clasificarPorReglas('guarda la tarjeta crédito 8263 es de Valeska Sanhueza').intencion).toBe('guardar_cuenta');
     expect(clasificarPorReglas('pagué 5000 con la tarjeta 1234')?.intencion).not.toBe('guardar_cuenta');
+  });
+});
+
+describe('editar una cuenta con una frase', () => {
+  test('abrir, cambiar el nombre y cambiar el banco', () => {
+    expect(detectarEditarCuenta('edita la cuenta 8263')).toEqual({ accion: 'abrir', digitos: '8263' });
+    expect(detectarEditarCuenta('cambia el nombre de la 8263 a Crédito Valeska')).toEqual({
+      accion: 'campo', campo: 'nombre', digitos: '8263', valor: 'Crédito Valeska'
+    });
+    expect(detectarEditarCuenta('la tarjeta 8263 es del banco de chile')).toEqual({
+      accion: 'campo', campo: 'banco', digitos: '8263', valor: 'banco de chile'
+    });
+  });
+
+  test('"es de Valeska" es el titular (guardar_cuenta), no el banco', () => {
+    expect(detectarEditarCuenta('la tarjeta 8263 es de Valeska')).toBeNull();
+    expect(clasificarPorReglas('la tarjeta 8263 es de Valeska').intencion).toBe('guardar_cuenta');
+    expect(clasificarPorReglas('edita la cuenta 8263').intencion).toBe('editar_cuenta');
   });
 });

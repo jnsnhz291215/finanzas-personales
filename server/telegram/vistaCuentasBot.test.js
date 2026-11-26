@@ -59,7 +59,7 @@ describe('formatearVista', () => {
     for (const t of ['macbook', 'titular: Valeska', 'cuota 6 de 12', 'Titular por defecto: Juan Sanhueza', 'Categorías en uso: Comida', 'Movimientos: 10', 'Desactivadas: Vieja']) {
       expect(m.texto).toContain(t);
     }
-    expect(m.cuentas).toEqual([{ indice: 1, id: 1 }]);
+    expect(m.cuentas).toEqual([{ indice: 1, id: 1, nombre: 'FAN' }]);
   });
 
   test('muestra por titular las cuotas del mes, lo pagado y lo pendiente', () => {
@@ -96,6 +96,20 @@ describe('corrección en lenguaje natural', () => {
     expect(interpretarCorreccionCuenta('la FAN es de Valeska').referencia).toEqual({ tipo: 'nombre', valor: 'fan' });
     expect(interpretarCorreccionCuenta('la tarjeta 1234 es de Valeska').referencia).toEqual({ tipo: 'digitos', valor: '1234', de: 'tarjeta' });
     expect(interpretarCorreccionCuenta('titular Valeska')).toMatchObject({ titular: 'Valeska' });
+  });
+
+  test('cambiar el nombre o el banco de una cuenta respondiendo', () => {
+    expect(interpretarCorreccionCuenta('cámbiale el nombre a Crédito Valeska')).toEqual({
+      accion: 'campo', campo: 'nombre', referencia: { tipo: 'esta' }, valor: 'Crédito Valeska'
+    });
+    expect(interpretarCorreccionCuenta('cambia el nombre de la 2 a Mi FAN')).toMatchObject({
+      accion: 'campo', campo: 'nombre', referencia: { tipo: 'indice', valor: 2 }, valor: 'Mi FAN'
+    });
+    expect(interpretarCorreccionCuenta('la tarjeta 8263 es del banco de chile')).toMatchObject({
+      accion: 'campo', campo: 'banco', referencia: { tipo: 'digitos', valor: '8263' }, valor: 'banco de chile'
+    });
+    // el titular sigue siendo el titular
+    expect(interpretarCorreccionCuenta('la 2 es de Valeska')).toMatchObject({ accion: 'titular', titular: 'Valeska' });
   });
 
   test('un número largo se rechaza y un texto cualquiera no se entiende', () => {

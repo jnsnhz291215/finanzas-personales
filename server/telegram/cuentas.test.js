@@ -1,4 +1,4 @@
-import { parsearCuenta, enmascararDigitos, TIPO_DB, ETIQUETAS_TIPO_DB } from './cuentas.js';
+import { parsearCuenta, enmascararDigitos, TIPO_DB, ETIQUETAS_TIPO_DB, esNombreSoloDigitos, nombreAutomatico } from './cuentas.js';
 
 describe('parsearCuenta', () => {
   test('debería interpretar una tarjeta de débito con alias, banco, últimos 4 y titular', () => {
@@ -235,5 +235,24 @@ describe('enmascararDigitos', () => {
     expect(enmascararDigitos('tarjeta 4111 1111 1111 1111 terminada en 1234'))
       .toBe('tarjeta [número] terminada en 1234');
     expect(enmascararDigitos('cuenta 12345678901')).toBe('cuenta [número]');
+  });
+});
+
+describe('el nombre nunca es solo dígitos', () => {
+  test('/savecard tarjeta 8263 ya no usa los dígitos como nombre', () => {
+    expect(parsearCuenta('/savecard tarjeta 8263').nombre).toBeNull();
+    expect(parsearCuenta('/savecard tarjeta credito 8263').nombre).toBe('Tarjeta de crédito');
+    expect(parsearCuenta('/savecard tarjeta debito FAN terminada en 1234').nombre).toBe('FAN');
+  });
+
+  test('detecta nombres que son solo dígitos o máscara', () => {
+    expect(['8263', '**** 8263', '12 34', ''].map(esNombreSoloDigitos)).toEqual([true, true, true, true]);
+    expect(['Mi FAN', 'Crédito Valeska ****8263'].map(esNombreSoloDigitos)).toEqual([false, false]);
+  });
+
+  test('nombre automático: tipo, primer nombre del titular y los 4 dígitos', () => {
+    expect(nombreAutomatico({ tipo: 'credito', titular: 'Valeska Sanhueza', ultimos4: '8263' })).toBe('Crédito Valeska ****8263');
+    expect(nombreAutomatico({ tipo: 'tarjeta_debito', titular: 'Juan', ultimos4: '5555' })).toBe('Débito Juan ****5555');
+    expect(nombreAutomatico({ tipo: 'cuenta_vista', titular: null, ultimos4Cuenta: '1234' })).toBe('Cuenta vista ****1234');
   });
 });

@@ -24,7 +24,7 @@ import { fechaHoySantiago, sumarDias, diaSemana, construirFecha } from './fechas
 import { detectarConsultaDatos, terminoDesdeTexto } from './datosTransferencia.js';
 import { detectarConsultaPlan, parsearGastoFijoNatural } from '../planAhorro.js';
 import { parsearPagoCuota, detectarAltaCuotas, detectarConsultaCuotas } from './cuotas.js';
-import { normalizar, capitalizarNombre } from './cuentas.js';
+import { normalizar, capitalizarNombre, buscarBanco } from './cuentas.js';
 import { interpretarIntencion, geminiDisponible } from './gemini.js';
 import { limitadorGemini } from './limiteGemini.js';
 
@@ -109,6 +109,34 @@ export function detectarReset(texto) {
   if (/^(?:borra(?:r)?|elimina(?:r)?)\s+todo(?:\s+(?:los\s+|mis\s+)?(?:datos|movimientos))?$/.test(norm)) return 'reset';
   if (/^reset(?:ea(?:r)?)?(?:\s+(?:todo|(?:los\s+|mis\s+)?datos))?$/.test(norm)) return 'reset';
   if (/^restaura(?:r)?\s+(?:el\s+)?(?:ultimo\s+)?respaldo$/.test(norm)) return 'restaurar_respaldo';
+  return null;
+}
+
+/**
+ * Editar una cuenta ya guardada con una frase (reglas locales, siempre con los 4 dígitos):
+ *  - "edita la cuenta 8263", "modifica la tarjeta 8263"            -> { accion: 'abrir', digitos }
+ *  - "cambia el nombre de la 8263 a Crédito Valeska"               -> { accion: 'campo', campo: 'nombre', digitos, valor }
+ *  - "la tarjeta 8263 es del banco de chile"                       -> { accion: 'campo', campo: 'banco', digitos, valor }
+ * Devuelve null si no es ninguna. "la tarjeta 8263 es de Valeska" (el titular) lo atiende guardar_cuenta.
+ */
+export function detectarEditarCuenta(texto) {
+  const original = String(texto ?? '').trim().replace(/[.!¡¿?]+$/g, '');
+  if (!original || original.startsWith('/')) return null;
+  let m;
+
+  if ((m = /^(?:edita|editar|modifica|modificar|corrige|corregir|cambia|cambiar)\s+(?:la\s+|mi\s+)?(?:tarjeta|cuenta)\s+(?:terminada\s+en\s+)?(\d{4})$/i.exec(original))) {
+    return { accion: 'abrir', digitos: m[1] };
+  }
+
+  if ((m = /^(?:cambia(?:le)?|cambiar|c[aá]mbiale|pon(?:le)?|ponle)\s+(?:el\s+)?nombre\s+(?:de\s+|a\s+)?(?:la\s+|mi\s+)?(?:tarjeta\s+|cuenta\s+)?(?:terminada\s+en\s+)?(\d{4})\s+(?:a|por|como)\s+(.+)$/i.exec(original))) {
+    return { accion: 'campo', campo: 'nombre', digitos: m[1], valor: m[2].trim() };
+  }
+
+  if ((m = /^(?:la\s+|mi\s+)?(?:tarjeta|cuenta)\s+(?:terminada\s+en\s+)?(\d{4})\s+es\s+(?:del?\s+|el\s+)?(.+)$/i.exec(original))) {
+    const valor = m[2].trim();
+    // Solo si lo que sigue es un banco ("banco de chile") o uno conocido ("santander"); si no, es el titular
+    if (/^banco\b/i.test(valor) || buscarBanco(normalizar(valor))) return { accion: 'campo', campo: 'banco', digitos: m[1], valor };
+  }
   return null;
 }
 
@@ -436,6 +464,10 @@ export function clasificarPorReglas(texto) {
   const reinicio = detectarReset(original);
   if (reinicio) return resultado(reinicio);
 
+  // "edita la cuenta 8263", "cambia el nombre de la 8263 a X", "la tarjeta 8263 es del banco de chile"
+  const editar = detectarEditarCuenta(original);
+  if (editar) return resultado('editar_cuenta', editar);
+
   // "gasto fijo: 24 mil en telefonía, lo pago a Vivian": un gasto fijo (la regla local de /fijo, sin Gemini)
   const gastoFijo = parsearGastoFijoNatural(original);
   if (gastoFijo) return resultado('gasto_fijo', gastoFijo);
@@ -628,6 +660,13 @@ export function crearIntenciones(ctx) {
       case 'ayuda':
         await ctx.ayuda(chatId);
         return true;
+
+      case 'editar_cuenta':
+        if (ctx.editarCuenta) {
+          await ctx.editarCuenta(msg, datos);
+          return true;
+        }
+        return preguntarIntencion(chatId, texto);
 
       case 'gasto_fijo':
         if (ctx.gastoFijo) {

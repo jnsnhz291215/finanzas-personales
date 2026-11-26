@@ -17,6 +17,7 @@
 import { cargarResumen, fijarTitular, fijarDigitos } from '../resumenDatos.js';
 import { ETIQUETAS_TIPO_DB, normalizar, valorTitular } from './cuentas.js';
 import { buscarCuentaPorTexto } from './intenciones.js';
+import { buscarBanco } from './cuentas.js';
 import { resumenCompra, lineasPorTitular } from './cuotas.js';
 import { fechaHoySantiago, formatearFechaCL } from './fechas.js';
 
@@ -107,7 +108,7 @@ export function formatearVista(resumen, { defectoId = null, hoy = fechaHoySantia
   if (activas.length > 0) {
     agregar('<b>Cuentas y vínculos</b>');
     activas.forEach((c, i) => {
-      agregar(bloqueCuenta(c, i + 1, { esDefecto: c.id === defectoId }, esc), { indice: i + 1, id: c.id });
+      agregar(bloqueCuenta(c, i + 1, { esDefecto: c.id === defectoId }, esc), { indice: i + 1, id: c.id, nombre: c.nombre });
     });
   } else {
     agregar('<b>Cuentas</b>\nTodavía no tengo cuentas guardadas.');
@@ -137,7 +138,7 @@ export function formatearVista(resumen, { defectoId = null, hoy = fechaHoySantia
 
   if (activas.length > 0) {
     agregar(
-      'Para corregir un dato, responde a este mensaje, por ejemplo: «la 2 es de Valeska», «esta es de Valeska» ' +
+      'Para corregir un dato, toca Editar o responde a este mensaje, por ejemplo: «la 2 es de Valeska», «cámbiale el nombre a X» ' +
       'o «la tarjeta 1234 es de la cuenta 5678». Solo los 4 últimos dígitos.'
     );
   }
@@ -155,6 +156,7 @@ const SEPARADOR_TITULAR = /\s+(?:es|era|pertenece|son)\s+(?:de|a)\s+/i;
  * Interpreta lo que se responde a la vista. Devuelve:
  *   { accion: 'vincular', tarjeta, cuenta }                 "la tarjeta 1234 es de la cuenta 5678"
  *   { accion: 'titular', referencia, titular }              "esta es de Valeska", "la 2 es de Valeska"
+ *   { accion: 'campo', campo: 'nombre'|'banco', referencia, valor }   "cámbiale el nombre a X", "la 2 es del banco de chile"
  *   { error: 'largo' }                                      se escribió un número de más de 4 dígitos
  *   null                                                    no se entendió
  * `referencia`: { tipo: 'esta' } | { tipo: 'indice', valor } | { tipo: 'digitos', valor, de: 'tarjeta'|'cuenta' }
@@ -178,6 +180,21 @@ export function interpretarCorreccionCuenta(texto) {
   m = new RegExp(`^${prefijoC}\\s+${union}\\s+${prefijoT}$`).exec(norm);
   if (m) return { accion: 'vincular', tarjeta: m[2], cuenta: m[1] };
 
+  // Cambiar el nombre o el banco: "cámbiale el nombre a X", "cambia el nombre de la 2 a X", "la 2 es del banco de chile"
+  const renombrar = /^\s*(?:cambia(?:le)?|c[aá]mbiale|pon(?:le)?|ponle)\s+(?:el\s+)?nombre\s+(?:(?:de|a)\s+(.+?)\s+)?(?:a|por|como)\s+(.+)$/i.exec(original);
+  if (renombrar) {
+    const nombre = renombrar[2].replace(/[¿?¡!.,;:]+$/g, '').trim();
+    if (!nombre) return null;
+    return { accion: 'campo', campo: 'nombre', referencia: referenciaDe(renombrar[1] ? limpiarIzquierda(renombrar[1]) : 'esta'), valor: nombre };
+  }
+  const esDelBanco = /^\s*(.+?)\s+es\s+(?:del?\s+|el\s+)?(banco\s+.+|.+)$/i.exec(original);
+  if (esDelBanco) {
+    const valor = esDelBanco[2].replace(/[¿?¡!.,;:]+$/g, '').trim();
+    if (/^banco\b/i.test(valor) || buscarBanco(normalizar(valor))) {
+      return { accion: 'campo', campo: 'banco', referencia: referenciaDe(limpiarIzquierda(esDelBanco[1])), valor };
+    }
+  }
+
   // Titular: "<cuál> es de <nombre>" o "titular <nombre>"
   const conTitular = /^(?:el\s+)?titular\s+(?:es\s+)?(.+)$/i.exec(original);
   let izquierda = null;
@@ -197,17 +214,23 @@ export function interpretarCorreccionCuenta(texto) {
   const titular = derecha.replace(/[¿?¡!.,;:«»"]/g, ' ').replace(/\s+/g, ' ').trim();
   if (!titular || /\d/.test(titular) || titular.length > 60) return null;
 
-  let referencia;
-  if (/^(?:esta|este|esa|ese)$/.test(izquierda)) referencia = { tipo: 'esta' };
-  else if ((m = /^(?:la\s+)?(tarjeta|cuenta)\s+(?:terminada\s+en\s+)?(\d{4})$/.exec(izquierda))) {
-    referencia = { tipo: 'digitos', valor: m[2], de: m[1] };
-  } else if ((m = /^(?:la\s+)?(?:numero\s+)?(\d{1,2})$/.exec(izquierda))) referencia = { tipo: 'indice', valor: Number(m[1]) };
-  else {
-    const nombre = izquierda.replace(/^(?:la|el|mi)\s+/, '').replace(/^(?:tarjeta|cuenta)\s+/, '').trim();
-    if (!nombre) return null;
-    referencia = { tipo: 'nombre', valor: nombre };
-  }
+  const referencia = referenciaDe(izquierda);
+  if (!referencia) return null;
   return { accion: 'titular', referencia, titular: valorTitular(titular) };
+}
+
+function limpiarIzquierda(texto) {
+  return normalizar(texto).replace(/[¿?¡!.,;:«»"]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** De qué cuenta se habla: "esta", "la 2", "la tarjeta 8263" o su nombre. null si no queda nada. */
+function referenciaDe(izquierda) {
+  let m;
+  if (/^(?:esta|este|esa|ese)$/.test(izquierda)) return { tipo: 'esta' };
+  if ((m = /^(?:la\s+)?(tarjeta|cuenta)\s+(?:terminada\s+en\s+)?(\d{4})$/.exec(izquierda))) return { tipo: 'digitos', valor: m[2], de: m[1] };
+  if ((m = /^(?:la\s+)?(?:numero\s+)?(\d{1,2})$/.exec(izquierda))) return { tipo: 'indice', valor: Number(m[1]) };
+  const nombre = izquierda.replace(/^(?:la|el|mi)\s+/, '').replace(/^(?:tarjeta|cuenta)\s+/, '').trim();
+  return nombre ? { tipo: 'nombre', valor: nombre } : null;
 }
 
 /**
@@ -295,7 +318,11 @@ export function crearVistaCuentas(ctx) {
 
       const mensajes = formatearVista(resumen, { defectoId: defecto?.id ?? null, titularDefecto }, esc);
       for (const m of mensajes) {
-        const enviado = await enviar(chatId, m.texto);
+        // Un botón Editar por cada cuenta del mensaje (lo atiende /editarcuenta)
+        const teclado = m.cuentas.length > 0
+          ? { reply_markup: { inline_keyboard: m.cuentas.slice(0, 30).map(c => [{ text: `Editar ${c.indice}. ${c.nombre}`.slice(0, 40), callback_data: `ecs_${c.id}` }]) } }
+          : undefined;
+        const enviado = await enviar(chatId, m.texto, teclado);
         if (enviado?.message_id && m.cuentas.length > 0) {
           vistas.set(clave(chatId, enviado.message_id), { cuentas: m.cuentas, hasta: Date.now() + VIGENCIA_VISTA_MS });
         }
@@ -370,6 +397,15 @@ export function crearVistaCuentas(ctx) {
       }
 
       const resuelta = resolverReferencia(r.referencia, vista.cuentas, cuentas);
+      if (r.accion === 'campo') {
+        if (resuelta.error || resuelta.ambiguas) {
+          await enviar(chatId, resuelta.error ? esc(resuelta.error) : `Hay varias cuentas que calzan: ${resuelta.ambiguas.map(c => esc(c.nombre)).join(', ')}. Usa el número de la lista, por ejemplo «cambia el nombre de la 2 a X».`);
+          return true;
+        }
+        // El cambio se valida y se confirma con Guardar y Cancelar en /editarcuenta (mismo flujo y mismas reglas)
+        await ctx.proponerCambioCuenta(chatId, resuelta.cuenta.id, r.campo, r.valor);
+        return true;
+      }
       if (resuelta.error) {
         await enviar(chatId, esc(resuelta.error));
         return true;

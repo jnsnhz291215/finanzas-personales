@@ -114,6 +114,34 @@ export function nombrePorDefecto(tipo, banco) {
   return banco ? `${base} ${banco}` : base;
 }
 
+/** ¿El nombre es solo dígitos (o símbolos de una máscara como ****)? Eso no es un nombre: es el número de una tarjeta */
+export function esNombreSoloDigitos(nombre) {
+  const t = String(nombre ?? '').trim();
+  return t === '' || (/^[\d\s*·•.\-_/]+$/.test(t) && /\d/.test(t));
+}
+
+const ETIQUETA_CORTA_TIPO = {
+  credito: 'Crédito', tarjeta_credito: 'Crédito',
+  debito: 'Débito', tarjeta_debito: 'Débito',
+  cuenta_corriente: 'Cuenta corriente',
+  cuenta_vista: 'Cuenta vista', vista: 'Cuenta vista', rut: 'Cuenta vista',
+  ahorro: 'Ahorro', cuenta_ahorro: 'Ahorro',
+  efectivo: 'Efectivo'
+};
+
+/**
+ * Nombre automático de una cuenta cuando no se da uno (o el que había era solo dígitos): "Crédito Valeska ****8263",
+ * "Débito Juan ****5555". Usa el primer nombre del titular (si es "yo", el titular por defecto) y los 4 últimos
+ * dígitos de la tarjeta o, si no hay, de la cuenta. `tipo` puede ser el del parser (credito) o el de la tabla (tarjeta_credito).
+ */
+export function nombreAutomatico({ tipo, titular = null, ultimos4 = null, ultimos4Cuenta = null } = {}) {
+  const base = ETIQUETA_CORTA_TIPO[tipo] ?? 'Cuenta';
+  const titularReal = TITULAR_PROPIO.has(normalizar(titular ?? '').trim()) ? (process.env.TITULAR_POR_DEFECTO || '').trim() : String(titular ?? '').trim();
+  const primerNombre = titularReal.split(/\s+/)[0] ?? '';
+  const digitos = ultimos4 || ultimos4Cuenta;
+  return [base, primerNombre, digitos ? `****${digitos}` : ''].filter(Boolean).join(' ');
+}
+
 export function capitalizarNombre(texto) {
   const limpio = texto.replace(/\s+/g, ' ').trim();
   // Solo se reescribe si viene todo en minúsculas (o todo en mayúsculas)
@@ -301,7 +329,8 @@ export function parsearCuenta(texto) {
   while (palabras.length && PALABRAS_BORDE.has(normalizar(palabras[palabras.length - 1]))) palabras.pop();
   const alias = palabras.join(' ').slice(0, 100);
 
-  resultado.nombre = alias || (resultado.tipo ? nombrePorDefecto(resultado.tipo, resultado.banco) : null);
+  // Un alias que son solo dígitos es el número de la tarjeta, no un nombre
+  resultado.nombre = (alias && !esNombreSoloDigitos(alias) ? alias : null) || (resultado.tipo ? nombrePorDefecto(resultado.tipo, resultado.banco) : null);
 
   return resultado;
 }

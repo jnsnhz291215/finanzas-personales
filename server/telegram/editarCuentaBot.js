@@ -1,0 +1,368 @@
+/**
+ * /editarcuenta (alias /editartarjeta): editar una cuenta o tarjeta ya guardada desde Telegram.
+ *
+ * Sin argumentos lista las cuentas con botones ("nombre · tipo · ****1234 · titular"). Al elegir una, muestra sus datos y un
+ * botón por campo (Nombre, Tipo, Banco, Titular, Últimos 4 dígitos, Cuenta vinculada y Predeterminada). Cada campo se edita
+ * respondiendo con el valor nuevo o eligiendo una opción, con un resumen y botones Guardar y Cancelar. También lo usan las
+ * frases ("cambia el nombre de la 8263 a Crédito Valeska", "edita la cuenta 8263") y el botón Editar de /cuentas.
+ *
+ * Valida que los dígitos sean exactamente 4 y que no queden dos cuentas con los mismos 4 dígitos y el mismo tipo (ver
+ * edicionCuentas.js). Los textos de la BD (nombres, titulares) se escapan siempre.
+ */
+
+import {
+  CAMPOS,
+  CAMPO_POR_CODIGO,
+  TIPOS_DB,
+  etiquetaCuenta,
+  validarEdicion,
+  valorActual,
+  cuentasEditables,
+  obtenerCuentaEditable,
+  cuentasPorDigitos,
+  aplicarEdicion
+} from '../edicionCuentas.js';
+import { ETIQUETAS_TIPO_DB } from './cuentas.js';
+
+const ESPERA_MS = 10 * 60 * 1000;
+const ES_TARJETA = (c) => String(c.tipo).startsWith('tarjeta');
+
+export function crearEditarCuenta(ctx) {
+  const { bot, enviar, editar, responderCallback, esc, esChatAutorizado } = ctx;
+  const borrarMensaje = ctx.borrarMensaje ?? (async () => {});
+
+  // Campo que se está esperando por texto: chatId -> { cuentaId, campo, messageId, hasta }
+  const esperando = new Map();
+  // Cambios esperando Guardar o Cancelar: clave -> { cuentaId, campo, valor }
+  const pendientes = new Map();
+  let contador = 0;
+
+  const nuevaClave = () => `${Date.now().toString(36)}${contador++}`;
+
+  function errorBD(contexto, error) {
+    console.error(`${contexto}:`, error.code ?? error.name);
+  }
+
+  // -------------------------------------------------------------------------
+  // Lista y ficha de una cuenta
+  // -------------------------------------------------------------------------
+
+  async function listar(chatId) {
+    const cuentas = await cuentasEditables();
+    if (cuentas.length === 0) {
+      await enviar(chatId, 'No tienes cuentas activas. Crea una con /savecard o escribe, por ejemplo: guarda la tarjeta crédito 8263 es de Valeska.');
+      return true;
+    }
+    await enviar(chatId, '<b>¿Qué cuenta quieres editar?</b>', {
+      reply_markup: {
+        inline_keyboard: [
+          ...cuentas.slice(0, 40).map(c => [{ text: etiquetaCuenta(c).slice(0, 60), callback_data: `ecs_${c.id}` }]),
+          [{ text: 'Cerrar', callback_data: 'ecx_cerrar' }]
+        ]
+      }
+    });
+    return true;
+  }
+
+  function textoFicha(c) {
+    return (
+      `<b>${esc(c.nombre)}</b>\n` +
+      `Tipo: ${esc(valorActual(c, 'tipo'))}\n` +
+      `Banco: ${esc(valorActual(c, 'banco'))}\n` +
+      `Titular: ${esc(valorActual(c, 'titular'))}\n` +
+      `Tarjeta terminada en: ${c.ultimos4 ? esc(c.ultimos4) : 'sin dígitos'}\n` +
+      `Cuenta vinculada terminada en: ${c.ultimos4_cuenta ? esc(c.ultimos4_cuenta) : 'sin cuenta vinculada'}\n` +
+      `Predeterminada: ${esc(valorActual(c, 'predeterminada'))}\n\n` +
+      '¿Qué quieres cambiar?'
+    );
+  }
+
+  function tecladoFicha(c) {
+    const boton = (campo) => ({ text: CAMPOS[campo].etiqueta, callback_data: `ecf_${CAMPOS[campo].codigo}_${c.id}` });
+    const filas = [
+      [boton('nombre'), boton('tipo')],
+      [boton('banco'), boton('titular')],
+      [boton('ultimos4')]
+    ];
+    if (ES_TARJETA(c)) filas[2].push(boton('cuenta'));
+    filas.push([boton('predeterminada'), { text: 'Cerrar', callback_data: 'ecx_cerrar' }]);
+    return { reply_markup: { inline_keyboard: filas } };
+  }
+
+  /** Muestra los datos de la cuenta y los botones de cada campo (edita el mensaje si se da messageId) */
+  async function mostrarFicha(chatId, cuentaId, messageId = null) {
+    const c = await obtenerCuentaEditable(cuentaId);
+    if (!c) {
+      await enviar(chatId, 'Esa cuenta ya no está activa.');
+      return true;
+    }
+    const editado = messageId ? await editar(textoFicha(c), { chat_id: chatId, message_id: messageId, ...tecladoFicha(c) }) : null;
+    if (!editado) await enviar(chatId, textoFicha(c), tecladoFicha(c));
+    return true;
+  }
+
+  // -------------------------------------------------------------------------
+  // Un campo: pedir el valor, validar y confirmar
+  // -------------------------------------------------------------------------
+
+  async function pedirCampo(chatId, cuentaId, campo, messageId) {
+    const c = await obtenerCuentaEditable(cuentaId);
+    if (!c) {
+      await enviar(chatId, 'Esa cuenta ya no está activa.');
+      return;
+    }
+    const cancelar = [{ text: 'Cancelar', callback_data: `ecc_${cuentaId}` }];
+
+    if (campo === 'tipo') {
+      await editar(`<b>${esc(c.nombre)}</b>\nElige el tipo nuevo (ahora: ${esc(valorActual(c, 'tipo'))}):`, {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: {
+          inline_keyboard: [
+            ...TIPOS_DB.map(t => [{ text: ETIQUETAS_TIPO_DB[t], callback_data: `ecv_${t}_${cuentaId}` }]),
+            cancelar
+          ]
+        }
+      });
+      return;
+    }
+
+    if (campo === 'predeterminada') {
+      const esLaPredeterminada = Number(c.predeterminada) === 1;
+      await editar(
+        `<b>${esc(c.nombre)}</b>\n` +
+        (esLaPredeterminada
+          ? 'Hoy es tu cuenta predeterminada (la que uso cuando no dices con qué pagaste).'
+          : 'La cuenta predeterminada es la que uso cuando no dices con qué pagaste. ¿La dejo así?'),
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: esLaPredeterminada ? 'Quitarle lo predeterminada' : 'Sí, hacerla predeterminada', callback_data: `ecv_${esLaPredeterminada ? '0' : '1'}p_${cuentaId}` }],
+              cancelar
+            ]
+          }
+        }
+      );
+      return;
+    }
+
+    // Los demás se editan respondiendo con el valor nuevo
+    esperando.set(chatId, { cuentaId, campo, messageId, hasta: Date.now() + ESPERA_MS });
+    const pista = {
+      nombre: 'Escribe el nombre nuevo (por ejemplo: Crédito Valeska).',
+      banco: 'Escribe el banco (por ejemplo: Banco de Chile) o «quitar».',
+      titular: 'Escribe el titular (o «yo» para ti) o «quitar».',
+      ultimos4: 'Escribe los 4 últimos dígitos de la tarjeta (nunca el número completo).',
+      cuenta: 'Escribe los 4 últimos dígitos de la cuenta vinculada (nunca el número completo) o «quitar».'
+    }[campo];
+    await editar(`<b>${esc(c.nombre)}</b>\n${CAMPOS[campo].etiqueta} ahora: ${esc(valorActual(c, campo))}\n\n${pista}`, {
+      chat_id: chatId,
+      message_id: messageId,
+      reply_markup: { inline_keyboard: [cancelar] }
+    });
+  }
+
+  /** Valida el valor nuevo y muestra el resumen con Guardar y Cancelar. Devuelve false si no es válido (ya avisó). */
+  async function proponerCambio(chatId, cuentaId, campo, entrada, { messageId = null, silencioso = false } = {}) {
+    const [cuenta, todas] = await Promise.all([obtenerCuentaEditable(cuentaId), cuentasEditables()]);
+    if (!cuenta) {
+      await enviar(chatId, 'Esa cuenta ya no está activa.');
+      return false;
+    }
+    const v = validarEdicion(cuenta, campo, entrada, todas);
+    if (!v.ok) {
+      await enviar(chatId, esc(v.error));
+      return false;
+    }
+
+    const antes = valorActual(cuenta, campo);
+    if (String(antes) === String(v.texto)) {
+      if (!silencioso) await enviar(chatId, `Ya estaba así (${esc(antes)}): no hay nada que cambiar.`);
+      return false;
+    }
+
+    const key = nuevaClave();
+    pendientes.set(key, { cuentaId, campo, entrada });
+    setTimeout(() => pendientes.delete(key), ESPERA_MS).unref?.();
+    const texto =
+      `<b>¿Guardar este cambio en ${esc(cuenta.nombre)}?</b>\n\n${esc(CAMPOS[campo].etiqueta)}: ${esc(antes)} → <b>${esc(v.texto)}</b>`;
+    const opciones = {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: 'Guardar', callback_data: `ecg_${key}` },
+          { text: 'Cancelar', callback_data: `ecc_${cuentaId}` }
+        ]]
+      }
+    };
+    const editado = messageId ? await editar(texto, { chat_id: chatId, message_id: messageId, ...opciones }) : null;
+    if (!editado) await enviar(chatId, texto, opciones);
+    return true;
+  }
+
+  /** Respuesta de texto al campo que se está editando. true si consumió el mensaje. */
+  async function manejarTexto(msg) {
+    const chatId = msg.chat.id;
+    const espera = esperando.get(chatId);
+    if (!espera || typeof msg.text !== 'string') return false;
+    if (Date.now() > espera.hasta) {
+      esperando.delete(chatId);
+      return false;
+    }
+
+    try {
+      // Un número largo escrito por error no se queda en el chat
+      const c = await obtenerCuentaEditable(espera.cuentaId);
+      const v = c ? validarEdicion(c, espera.campo, msg.text, await cuentasEditables()) : null;
+      if (v && !v.ok && v.largo) await borrarMensaje(chatId, msg.message_id);
+
+      const valido = await proponerCambio(chatId, espera.cuentaId, espera.campo, msg.text, { messageId: null });
+      if (valido) esperando.delete(chatId);
+    } catch (error) {
+      errorBD('Error al editar una cuenta', error);
+      await enviar(chatId, 'No pude procesar eso. Inténtalo de nuevo.');
+    }
+    return true;
+  }
+
+  // -------------------------------------------------------------------------
+  // Para las frases ("cambia el nombre de la 8263 a X", "edita la cuenta 8263")
+  // -------------------------------------------------------------------------
+
+  /** Cuenta con esos 4 dígitos: { cuenta } o null (ya avisó si no hay o si hay varias) */
+  async function resolverPorDigitos(chatId, digitos) {
+    const halladas = await cuentasPorDigitos(digitos);
+    if (halladas.length === 0) {
+      await enviar(chatId, `No encuentro una cuenta o tarjeta terminada en ${esc(digitos)}. Escribe /editarcuenta para ver tus cuentas.`);
+      return null;
+    }
+    if (halladas.length > 1) {
+      await enviar(chatId, 'Hay varias cuentas con esos dígitos. Elige cuál quieres editar:', {
+        reply_markup: { inline_keyboard: halladas.map(c => [{ text: etiquetaCuenta(c).slice(0, 60), callback_data: `ecs_${c.id}` }]) }
+      });
+      return null;
+    }
+    return { cuenta: halladas[0] };
+  }
+
+  /** "edita la cuenta 8263": abre su ficha */
+  async function abrirPorDigitos(chatId, digitos) {
+    const r = await resolverPorDigitos(chatId, digitos);
+    if (r) await mostrarFicha(chatId, r.cuenta.id);
+    return true;
+  }
+
+  /** "cambia el nombre de la 8263 a X" o "la tarjeta 8263 es del banco de chile": propone el cambio con Guardar y Cancelar */
+  async function cambiarCampoPorDigitos(chatId, digitos, campo, valor) {
+    const r = await resolverPorDigitos(chatId, digitos);
+    if (r) await proponerCambio(chatId, r.cuenta.id, campo, valor);
+    return true;
+  }
+
+  // -------------------------------------------------------------------------
+  // Comando y botones
+  // -------------------------------------------------------------------------
+
+  function configurarComandos() {
+    bot.onText(/^\/(?:editarcuenta|editartarjeta)(?:@\w+)?(?:\s+(\d{4}))?\s*$/i, async (msg, match) => {
+      const chatId = msg.chat.id;
+      if (!esChatAutorizado(chatId)) {
+        await enviar(chatId, 'No estás autorizado para usar este bot.');
+        return;
+      }
+      try {
+        if (match[1]) await abrirPorDigitos(chatId, match[1]);
+        else await listar(chatId);
+      } catch (error) {
+        errorBD('Error en /editarcuenta', error);
+        await enviar(chatId, 'No pude leer las cuentas. Inténtalo de nuevo.');
+      }
+    });
+  }
+
+  /** Botones de este módulo. Devuelve true si el callback era suyo. */
+  async function manejarCallback(cb, chatId, data) {
+    const m = /^ec([sfvgcx])_(.+)$/.exec(data);
+    if (!m) return false;
+    const [, tipo, valor] = m;
+    const messageId = cb.message.message_id;
+
+    try {
+      // Elegir una cuenta
+      if (tipo === 's') {
+        await responderCallback(cb.id, {});
+        esperando.delete(chatId);
+        await mostrarFicha(chatId, Number(valor), messageId);
+        return true;
+      }
+
+      // Elegir un campo para editar
+      if (tipo === 'f') {
+        const [, codigo, id] = /^([a-z])_(\d+)$/.exec(valor) ?? [];
+        const campo = CAMPO_POR_CODIGO[codigo];
+        if (!campo) {
+          await responderCallback(cb.id, { text: 'Opción no válida' });
+          return true;
+        }
+        await responderCallback(cb.id, {});
+        await pedirCampo(chatId, Number(id), campo, messageId);
+        return true;
+      }
+
+      // Una opción elegida con botón: tipo (ecv_<tipo>_<id>) o predeterminada (ecv_1p_<id> / ecv_0p_<id>)
+      if (tipo === 'v') {
+        const op = /^(.+)_(\d+)$/.exec(valor);
+        if (!op) return true;
+        await responderCallback(cb.id, {});
+        if (/^[01]p$/.test(op[1])) await proponerCambio(chatId, Number(op[2]), 'predeterminada', op[1] === '1p', { messageId });
+        else await proponerCambio(chatId, Number(op[2]), 'tipo', op[1], { messageId });
+        return true;
+      }
+
+      // Guardar
+      if (tipo === 'g') {
+        const pendiente = pendientes.get(valor);
+        if (!pendiente) {
+          await responderCallback(cb.id, { text: 'Este botón ya expiró, vuelve a intentarlo' });
+          return true;
+        }
+        pendientes.delete(valor);
+        // Se vuelve a validar al guardar: otra edición pudo dejar ese dato ocupado
+        const [cuenta, todas] = await Promise.all([obtenerCuentaEditable(pendiente.cuentaId), cuentasEditables()]);
+        const v = cuenta ? validarEdicion(cuenta, pendiente.campo, pendiente.entrada, todas) : null;
+        if (!v?.ok) {
+          await editar(esc(v?.error ?? 'Esa cuenta ya no está activa.'), { chat_id: chatId, message_id: messageId });
+          await responderCallback(cb.id, { text: 'No se pudo guardar' });
+          return true;
+        }
+        const listo = await aplicarEdicion(pendiente.cuentaId, pendiente.campo, v.valor);
+        await responderCallback(cb.id, { text: listo ? 'Guardado' : 'Sin cambios' });
+        if (listo) await mostrarFicha(chatId, pendiente.cuentaId, messageId);
+        else await editar('No pude guardarlo: la cuenta ya no está activa.', { chat_id: chatId, message_id: messageId });
+        return true;
+      }
+
+      // Cancelar (vuelve a la ficha) o cerrar
+      if (tipo === 'c') {
+        esperando.delete(chatId);
+        await responderCallback(cb.id, { text: 'Cancelado' });
+        await mostrarFicha(chatId, Number(valor), messageId);
+        return true;
+      }
+      if (tipo === 'x') {
+        esperando.delete(chatId);
+        await editar('Listo.', { chat_id: chatId, message_id: messageId });
+        await responderCallback(cb.id, {});
+        return true;
+      }
+    } catch (error) {
+      errorBD('Error en un botón de editar cuenta', error);
+      await responderCallback(cb.id, { text: 'Error' });
+      return true;
+    }
+    return false;
+  }
+
+  return { configurarComandos, manejarCallback, manejarTexto, listar, abrirPorDigitos, cambiarCampoPorDigitos, mostrarFicha, proponerCambio };
+}

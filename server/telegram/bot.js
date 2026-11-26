@@ -32,6 +32,7 @@ import { crearRegistros } from './registrosBot.js';
 import { crearReset } from './resetBot.js';
 import { crearStatus } from './statusBot.js';
 import { crearVistaCuentas } from './vistaCuentasBot.js';
+import { crearEditarCuenta } from './editarCuentaBot.js';
 import { mensajesAyuda, COMANDOS_CONOCIDOS, COMANDOS_MENU } from './comandos.js';
 import { crearLoteTerceros } from './loteTerceros.js';
 import { crearTransferencias } from './transferenciasBot.js';
@@ -54,6 +55,8 @@ import {
   normalizar,
   capitalizarNombre,
   valorTitular,
+  nombreAutomatico,
+  esNombreSoloDigitos,
   TIPOS_CUENTA,
   TIPO_DB,
   ETIQUETAS_TIPO_CUENTA,
@@ -93,6 +96,8 @@ let reset = null;
 let status = null;
 // Vista de cuentas con vínculos, /cuentas (vistaCuentasBot.js); se crea al iniciar el bot
 let vistaCuentas = null;
+// Editar una cuenta o tarjeta, /editarcuenta (editarCuentaBot.js); se crea al iniciar el bot
+let editarCuenta = null;
 // Cartola de una tarjeta ajena + comprobante de la transferencia (loteTerceros.js); se crea al iniciar el bot
 let terceros = null;
 // Clasificación de transferencias salientes (transferenciasBot.js); se crea al iniciar el bot
@@ -271,12 +276,16 @@ export async function iniciarBot() {
 
     // Cuenta por defecto al registrar un gasto: la última usada o, si no hay, la primera que no es crédito
     vistaCuentas = crearVistaCuentas({
+      proponerCambioCuenta: (chatId, id, campo, valor) => editarCuenta.proponerCambio(chatId, id, campo, valor),
       enviar,
       editar,
       responderCallback,
       esc,
       cuentaPorDefecto: async (cuentas) => (await ultimaCuentaUsada(cuentas)) || cuentaPorDefecto(cuentas)
     });
+
+    editarCuenta = crearEditarCuenta({ bot, enviar, editar, responderCallback, esc, esChatAutorizado, borrarMensaje });
+    editarCuenta.configurarComandos();
 
     status = crearStatus({ bot, enviar, editar, esc, esChatAutorizado, chatIds: () => allowedChatIds });
     status.configurarComandos();
@@ -297,6 +306,9 @@ export async function iniciarBot() {
       ayuda: (chatId) => enviarAyuda(chatId),
       eliminarUltimo: (chatId) => registros.eliminarUltimo(chatId),
       gastoFijo: (msg, datos) => procesarGastoFijo(msg.chat.id, datos),
+      editarCuenta: (msg, datos) => (datos.accion === 'abrir'
+        ? editarCuenta.abrirPorDigitos(msg.chat.id, datos.digitos)
+        : editarCuenta.cambiarCampoPorDigitos(msg.chat.id, datos.digitos, datos.campo, datos.valor)),
       guardarCuenta: (msg, datos) => procesarCuentaDesdeTexto(msg, datos.textoCuenta, { natural: true, numeroLargo: datos.numeroLargo }),
       ayudaGuardarCuenta: (chatId) => enviarAyudaGuardarCuenta(chatId),
       asignarDigitos: (chatId, datos) => cartolas.proponerDigitos(chatId, datos),
@@ -614,6 +626,11 @@ function configurarManejadores() {
       return;
     }
 
+    // Valor nuevo de un campo de /editarcuenta (nombre, banco, titular, dígitos)
+    if (msg.text && editarCuenta && await editarCuenta.manejarTexto(msg)) {
+      return;
+    }
+
     // Respuesta a "¿De cuánto es?" o "¿Cómo se llama?" de un gasto fijo incompleto
     if (msg.text && await manejarRespuestaFijo(msg)) {
       return;
@@ -691,6 +708,11 @@ function configurarManejadores() {
 
     // Botones del lote de una tarjeta ajena (cartola y comprobante)
     if (terceros && await terceros.manejarCallback(cb, chatId, data)) {
+      return;
+    }
+
+    // Botones de /editarcuenta (y el botón Editar de /cuentas)
+    if (editarCuenta && await editarCuenta.manejarCallback(cb, chatId, data)) {
       return;
     }
 
@@ -1187,7 +1209,7 @@ async function actualizarMontoPendiente(msg) {
  * Cuentas para resolver nombres y medios de pago, la activa más antigua primero
  */
 async function listarCuentas() {
-  const [cuentas] = await query('SELECT id, nombre, tipo, activa FROM cuentas WHERE activa = 1 ORDER BY creado_en ASC, id ASC');
+  const [cuentas] = await query('SELECT id, nombre, tipo, activa, predeterminada FROM cuentas WHERE activa = 1 ORDER BY creado_en ASC, id ASC');
   return cuentas;
 }
 
@@ -1459,6 +1481,9 @@ async function resolverCuentaPago(medioPago) {
  * de cuotas), si sigue activa. null si no hay ninguno.
  */
 async function ultimaCuentaUsada(cuentas) {
+  // La cuenta que Juan marcó como predeterminada (/editarcuenta) manda sobre la última usada
+  const fija = cuentas.find(c => Number(c.predeterminada) === 1);
+  if (fija) return fija;
   try {
     const [filas] = await query(
       `SELECT cuenta_id FROM movimientos
@@ -1658,6 +1683,10 @@ async function buscarCuentaDuplicada(datos) {
 }
 
 async function guardarCuenta(datos) {
+  // Red de seguridad: un nombre que es solo dígitos nunca llega a la tabla
+  if (esNombreSoloDigitos(datos.nombre)) {
+    datos.nombre = nombreAutomatico({ tipo: datos.tipo, titular: datos.titular, ultimos4: datos.ultimos4, ultimos4Cuenta: datos.ultimos4Cuenta });
+  }
   // Nunca se guarda el número completo: solo los últimos 4 (ultimos4 de la tarjeta, ultimos4_cuenta de la cuenta)
   const [insercion] = await query(
     `INSERT INTO cuentas (nombre, tipo, banco, ultimos4, ultimos4_cuenta, titular, cupo_total, dia_vencimiento)
@@ -1745,8 +1774,9 @@ async function procesarCuentaDesdeTexto(msg, texto, { natural = false, numeroLar
     if (natural) {
       // Sin titular dicho: el titular por defecto; una tarjeta ajena se nombra por su dueña ("Tarjeta de Valeska")
       if (!datos.titular) datos.titular = valorTitular('yo');
-      if (datos.tipo && !esTitularPropio(datos.titular) && datos.nombre === nombrePorDefecto(datos.tipo, datos.banco)) {
-        datos.nombre = `${datos.tipo === 'credito' || datos.tipo === 'debito' ? 'Tarjeta' : 'Cuenta'} de ${datos.titular.split(' ')[0]}`;
+      // Sin un nombre dado: uno automático con el tipo, el titular y los 4 dígitos ("Crédito Valeska ****8263")
+      if (datos.tipo && (!datos.nombre || datos.nombre === nombrePorDefecto(datos.tipo, datos.banco))) {
+        datos.nombre = nombreAutomatico({ tipo: datos.tipo, titular: datos.titular, ultimos4: datos.ultimos4, ultimos4Cuenta: datos.ultimos4Cuenta });
       }
 
       const existente = await buscarCuentaPorDigitos(datos);
@@ -1760,8 +1790,13 @@ async function procesarCuentaDesdeTexto(msg, texto, { natural = false, numeroLar
       if (ia) datos = combinarCuenta(datos, ia);
     }
 
+    // El nombre nunca es solo dígitos (eso es el número de la tarjeta): si no se dio uno, se arma uno automático
+    if (datos.tipo && esNombreSoloDigitos(datos.nombre)) {
+      datos.nombre = nombreAutomatico({ tipo: datos.tipo, titular: datos.titular, ultimos4: datos.ultimos4, ultimos4Cuenta: datos.ultimos4Cuenta });
+    }
+
     const key = `${chatId}_${Date.now()}`;
-    pendingCuentas.set(key, { datos, mensajeUsuarioId: msg.message_id ?? null });
+    pendingCuentas.set(key, { datos, natural, mensajeUsuarioId: msg.message_id ?? null });
     setTimeout(() => pendingCuentas.delete(key), 5 * 60 * 1000);
 
     if (!datos.tipo) {
@@ -1915,6 +1950,10 @@ async function manejarNombreCuentaPendiente(msg) {
   if (!nombre) return true;
 
   // El nombre no puede ser un número de tarjeta
+  if (esNombreSoloDigitos(nombre)) {
+    await enviar(chatId, 'El nombre no puede ser solo números. Escribe otro (por ejemplo: Crédito Valeska).');
+    return true;
+  }
   if (enmascararDigitos(nombre) !== nombre) {
     await borrarMensaje(chatId, msg.message_id);
     await enviar(chatId, 'El nombre no puede incluir números largos. Escribe otro nombre.');
@@ -2038,7 +2077,12 @@ async function manejarCallbackCuentas(cb, chatId, data) {
       datos.cupo = null;
       datos.diaPago = null;
     }
-    if (!datos.nombre) datos.nombre = nombrePorDefecto(tipo, datos.banco);
+    // Sin nombre (o con uno que es solo dígitos): en una frase, el automático ("Crédito Valeska ****8263"); con /savecard, el de siempre
+    if (!datos.nombre || esNombreSoloDigitos(datos.nombre)) {
+      datos.nombre = pendiente.natural
+        ? nombreAutomatico({ tipo, titular: datos.titular, ultimos4: datos.ultimos4, ultimos4Cuenta: datos.ultimos4Cuenta })
+        : nombrePorDefecto(tipo, datos.banco);
+    }
 
     await mostrarConfirmacionCuenta(chatId, partes[1], messageId);
     await responderCallback(cb.id, {});

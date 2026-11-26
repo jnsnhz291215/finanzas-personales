@@ -33,6 +33,7 @@ export function cuentaSegura(fila) {
     tipo: fila.tipo,
     titular: t(fila.titular),
     activa: Number(fila.activa) === 1,
+    predeterminada: Number(fila.predeterminada) === 1,
     // Solo se aceptan exactamente 4 dígitos; cualquier otra cosa no se muestra
     ultimos4: tarjeta && /^\d{4}$/.test(tarjeta) ? tarjeta : null,
     ultimos4_cuenta: cuenta && /^\d{4}$/.test(cuenta) ? cuenta : null,
@@ -46,7 +47,7 @@ export async function cargarResumen() {
   const query = await consulta();
 
   const [filas] = await query(
-    'SELECT id, nombre, banco, tipo, ultimos4, ultimos4_cuenta, titular, activa, numero_cuenta FROM cuentas ORDER BY activa DESC, nombre'
+    'SELECT id, nombre, banco, tipo, ultimos4, ultimos4_cuenta, titular, activa, predeterminada, numero_cuenta FROM cuentas ORDER BY activa DESC, nombre'
   );
   const [movs] = await query('SELECT cuenta_id, COUNT(*) AS n FROM movimientos GROUP BY cuenta_id');
   const [cartolas] = await query('SELECT cuenta_id, COUNT(*) AS n FROM archivos_importados GROUP BY cuenta_id');

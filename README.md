@@ -793,6 +793,24 @@ o un error inesperado también reciben respuesta (los errores quedan en el log, 
 entiende (por ejemplo `/status algo`) responde "No entendí lo que escribiste después de /status" con cómo usarlo, y un botón que venció o ya no tiene
 estado responde "Este botón ya expiró, vuelve a intentarlo" en vez de quedarse girando.
 
+### Editar una cuenta o tarjeta: /editarcuenta
+
+`/editarcuenta` (alias `/editartarjeta`; también `/editarcuenta 8263` para abrir una directo) lista tus cuentas con botones, cada una como
+**nombre · tipo · ****1234 · titular**. Al elegir una muestra sus datos y un botón por campo: **Nombre**, **Tipo**, **Banco**, **Titular**, **Últimos 4
+dígitos**, **Cuenta vinculada** (para tarjetas) y **Predeterminada**. Cada campo se edita **respondiendo con el valor nuevo** (o eligiendo una opción, en
+Tipo y Predeterminada), con un resumen "antes → después" y botones **Guardar** y **Cancelar**. En `/cuentas`, cada cuenta tiene un botón **Editar**.
+
+- **Validaciones:** los dígitos son exactamente 4 (un número largo se rechaza y se borra tu mensaje) y no pueden quedar dos cuentas activas con los mismos 4
+  dígitos y el mismo tipo; el nombre no puede quedar vacío ni ser solo números.
+- **Predeterminada:** la cuenta que se usa cuando no dices con qué pagaste; manda sobre "la última que usaste". Solo una a la vez
+  (columna `cuentas.predeterminada`, con migración segura).
+- **Con frases (reglas locales, sin Gemini):** `cambia el nombre de la 8263 a Crédito Valeska`, `la tarjeta 8263 es del banco de chile`,
+  `edita la cuenta 8263`. Respondiendo a un mensaje de `/cuentas`: `cámbiale el nombre a X`, `cambia el nombre de la 2 a X`, `la 2 es del banco de chile`.
+  Todo pasa por el mismo resumen con Guardar y Cancelar y las mismas validaciones.
+- **Nombre automático:** al guardar con una frase o con `/savecard`, el nombre **nunca** es solo dígitos. Si no das uno, se arma "Crédito Valeska ****8263" o
+  "Débito Juan ****5555" (tipo, primer nombre del titular y los 4 dígitos). Una migración renombra con ese formato las cuentas que ya tenían solo dígitos
+  como nombre.
+
 ### Cuentas, vínculos y datos guardados: /cuentas
 
 `/cuentas` (alias `/datosguardados`; también "qué cuentas tengo", "muéstrame mis cuentas" y "qué datos tienes guardados", siempre por reglas,
