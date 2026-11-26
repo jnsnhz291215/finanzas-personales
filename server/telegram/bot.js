@@ -1,3 +1,4 @@
+import { conCerrar, CALLBACK_CERRAR } from './cerrar.js';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const TelegramBot = require('node-telegram-bot-api');
@@ -40,6 +41,8 @@ import { crearResetCuenta } from './resetCuentaBot.js';
 import { crearBotonesTemporales } from './botonesTemporales.js';
 import { crearMantenimiento } from './mantenimientoBot.js';
 import { instalarBufferErrores } from './bufferErrores.js';
+import { crearLimpiar } from './limpiarBot.js';
+import { registrarMensaje, registrarSalidas, programarPurga } from './mensajesChat.js';
 import { crearEditarCuenta } from './editarCuentaBot.js';
 import { mensajesAyuda, COMANDOS_CONOCIDOS, COMANDOS_MENU } from './comandos.js';
 import { crearLoteTerceros } from './loteTerceros.js';
@@ -100,6 +103,7 @@ instalarBufferErrores();
 
 let sistema = null;
 let mantenimiento = null;
+let limpiar = null;
 // Botones con vencimiento: se quitan solos al vencer (botonesTemporales.js)
 let botonesTemporales = null;
 // Eliminar/corregir/deshacer respondiendo a un mensaje (registrosBot.js); se crea al iniciar el bot
@@ -307,6 +311,10 @@ export async function iniciarBot() {
 
     isRunning = true;
 
+    // Cada mensaje que el bot envía queda registrado (solo su id) para que /limpiar pueda borrarlo
+    registrarSalidas(bot);
+    programarPurga();
+
     bot.on('polling_error', (err) => logErrorTelegram('polling_error', err));
 
     configurarComandos();
@@ -434,6 +442,8 @@ export async function iniciarBot() {
     sistema.configurarComandos();
     mantenimiento = crearMantenimiento({ bot, enviar, editar, responderCallback, esc, esChatAutorizado });
     mantenimiento.configurarComandos();
+    limpiar = crearLimpiar({ bot, enviar, editar, responderCallback, esChatAutorizado });
+    limpiar.configurarComandos();
     configurarManejadores();
 
     // Quita los botones que vencieron mientras el bot estaba apagado y reprograma los que siguen pendientes
@@ -730,6 +740,9 @@ function configurarManejadores() {
 
   // Manejador de mensajes de texto (registro de transacciones)
   bot.on('message', async (msg) => {
+    // Cada mensaje del usuario queda registrado (solo su id) para que /limpiar pueda borrarlo
+    if (esChatAutorizado(msg.chat.id)) registrarMensaje(msg.chat.id, msg.message_id, 'usuario').catch(() => {});
+
     // Documentos (álbum o seguidos): se juntan y se procesan de a uno
     if (msg.document && !msg.text && esChatAutorizado(msg.chat.id) && juntarDocumentos(msg)) return;
 
@@ -939,6 +952,13 @@ function configurarManejadores() {
       return;
     }
 
+    // Cerrar (común a todas las listas con botones de acción): solo quita el teclado; el texto queda como está
+    if (data === CALLBACK_CERRAR) {
+      await responderCallback(cb.id, {});
+      await botonesTemporales?.quitarTeclado(chatId, cb.message.message_id);
+      return;
+    }
+
     // Botones de compras en cuotas
     if (cuotas && await cuotas.manejarCallback(cb, chatId, data)) {
       return;
@@ -951,6 +971,11 @@ function configurarManejadores() {
 
     // Botones de /reboot y /update
     if (sistema && await sistema.manejarCallback(cb, chatId, data)) {
+      return;
+    }
+
+    // Botones de /limpiar
+    if (limpiar && await limpiar.manejarCallback(cb, chatId, data)) {
       return;
     }
 
@@ -2732,10 +2757,10 @@ async function responderConsultaDatos(chatId, termino) {
 
     await enviar(chatId, 'Encontré varias coincidencias. Elige una:', {
       reply_markup: {
-        inline_keyboard: hallados.map(r => [{
+        inline_keyboard: conCerrar(hallados.map(r => [{
           text: `${r.alias} - ${r.banco}`.slice(0, 60),
           callback_data: `dtq_${r.id}`
-        }])
+        }]))
       }
     });
   } catch (error) {

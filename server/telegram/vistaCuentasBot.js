@@ -14,6 +14,7 @@
  * Los textos de la BD (nombres, titulares) se escapan siempre. No usa Gemini.
  */
 
+import { conCerrar } from './cerrar.js';
 import { describirError } from './errores.js';
 import { cargarResumen, fijarTitular, fijarDigitos } from '../resumenDatos.js';
 import { ETIQUETAS_TIPO_DB, normalizar, valorTitular } from './cuentas.js';
@@ -321,7 +322,7 @@ export function crearVistaCuentas(ctx) {
       for (const m of mensajes) {
         // Un botón Editar por cada cuenta del mensaje (lo atiende /editarcuenta)
         const teclado = m.cuentas.length > 0
-          ? { reply_markup: { inline_keyboard: m.cuentas.slice(0, 30).map(c => [{ text: `Editar ${c.indice}. ${c.nombre}`.slice(0, 40), callback_data: `ecs_${c.id}` }]) } }
+          ? { reply_markup: { inline_keyboard: conCerrar(m.cuentas.slice(0, 30).map(c => [{ text: `Editar ${c.indice}. ${c.nombre}`.slice(0, 40), callback_data: `ecs_${c.id}` }])) } }
           : undefined;
         const enviado = await enviar(chatId, m.texto, teclado);
         if (enviado?.message_id && m.cuentas.length > 0) {

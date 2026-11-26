@@ -268,3 +268,14 @@ CREATE TABLE IF NOT EXISTS botones_temporales (
   UNIQUE KEY uq_botones_temporales_mensaje (chat_id, message_id),
   INDEX idx_botones_temporales_vence (vence_en)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Mensajes del chat de las últimas 48 h (los que el bot envía y los que recibe), para que /limpiar pueda borrarlos
+CREATE TABLE IF NOT EXISTS mensajes_chat (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  chat_id BIGINT NOT NULL,
+  message_id BIGINT NOT NULL,
+  fecha BIGINT NOT NULL,
+  origen VARCHAR(10) NOT NULL,
+  UNIQUE KEY uq_mensajes_chat (chat_id, message_id),
+  INDEX idx_mensajes_chat_fecha (fecha)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

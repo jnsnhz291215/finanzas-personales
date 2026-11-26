@@ -8,6 +8,7 @@
  * Los errores de BD se registran solo con su código.
  */
 
+import { botonCerrar, conCerrar } from './cerrar.js';
 import { describirError } from './errores.js';
 import { parsearMontoExacto, analizarMonto } from './parser.js';
 import { fechaHoySantiago, formatearFechaCL } from './fechas.js';
@@ -115,7 +116,8 @@ export function crearAdmin(ctx) {
               ? { text: 'Quitar préstamo', callback_data: `mvq_${id}` }
               : { text: 'Marcar como préstamo', callback_data: `mvl_${id}` },
             { text: 'Borrar', callback_data: `mvb_${id}` }
-          ]
+          ],
+          botonCerrar()
         ]
       }
     };
@@ -148,10 +150,10 @@ export function crearAdmin(ctx) {
     );
     await enviar(chatId, `<b>${esc(titulo)}</b>\n\n${lineas.join('\n')}\n\nToca un movimiento para editarlo o borrarlo.`, {
       reply_markup: {
-        inline_keyboard: filas.map((m, i) => [{
+        inline_keyboard: conCerrar(filas.map((m, i) => [{
           text: `${i + 1}. ${dinero(Number(m.monto))} ${m.descripcion}`.slice(0, 48),
           callback_data: `mvo_${m.id}`
-        }])
+        }]))
       }
     });
   }
@@ -346,10 +348,10 @@ export function crearAdmin(ctx) {
       '\n\nToca una regla para eliminarla.',
       {
         reply_markup: {
-          inline_keyboard: reglas.map((r, i) => [{
+          inline_keyboard: conCerrar(reglas.map((r, i) => [{
             text: `${i + 1}. ${r.texto_buscar} - ${r.categoria_nombre}`.slice(0, 48),
             callback_data: `rgd_${r.id}`
-          }])
+          }]))
         }
       }
     );
@@ -487,7 +489,8 @@ export function crearAdmin(ctx) {
               { text: 'Ingreso base', callback_data: 'plb_x' },
               { text: 'Porcentajes', callback_data: 'plp_x' }
             ],
-            [{ text: 'Usar ingresos reales', callback_data: 'plr_x' }]
+            [{ text: 'Usar ingresos reales', callback_data: 'plr_x' }],
+            botonCerrar()
           ]
         }
       }
@@ -576,10 +579,10 @@ export function crearAdmin(ctx) {
       `\n\nTotal: ${dinero(total)}`,
       {
         reply_markup: {
-          inline_keyboard: fijos.map((f, i) => [
+          inline_keyboard: conCerrar(fijos.map((f, i) => [
             { text: `Editar ${i + 1}. ${f.nombre}`.slice(0, 30), callback_data: `fje_${f.id}` },
             { text: `Desactivar ${i + 1}`, callback_data: `fjd_${f.id}` }
-          ])
+          ]))
         }
       }
     );
@@ -624,7 +627,8 @@ export function crearAdmin(ctx) {
             [
               { text: 'Palabras clave', callback_data: `fjf_${m[1]}_p` },
               { text: 'Nombre', callback_data: `fjf_${m[1]}_n` }
-            ]
+            ],
+            botonCerrar()
           ]
         }
       });

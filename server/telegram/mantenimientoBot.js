@@ -13,6 +13,7 @@
  * Botones (prefijo mt): mtl_x lista · mtt_<id> elegir tarea · mty_<id> confirmar · mtx_x cancelar.
  */
 
+import { botonCerrar } from './cerrar.js';
 import { describirError } from './errores.js';
 import { ultimasLineasDeError } from './bufferErrores.js';
 
@@ -129,7 +130,7 @@ export function crearMantenimiento(ctx) {
       reply_markup: {
         inline_keyboard: [
           ...TAREAS.map(t => [{ text: t.etiqueta, callback_data: `mtt_${t.id}` }]),
-          [{ text: 'Cerrar', callback_data: 'mtx_x' }]
+          botonCerrar()
         ]
       }
     };
@@ -156,7 +157,7 @@ export function crearMantenimiento(ctx) {
         {
           chat_id: chatId,
           message_id: messageId,
-          reply_markup: { inline_keyboard: [[{ text: 'Otra tarea', callback_data: 'mtl_x' }, { text: 'Cerrar', callback_data: 'mtx_x' }]] }
+          reply_markup: { inline_keyboard: [[{ text: 'Otra tarea', callback_data: 'mtl_x' }, ...botonCerrar()]] }
         }
       );
     } catch (error) {

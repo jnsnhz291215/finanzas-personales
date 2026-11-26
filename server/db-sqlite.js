@@ -128,6 +128,7 @@ export async function inicializarDB() {
     migrarPeriodoArchivos(database);
     migrarCargosCartola(database);
     migrarBotonesTemporales(database);
+    migrarMensajesChat(database);
     migrarRegistros(database);
     migrarDestinatarios(database);
 
@@ -314,6 +315,21 @@ function migrarComprasCuotas(database) {
  * Migración idempotente (SQLite): agrega ultimos4_cuenta a cuentas, los últimos 4 dígitos del
  * número de cuenta (ultimos4 es el de la tarjeta). Nunca se guardan números completos.
  */
+/** Migración idempotente (SQLite): mensajes del chat (ids de Telegram de las últimas 48 h, para /limpiar) */
+function migrarMensajesChat(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS mensajes_chat (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id INTEGER NOT NULL,
+      message_id INTEGER NOT NULL,
+      fecha INTEGER NOT NULL,
+      origen TEXT NOT NULL,
+      UNIQUE (chat_id, message_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_mensajes_chat_fecha ON mensajes_chat(fecha);
+  `);
+}
+
 /** Migración idempotente (SQLite): botones con vencimiento (el bot los quita solos al vencer, también tras reiniciar) */
 function migrarBotonesTemporales(database) {
   database.exec(`

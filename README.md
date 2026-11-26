@@ -938,6 +938,18 @@ npm run reparar-fechas -- --aplicar # repara, en una transacción
   errores del bot* (las últimas 30 líneas de `logs/err.log` de PM2, o de un buffer en memoria si no existe, sin tokens, keys, URLs, RUT ni números
   largos). Cuando Gemini falla, el log registra el código HTTP, el status de Google y la causa traducida, y el bot sigue con las reglas locales. Para agregar otra tarea, se suma una entrada a `TAREAS`.
 
+### Botón Cerrar y /limpiar
+
+- Toda lista con botones de acción (`/cuotas`, `/fijos`, `/cuentas`, `/ultimos`, reglas, plan, `/estadocuenta`, `/mantenimiento`, la ficha de un
+  movimiento...) termina con un botón **Cerrar** (`server/telegram/cerrar.js`, un solo callback `cerrar_x`): quita el teclado y el texto queda
+  como está. En `/cuotas`, las compras con el mismo nombre se distinguen: «Desactivar Apple ($21.749)».
+- `/limpiar` (alias `/limpiarchat`, solo chats autorizados) borra los mensajes del chat de las últimas 48 h. Telegram no deja a un bot borrar todo
+  el historial: solo mensajes de menos de 48 h y conociendo su `message_id`, así que el bot registra el id (solo el id, nunca el texto) de cada mensaje
+  que envía o recibe en la tabla `mensajes_chat` (se purga al iniciar y cada hora). Muestra cuántos puede borrar con **Limpiar** / **Cancelar**; al
+  confirmar borra uno por uno, ignora los que ya no existen y responde «Borré N mensajes…», mensaje que se borra solo a los 30 s.
+  `/limpiar todo menos lo último` deja los 5 mensajes más recientes. Nunca toca archivos de storage ni datos de la base. Los mensajes de más de 48 h
+  hay que borrarlos desde Telegram con «Borrar historial».
+
 ### Estados de cuenta guardados: /estadocuenta
 
 `/estadocuenta` (alias `/cartolas` y `/historial`) sirve para revisar lo que ya está guardado de cada cuenta. Acepta `/estadocuenta 8263`

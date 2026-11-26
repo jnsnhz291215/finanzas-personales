@@ -125,6 +125,21 @@ if (MOTOR_ELEGIDO === 'mariadb') {
     );
   }
 
+  /** Migración idempotente (MariaDB): mensajes del chat (ids de Telegram de las últimas 48 h, para /limpiar) */
+  async function migrarMensajesChat(connection) {
+    await connection.query(
+      `CREATE TABLE IF NOT EXISTS mensajes_chat (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        chat_id BIGINT NOT NULL,
+        message_id BIGINT NOT NULL,
+        fecha BIGINT NOT NULL,
+        origen VARCHAR(10) NOT NULL,
+        UNIQUE KEY uq_mensajes_chat (chat_id, message_id),
+        INDEX idx_mensajes_chat_fecha (fecha)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
+    );
+  }
+
   /** Migración idempotente (MariaDB): botones con vencimiento (el bot los quita solos al vencer, también tras reiniciar) */
   async function migrarBotonesTemporales(connection) {
     await connection.query(
@@ -438,6 +453,7 @@ if (MOTOR_ELEGIDO === 'mariadb') {
         await migrarPeriodoArchivos(connection);
         await migrarCargosCartola(connection);
         await migrarBotonesTemporales(connection);
+        await migrarMensajesChat(connection);
         await migrarRegistros(connection);
         await migrarDestinatarios(connection);
         await migrarDatosTransferencia(connection);

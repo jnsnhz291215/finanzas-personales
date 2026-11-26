@@ -10,6 +10,7 @@
  * edicionCuentas.js). Los textos de la BD (nombres, titulares) se escapan siempre.
  */
 
+import { botonCerrar } from './cerrar.js';
 import { describirError } from './errores.js';
 import {
   CAMPOS,
@@ -89,7 +90,7 @@ export function crearEditarCuenta(ctx) {
       reply_markup: {
         inline_keyboard: [
           ...cuentas.slice(0, 40).map(c => [{ text: etiquetaCuenta(c).slice(0, 60), callback_data: `ecs_${c.id}` }]),
-          [{ text: 'Cerrar', callback_data: 'ecx_cerrar' }]
+          botonCerrar()
         ]
       }
     });
@@ -117,7 +118,7 @@ export function crearEditarCuenta(ctx) {
       [boton('ultimos4')]
     ];
     if (ES_TARJETA(c)) filas[2].push(boton('cuenta'));
-    filas.push([boton('predeterminada'), { text: 'Cerrar', callback_data: 'ecx_cerrar' }]);
+    filas.push([boton('predeterminada'), ...botonCerrar()]);
     return { reply_markup: { inline_keyboard: filas } };
   }
 

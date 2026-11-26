@@ -12,6 +12,7 @@
  * Privacidad: nunca se muestra la ruta de un archivo; la descarga solo envía archivos que están dentro de FINANZAS_STORAGE.
  */
 
+import { botonCerrar, conCerrar } from './cerrar.js';
 import { describirError } from './errores.js';
 import { promises as fs } from 'fs';
 import {
@@ -65,7 +66,7 @@ export function crearEstadoCuenta(ctx) {
     await mostrar(
       chatId, messageId,
       `${aviso ? `${aviso}\n\n` : ''}<b>Estados de cuenta</b>\n¿De qué cuenta?`,
-      cuentas.map(c => [{ text: etiquetaCuenta(c), callback_data: `exc_${c.id}` }])
+      conCerrar(cuentas.map(c => [{ text: etiquetaCuenta(c), callback_data: `exc_${c.id}` }]))
     );
   }
 
@@ -81,7 +82,7 @@ export function crearEstadoCuenta(ctx) {
     await mostrar(
       chatId, messageId,
       `<b>${esc(cuenta.nombre)}</b>\n¿De qué año?`,
-      [...anios.map(a => [{ text: a, callback_data: `exa_${cuentaId}_${a}` }]), [{ text: 'Volver', callback_data: 'exl_x' }]]
+      [...anios.map(a => [{ text: a, callback_data: `exa_${cuentaId}_${a}` }]), [{ text: 'Volver', callback_data: 'exl_x' }], botonCerrar()]
     );
   }
 
@@ -102,7 +103,8 @@ export function crearEstadoCuenta(ctx) {
           text: `${nombreMes(mes)} · ${n.movimientos} mov.${n.cartolas > 0 ? ` · ${n.cartolas} cartola${n.cartolas === 1 ? '' : 's'}` : ''}`.slice(0, 60),
           callback_data: `exm_${cuentaId}_${mes}`
         }]),
-        volver
+        volver,
+        botonCerrar()
       ]
     );
   }
@@ -139,7 +141,7 @@ export function crearEstadoCuenta(ctx) {
     }]);
     botones.push([
       { text: 'Otro mes', callback_data: `exo_${cuentaId}_${mes}` },
-      { text: 'Cerrar', callback_data: 'exz_x' }
+      ...botonCerrar()
     ]);
 
     // Resumen y movimientos en mensajes nuevos; los botones van solo en el último

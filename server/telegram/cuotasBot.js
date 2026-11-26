@@ -9,6 +9,7 @@
  * Los errores de BD se registran solo con su código.
  */
 
+import { conCerrar, nombresDistinguibles } from './cerrar.js';
 import { describirError } from './errores.js';
 import path from 'path';
 import { parsearMontoExacto, extraerFecha, extraerMedioPago } from './parser.js';
@@ -112,13 +113,15 @@ export function crearCuotas(ctx) {
       'Paga una cuota escribiendo, por ejemplo: pagué cuota tía mac'
     ];
     const mensajes = partirEnMensajes(lineas);
+    // Compras con el mismo nombre se distinguen por el valor de la cuota: "Desactivar Apple ($21.749)"
+    const nombres = nombresDistinguibles(activas, dinero);
     for (let i = 0; i < mensajes.length; i++) {
       const ultimo = i === mensajes.length - 1;
       // Los botones para desactivar una compra van en el último mensaje
       await enviar(chatId, mensajes[i], ultimo && activas.length > 0
         ? {
             reply_markup: {
-              inline_keyboard: activas.map(c => [{ text: `Desactivar ${c.alias}`.slice(0, 40), callback_data: `cqe_${c.id}` }])
+              inline_keyboard: conCerrar(activas.map((c, i) => [{ text: `Desactivar ${nombres[i]}`.slice(0, 48), callback_data: `cqe_${c.id}` }]))
             }
           }
         : undefined);
