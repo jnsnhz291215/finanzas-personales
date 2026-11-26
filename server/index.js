@@ -16,6 +16,7 @@ import { ensureStorageDirs, iniciarLimpiezaTemporales } from './storage.js';
 import { inicializarDB } from './db.js';
 import { iniciarBot, detenerBot } from './telegram/bot.js';
 import { decidirWeb, registrarEscucha } from './web.js';
+import { describirErrorBD } from './motorDB.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -101,10 +102,34 @@ function iniciarWeb() {
   return true;
 }
 
+const ESPERA_REINTENTO_BD_MS = (Number(process.env.DB_REINTENTO_SEGUNDOS) || 30) * 1000;
+
+/**
+ * Inicializa la base de datos y, si no conecta (credenciales, MariaDB caído), lo dice con un mensaje
+ * claro (nunca la clave) y reintenta cada 30 s. Así el proceso no se cierra y PM2 no lo reinicia en bucle.
+ */
+async function inicializarConReintentos() {
+  for (;;) {
+    try {
+      await inicializarDB();
+      return;
+    } catch (error) {
+      console.error(`✗ No se pudo inicializar la base de datos: ${describirErrorBD(error)}`);
+      console.error(`  Reintento en ${Math.round(ESPERA_REINTENTO_BD_MS / 1000)} s (el bot arranca cuando la base responda).`);
+      await new Promise(resolve => setTimeout(resolve, ESPERA_REINTENTO_BD_MS));
+    }
+  }
+}
+
+// Una promesa rechazada sin manejar no debe tumbar el arranque: se registra y se sigue
+process.on('unhandledRejection', (motivo) => {
+  console.error(`✗ Promesa rechazada sin manejar: ${motivo?.code ?? motivo?.name ?? 'error'}: ${String(motivo?.message ?? motivo).slice(0, 200)}`);
+});
+
 // Inicializar base de datos y servidor
 async function iniciar() {
   try {
-    await inicializarDB();
+    await inicializarConReintentos();
     await ensureStorageDirs();
     iniciarLimpiezaTemporales();
     const hayWeb = iniciarWeb();

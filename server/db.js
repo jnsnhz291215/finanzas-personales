@@ -1,7 +1,10 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-import { elegirMotor, variablesFaltantesMariaDB } from './motorDB.js';
+import fs from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { elegirMotor, variablesFaltantesMariaDB, sentenciasDeEsquema } from './motorDB.js';
 
 // Motor de BD según DB_ENGINE ('sqlite' por defecto, 'mariadb' en el servidor)
 const MOTOR_ELEGIDO = elegirMotor();
@@ -30,6 +33,11 @@ if (MOTOR_ELEGIDO === 'mariadb') {
     user: process.env.DB_USER || 'root',
     password: process.env.DB_PASSWORD || '',
     database: process.env.DB_NAME || 'finanzas_personales_juan',
+    charset: 'utf8mb4',
+    // Mismos tipos que entrega SQLite, que es con lo que se escribió el resto de la app: fechas como
+    // texto ('2026-11-25', no un Date) y DECIMAL como número (no como texto '5500.00')
+    dateStrings: true,
+    decimalNumbers: true,
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0
@@ -271,21 +279,52 @@ if (MOTOR_ELEGIDO === 'mariadb') {
     );
   }
 
-  motor = 'mariadb';
-  dbModule = {
-    getConnection: async function() {
-      if (!pool) {
-        pool = mysql.createPool(config);
+  /**
+   * Crea las tablas base si faltan, a partir de database/schema.sql (así funciona con una base vacía).
+   * Todas las sentencias son idempotentes; las categorías por defecto solo se insertan si la tabla
+   * está vacía, para no resucitar las que se borraron.
+   */
+  async function crearEsquemaBase(connection) {
+    const ruta = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../database/schema.sql');
+    const sentencias = sentenciasDeEsquema(await fs.readFile(ruta, 'utf8'));
+    for (const sentencia of sentencias) {
+      if (/^INSERT\s+INTO\s+categorias\b/i.test(sentencia)) {
+        const [filas] = await connection.query('SELECT COUNT(*) AS n FROM categorias');
+        if (Number(filas[0].n) > 0) continue;
       }
-      return pool;
-    },
+      await connection.query(sentencia);
+    }
+  }
 
-    inicializarDB: async function() {
+  /** Clave foránea de movimientos.compra_cuota_id a compras_cuotas (schema.sql la agrega con un ALTER no idempotente) */
+  async function asegurarClaveCompraCuota(connection) {
+    const [filas] = await connection.query(
+      `SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movimientos'
+         AND CONSTRAINT_NAME = 'fk_movimientos_compra_cuota'`
+    );
+    if (filas.length > 0) return;
+    await connection.query(
+      `ALTER TABLE movimientos ADD CONSTRAINT fk_movimientos_compra_cuota
+         FOREIGN KEY (compra_cuota_id) REFERENCES compras_cuotas(id) ON DELETE SET NULL`
+    );
+  }
+
+  // Funciones sueltas (sin `this`): index.js y el resto de la app las importan desestructuradas
+  async function getConnection() {
+    if (!pool) {
+      pool = mysql.createPool(config);
+    }
+    return pool;
+  }
+
+  async function inicializarDB() {
       try {
-        const connection = await this.getConnection();
+        const connection = await getConnection();
         await connection.query('SELECT 1');
         console.log('✓ Conexión a MariaDB/MySQL establecida');
-        
+
+        await crearEsquemaBase(connection);
         await migrarTipoMovimiento(connection);
         await migrarDatosCuenta(connection);
         await migrarTipoEfectivo(connection);
@@ -294,6 +333,7 @@ if (MOTOR_ELEGIDO === 'mariadb') {
         await migrarDatosTransferencia(connection);
         await migrarPlanAhorro(connection);
         await migrarComprasCuotas(connection);
+        await asegurarClaveCompraCuota(connection);
         
         const [usuarios] = await connection.query('SELECT * FROM usuario LIMIT 1');
         
@@ -308,16 +348,18 @@ if (MOTOR_ELEGIDO === 'mariadb') {
         
         return connection;
       } catch (error) {
-        console.error('Error al inicializar base de datos:', error.message);
+        // index.js muestra el motivo (describirErrorBD) y reintenta: aquí solo se propaga
         throw error;
       }
-    },
+  }
 
-    query: async function(sql, params) {
-      const connection = await this.getConnection();
-      return connection.query(sql, params);
-    }
-  };
+  async function query(sql, params) {
+    const connection = await getConnection();
+    return connection.query(sql, params);
+  }
+
+  motor = 'mariadb';
+  dbModule = { getConnection, inicializarDB, query };
 } else {
   // Usar SQLite (para desarrollo/demo)
   console.log('⚠ Usando SQLite (desarrollo). Para MariaDB define DB_ENGINE=mariadb y las variables DB_*.');

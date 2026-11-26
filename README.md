@@ -81,8 +81,8 @@ cd finanzas-personales
 # Conectarse a MariaDB como root
 mysql -u root -p
 
-# Ejecutar el script de creación
-source database/schema.sql
+# Crear la base (utf8mb4) con el nombre que pondrás en DB_NAME
+CREATE DATABASE finanzas_personales_juan CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 # Crear el usuario y permisos (editar la contraseña antes)
 source database/crear_usuario.sql
@@ -94,6 +94,15 @@ source database/crear_usuario.sql
 # Salir
 exit
 ```
+
+> **Las tablas se crean solas.** Con `DB_ENGINE=mariadb`, al arrancar la app aplica `database/schema.sql` (solo las sentencias
+> idempotentes: sin `CREATE DATABASE`, `USE` ni `ALTER TABLE`) y las migraciones sobre la base vacía que creaste; no hace falta
+> ejecutar `source database/schema.sql` a mano (si ya lo hiciste, no pasa nada). Las categorías por defecto solo se insertan si la tabla
+> está vacía. El pool de MariaDB devuelve las fechas como texto (`2026-11-25`) y los DECIMAL como números, igual que SQLite.
+>
+> **Si la base no conecta** (credenciales, MariaDB caído, base inexistente), el proceso no se cierra: escribe en el log el motivo en
+> lenguaje simple (nunca la contraseña) y reintenta cada 30 s (`DB_REINTENTO_SEGUNDOS`), así PM2 no lo reinicia en bucle. El bot arranca
+> cuando la base responde. Las promesas rechazadas sin manejar se registran y no tumban el arranque.
 
 ### 3. Configurar el Almacenamiento
 
@@ -209,6 +218,9 @@ se conserva en `client/`.
 
 ### 7. Configurar PM2
 
+> **La app corre en modo `fork` con una sola instancia** (`exec_mode: 'fork'`, `instances: 1`): el bot de Telegram usa polling y no puede
+> correr en dos procesos (PM2 pasa a modo cluster si solo se indica `instances`).
+>
 > **La app debe correr bajo PM2 con `autorestart`.** `ecosystem.config.cjs` ya lo trae (`autorestart: true` y
 > `NODE_ENV=production`). Los comandos `/reboot` y `/update` del bot terminan el proceso con `process.exit(0)` y es PM2 quien
 > lo vuelve a levantar; sin PM2 (o sin autorestart) la app se quedaría apagada.

@@ -110,10 +110,12 @@ reiniciar_pm2() {
   local logs recientes evento
   logs="$(pm2 logs "$NOMBRE_PM2" --lines 150 --nostream 2>&1 || true)"
   recientes="$(printf '%s\n' "$logs" | awk -v t="$inicio" 'substr($0,1,19) >= t')"
-  evento="$(printf '%s\n' "$recientes" | grep -E 'Bot de Telegram iniciado|Bot de Telegram deshabilitado|Error al iniciar bot de Telegram' | tail -1 || true)"
+  evento="$(printf '%s\n' "$recientes" | grep -E 'Bot de Telegram iniciado|Bot de Telegram deshabilitado|Error al iniciar bot de Telegram|No se pudo inicializar la base de datos' | tail -1 || true)"
   case "$evento" in
     *"Bot de Telegram iniciado"*)
       BOT="Bot en línea" ;;
+    *"No se pudo inicializar la base de datos"*)
+      diagnosticar "El proceso está online pero la base de datos no conecta (reintenta cada 30 s): revisa DB_HOST, DB_USER, DB_PASSWORD y DB_NAME." ;;
     *"deshabilitado"*)
       diagnosticar "El proceso está online pero el bot quedó deshabilitado: falta TELEGRAM_BOT_TOKEN (¿se cargó el .env de la raíz?)." ;;
     *"Error al iniciar"*)
