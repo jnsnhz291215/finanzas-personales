@@ -262,7 +262,7 @@ export function crearCartolas(ctx) {
       };
     } catch (error) {
       // El detalle (con stack, sin el contenido del archivo) queda en el log; al usuario se le da la causa corta
-      const paso = EXT_IMAGEN.includes(ext) ? 'leer' : ext === '.pdf' ? 'leer_pdf' : 'reconocer_formato';
+      const paso = EXT_IMAGEN.includes(ext) ? 'ocr' : ext === '.pdf' ? 'leer_pdf' : 'reconocer_formato';
       return { estado: 'ilegible', causa: describirError(error, paso, nombre).causa };
     }
   }

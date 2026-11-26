@@ -22,7 +22,7 @@
 
 import { listarCompras, obtenerCompra, registrarPagoCuota, crearCompra, fijarCuotasPagadas } from '../cuotas.js';
 import { registrarImportacion, buscarUltimos4, fechaFinDeMovimientos, fechaPlausible } from '../cartolas.js';
-import { describirError, describirMotivo } from './errores.js';
+import { describirError, describirMotivo, registrarError } from './errores.js';
 import { confirmarTemporal, borrarTemporal } from '../storage.js';
 import { leerTextoDeImagen } from '../ocr.js';
 import { registrarPagosMultiples } from '../transferencias.js';
@@ -708,7 +708,7 @@ export function crearLoteTerceros(ctx) {
       else armarEspera(chatId);
       return true;
     } catch (error) {
-      console.error('Error al leer un comprobante:', error.code ?? error.name);
+      registrarError(error, 'ocr', 'un comprobante de transferencia');
       return false;
     }
   }

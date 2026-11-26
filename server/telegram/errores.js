@@ -55,7 +55,7 @@ export function clasificarError(err, paso = '') {
   if (tiene('429') || /too many requests|retry after/.test(mensaje)) return { tipo: 'limite', causa: 'Telegram pide esperar un momento' };
   if (/file is too big|too large|entity too large/.test(mensaje)) return { tipo: 'grande', causa: 'pesa más de 20 MB, el máximo que Telegram deja descargar' };
   if (tiene('ER_DUP_ENTRY', '1062', 'SQLITE_CONSTRAINT_UNIQUE', 'SQLITE_CONSTRAINT_PRIMARYKEY') || /unique constraint|duplicate entry/.test(mensaje)) {
-    return { tipo: 'duplicado', causa: paso === 'crear_compra' ? 'ya existe una compra con ese nombre' : 'ya existe un registro igual' };
+    return { tipo: 'duplicado', causa: paso === 'crear_compra' ? 'ya existe una compra igual' : 'ya existe un registro igual' };
   }
   if (tiene('ER_LOCK_DEADLOCK', 'ER_LOCK_WAIT_TIMEOUT', 'SQLITE_BUSY', 'SQLITE_LOCKED')) return { tipo: 'bd_ocupada', causa: 'la base de datos estaba ocupada' };
   if (tiene('ER_DATA_TOO_LONG', 'ER_TRUNCATED_WRONG_VALUE', 'ER_WARN_DATA_OUT_OF_RANGE')) return { tipo: 'dato', causa: 'un dato es demasiado largo o no tiene un formato válido' };
@@ -84,7 +84,9 @@ const FRASES = {
   actualizar: (o, c) => `No pude actualizar ${o}: ${c}.`,
   guardar: (o, c) => `No pude guardar ${o}: ${c}.`,
   vincular: (o, c) => `No pude vincular ${o}: ${c}.`,
-  leer: (o, c) => `No pude leer ${o}: ${c}.`
+  leer: (o, c) => `No pude leer ${o}: ${c}.`,
+  ocr: (o, c) => `No pude leer el texto de ${o} con el OCR: ${c}.`,
+  gemini: (o, c) => `No pude consultar a Gemini para ${o}: ${c}. Sigo solo con las reglas locales.`
 };
 
 /** Registra el detalle completo (con stack y causa) sin secretos */

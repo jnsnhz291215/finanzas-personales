@@ -19,7 +19,7 @@ describe('describirError', () => {
 
   test('un duplicado al crear una compra dice que ya existe una con ese nombre', () => {
     const err = Object.assign(new Error('Duplicate entry'), { code: 'ER_DUP_ENTRY' });
-    expect(describirError(err, 'crear_compra', '«Apple» ($21.749)', sinLog).plano).toBe('No pude crear «Apple» ($21.749): ya existe una compra con ese nombre.');
+    expect(describirError(err, 'crear_compra', '«Apple» ($21.749)', sinLog).plano).toBe('No pude crear «Apple» ($21.749): ya existe una compra igual.');
     expect(clasificarError(Object.assign(new Error('x'), { code: 'SQLITE_CONSTRAINT_UNIQUE' })).tipo).toBe('duplicado');
   });
 

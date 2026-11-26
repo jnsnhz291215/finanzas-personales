@@ -106,3 +106,27 @@ describe('cuotas repetidas en un lote de cartolas', () => {
     expect([...mejores.values()][0].actual).toBe(7);
   });
 });
+
+describe('dos compras del mismo comercio con distinta cuota', () => {
+  const compras = [
+    { id: 1, alias: 'Apple', monto_cuota: 202332, total_cuotas: 12, fecha_inicio: '2026-01-10' },
+    { id: 2, alias: 'Apple ($21.749)', monto_cuota: 21749, total_cuotas: 12, fecha_inicio: '2026-05-08' },
+    { id: 3, alias: 'Apple ($21.749) 2', monto_cuota: 21749, total_cuotas: 12, fecha_inicio: '2026-07-01' }
+  ];
+
+  test('el emparejamiento distingue por valor de la cuota y fecha de compra, no por el nombre', async () => {
+    const { buscarCompraSimilar } = await import('./terceros.js');
+    expect(buscarCompraSimilar(compras, 'APPLE.COM CL APPLE 07/12', 202332, 12)?.id).toBe(1);
+    expect(buscarCompraSimilar(compras, 'APPLE.COM CL APPLE 07/12', 21749, 12, '2026-05-08')?.id).toBe(2);
+    expect(buscarCompraSimilar(compras, 'APPLE.COM CL APPLE 07/12', 21749, 12, '2026-07-01')?.id).toBe(3);
+    expect(buscarCompraSimilar(compras, 'APPLE.COM CL APPLE 07/12', 21749, 12, '2026-09-09')).toBeNull();
+  });
+
+  test('el lote no mezcla compras del mismo comercio con otra cuota', async () => {
+    const { mejoresCuotasDeLote } = await import('./terceros.js');
+    const fila = (n, valor) => ({ fecha: '2026-05-08', descripcion: `APPLE.COM CL APPLE 0${n}/12`, monto: valor, tipo: 'cargo', cuota: { actual: n, total: 12, valorCuota: valor } });
+    const mejores = mejoresCuotasDeLote([{ movimientos: [fila(7, 202332), fila(6, 21749)] }, { movimientos: [fila(7, 21749)] }]);
+    expect(mejores.size).toBe(2);
+    expect([...mejores.values()].map(m => m.actual).sort()).toEqual([7, 7]);
+  });
+});
