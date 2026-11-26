@@ -22,7 +22,7 @@ async function consulta() {
 
 export const VENTANA_DESHACER_MS = 24 * 60 * 60 * 1000;
 export const TIPOS_MANUALES = ['movimiento', 'pago_cuota', 'compra', 'cuenta'];
-export const CAMPOS_CORREGIBLES = ['monto', 'fecha', 'cuenta_id', 'categoria_id'];
+export const CAMPOS_CORREGIBLES = ['monto', 'fecha', 'cuenta_id', 'categoria_id', 'descripcion'];
 
 const ETIQUETA_TIPO = {
   movimiento: 'movimiento',
@@ -428,12 +428,17 @@ export async function previsualizarCorreccion(id, cambios) {
   if (cambios.monto !== undefined) {
     const nuevo = Number(cambios.monto);
     if (!Number.isFinite(nuevo) || nuevo <= 0) return { ok: false, error: 'El monto debe ser mayor que 0.' };
-    if (nuevo !== Number(actual.monto)) filas.push({ campo: 'monto', etiqueta: 'Monto', antes: dinero(actual.monto), despues: dinero(nuevo) });
+    if (nuevo !== Number(actual.monto)) filas.push({ campo: 'monto', etiqueta: 'Monto', antes: dinero(actual.monto), despues: dinero(nuevo), antesNumero: Number(actual.monto), despuesNumero: nuevo });
   }
   if (cambios.fecha !== undefined) {
     const nueva = aFechaISO(cambios.fecha);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(nueva)) return { ok: false, error: 'No entendí la fecha.' };
     if (nueva !== aFechaISO(actual.fecha)) filas.push({ campo: 'fecha', etiqueta: 'Fecha', antes: fechaCorta(actual.fecha), despues: fechaCorta(nueva) });
+  }
+  if (cambios.descripcion !== undefined) {
+    const nueva = String(cambios.descripcion).trim().slice(0, 255);
+    if (!nueva) return { ok: false, error: 'La descripción no puede quedar vacía.' };
+    if (nueva !== String(actual.descripcion)) filas.push({ campo: 'descripcion', etiqueta: 'Descripción', antes: String(actual.descripcion), despues: nueva });
   }
   if (cambios.cuenta_id !== undefined) {
     const cuentas = await listarCuentasActivas();
@@ -460,19 +465,18 @@ export async function corregirMovimiento(id, cambios, chatId) {
     if (cambios[campo] !== undefined) permitidos[campo] = cambios[campo];
   }
   if (permitidos.fecha !== undefined) permitidos.fecha = aFechaISO(permitidos.fecha);
+  if (permitidos.descripcion !== undefined) permitidos.descripcion = String(permitidos.descripcion).trim().slice(0, 255);
+
+  const valorDe = (campo, fila) => (campo === 'fecha' ? aFechaISO(fila.fecha) : campo === 'descripcion' ? String(fila.descripcion) : numero(fila[campo]));
 
   const antes = {};
-  for (const campo of Object.keys(permitidos)) {
-    antes[campo] = campo === 'fecha' ? aFechaISO(actual.fecha) : numero(actual[campo]);
-  }
+  for (const campo of Object.keys(permitidos)) antes[campo] = valorDe(campo, actual);
 
   const r = await actualizarMovimiento(id, permitidos);
   if (!r.ok) return r;
 
   const despues = {};
-  for (const campo of Object.keys(permitidos)) {
-    despues[campo] = campo === 'fecha' ? aFechaISO(r.movimiento.fecha) : numero(r.movimiento[campo]);
-  }
+  for (const campo of Object.keys(permitidos)) despues[campo] = valorDe(campo, r.movimiento);
   const historialId = await guardarHistorial({ accion: 'corregir', tipo: 'movimiento', registroId: id, chatId, antes, despues });
   return { ok: true, historialId, movimiento: r.movimiento };
 }

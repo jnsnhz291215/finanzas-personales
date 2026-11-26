@@ -192,3 +192,27 @@ describe('reset y restauración en lenguaje natural', () => {
     expect(intencion('empezar de cero')).toBe('reset');
   });
 });
+
+describe('correcciones de monto con muletillas y de lugar', () => {
+  const cuentas = [{ id: 1, nombre: 'FAN', banco: 'Banco de Chile', tipo: 'tarjeta_debito' }];
+  const categorias = [{ id: 1, nombre: 'Supermercado' }];
+  const cambios = (t) => clasificarReply(t, { cuentas, categorias, hoy: '2026-11-25' })?.cambios;
+
+  test('"eran 4690", "fueron 4.690", "4690" y variantes con muletillas', () => {
+    for (const t of ['eran 4690', 'fueron 4.690', '4690', 'en realidad eran 4690', 'creo que fueron 4.690', 'perdón, son 4690', 'no, 4690', 'aprox 4690', 'en realidad fueron 4.690 pesos']) {
+      expect(cambios(t)).toEqual({ monto: 4690 });
+    }
+    expect(cambios('eran como 4 mil')).toEqual({ monto: 4000 });
+  });
+
+  test('"lucas" se respeta tal cual (el bot pide confirmar si el monto cambia muchísimo)', () => {
+    expect(cambios('en realidad 4690 lucas')).toEqual({ monto: 4690000 });
+  });
+
+  test('"era en el líder" corrige la descripción si no es una cuenta ni una categoría', () => {
+    expect(cambios('era en el líder')).toEqual({ descripcion: 'Líder' });
+    expect(cambios('la descripción es Líder')).toEqual({ descripcion: 'Líder' });
+    expect(cambios('era en supermercado')).toEqual({ categoria_id: 1 });
+    expect(cambios('era en la fan')).toEqual({ cuenta_id: 1 });
+  });
+});

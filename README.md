@@ -611,7 +611,12 @@ ingresos, pagos de cuota, compras en cuotas, cuentas e importaciones de cartola.
 | `deshacer` (respondiendo a la confirmación de una eliminación o corrección) | Lo recupera, hasta 24 horas después |
 | `elimina el último gasto` (sin responder a nada) | Actúa sobre el último registro creado a mano en ese chat, con la misma confirmación |
 
-- Las correcciones muestran el antes y el después y piden **Guardar** / **Cancelar**; solo se corrigen movimientos y pagos de cuota.
+- Una corrección entendida por reglas (monto, fecha, cuenta, categoría o lugar) **se aplica directo**, queda en `historial_cambios` y responde
+  `Corregido: 5.000 → 4.690` con un botón **Deshacer** (o responde «deshacer» a ese mensaje, hasta 24 horas). Funciona respondiendo a tu
+  mensaje o a la confirmación del bot, también cuando el gasto era aproximado ("como 5 mil"). Se entienden muletillas ("en realidad", "creo que",
+  "perdón", "aprox", "como") y `era en el líder` cambia la descripción si «líder» no es una cuenta ni una categoría. Los montos nunca pasan por
+  Gemini. Si el monto cambia más de 20 veces (por ejemplo "4690 lucas" = 4.690.000), pide confirmar con **Guardar** / **Cancelar**; lo que
+  interpreta Gemini en las demás correcciones también pide confirmar. Solo se corrigen movimientos y pagos de cuota.
 - Qué se elimina: un movimiento se borra junto con su comprobante (queda 24 h en `tmp/` por si lo deshaces); un pago de cuota se anula y la
   cuota vuelve a quedar pendiente; una compra en cuotas se desactiva (sus pagos se conservan); una cuenta con movimientos solo se
   desactiva, sin movimientos se elimina; una importación borra todos sus movimientos y el registro del archivo, así que puedes volver a

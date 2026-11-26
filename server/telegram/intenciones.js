@@ -23,7 +23,7 @@ import { fechaHoySantiago, sumarDias, diaSemana, construirFecha } from './fechas
 import { detectarConsultaDatos, terminoDesdeTexto } from './datosTransferencia.js';
 import { detectarConsultaPlan } from '../planAhorro.js';
 import { parsearPagoCuota, detectarAltaCuotas, detectarConsultaCuotas } from './cuotas.js';
-import { normalizar } from './cuentas.js';
+import { normalizar, capitalizarNombre } from './cuentas.js';
 import { interpretarIntencion, geminiDisponible } from './gemini.js';
 import { limitadorGemini } from './limiteGemini.js';
 
@@ -264,10 +264,20 @@ function resolverTermino(termino, { cuentas, categorias }, { soloCuenta = false,
   return true;
 }
 
+// Muletillas al comienzo de una corrección ("en realidad eran 4690", "creo que fue...", "perdón, son...")
+const RELLENO_INICIAL = /^\s*(?:(?:no|ups|oye|ah|eh|bueno|mejor|digo|perd[oó]n|disculpa|ojo|la verdad|en realidad|realmente|me equivoqu[eé]|creo que|creo|parece que|seg[uú]n yo)\b[\s,.:;-]*)+/i;
+// Palabras de aproximación que no cambian el monto ("como 4 mil", "unos 4690", "aprox")
+const APROXIMACION = /\b(?:como|aprox\.?|aproximadamente|unos|unas|casi|cerca de|m[aá]s o menos)\b/gi;
+
+/** Quita muletillas iniciales y palabras de aproximación de una corrección de monto */
+export function limpiarCorreccion(texto) {
+  return String(texto ?? '').replace(RELLENO_INICIAL, '').replace(APROXIMACION, ' ').replace(/\s+/g, ' ').trim();
+}
+
 /**
  * Interpreta la respuesta a un mensaje que creó un registro, solo con reglas. Devuelve
  *   { accion: 'deshacer' } | { accion: 'eliminar' } |
- *   { accion: 'corregir', cambios: { monto?, fecha?, cuenta_id?, categoria_id? }, ambiguas?, problemas }
+ *   { accion: 'corregir', cambios: { monto?, fecha?, cuenta_id?, categoria_id?, descripcion? }, ambiguas?, problemas }
  * o null si las reglas no alcanzan (entonces se consulta a Gemini). Función pura.
  */
 export function clasificarReply(texto, { cuentas = [], categorias = [], hoy = fechaHoySantiago() } = {}) {
@@ -282,13 +292,14 @@ export function clasificarReply(texto, { cuentas = [], categorias = [], hoy = fe
 
   const salida = { accion: 'corregir', cambios: {}, problemas: [], ambiguas: null, origen: 'reglas' };
 
-  // Un monto solo ("4500") o precedido de "eran", "era", "son"...
-  const exacto = parsearMontoExacto(original);
+  // Un monto solo ("4500") o precedido de "eran", "era", "son"..., con o sin muletillas ("en realidad", "creo que")
+  const limpio = limpiarCorreccion(original);
+  const exacto = parsearMontoExacto(limpio);
   if (exacto) {
     salida.cambios.monto = exacto;
     return salida;
   }
-  const conPrefijo = PREFIJO_MONTO.exec(original);
+  const conPrefijo = PREFIJO_MONTO.exec(limpio);
   if (conPrefijo) {
     const resto = conPrefijo[1].replace(/\b(?:pesos|clp)\b/gi, '').trim();
     const monto = parsearMontoExacto(resto);
@@ -310,8 +321,17 @@ export function clasificarReply(texto, { cuentas = [], categorias = [], hoy = fe
     resolverTermino(m[1], contexto, { soloCategoria: true }, salida);
   } else if ((m = /\bcuenta\s*(?:es|era|seria|a|de|:)?\s+(.+)$/.exec(norm)) || (m = /^(?:no\s+)?(?:con|desde)\s+(?:la\s+|el\s+|mi\s+)?(?:tarjeta\s+)?(.+)$/.exec(norm))) {
     resolverTermino(m[1], contexto, { soloCuenta: true }, salida);
+  } else if ((m = /^\s*(?:la\s+)?descripci[oó]n\s*(?:es|era|seria|a|:)?\s+(.+)$/i.exec(original))) {
+    salida.cambios.descripcion = capitalizarNombre(m[1].replace(/^(?:el|la|los|las)\s+/i, '').trim());
   } else if ((m = /^(?:no\s+)?(?:era|fue|es|seria)\s+(?:con|de|desde|en)\s+(?:la\s+|el\s+|mi\s+)?(?:tarjeta\s+|cuenta\s+)?(.+)$/.exec(norm))) {
-    resolverTermino(m[1], contexto, {}, salida);
+    // "era en el líder": si no es una cuenta ni una categoría, es el lugar del gasto (su descripción)
+    const enLugar = /^\s*(?:no[,.]?\s*)?(?:era|fue|es|ser[ií]a)\s+en\s+(?:el\s+|la\s+|los\s+|las\s+)?(.+)$/i.exec(original);
+    const esCuenta = buscarCuentaPorTexto(m[1], cuentas);
+    if (enLugar && !esCuenta && !buscarCategoriaPorTexto(m[1], categorias)) {
+      salida.cambios.descripcion = capitalizarNombre(enLugar[1].replace(/[¿?¡!.,;:]+$/g, '').trim());
+    } else {
+      resolverTermino(m[1], contexto, {}, salida);
+    }
   } else {
     return null;
   }

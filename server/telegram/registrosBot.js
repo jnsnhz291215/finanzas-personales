@@ -28,6 +28,7 @@ import { clasificarReply, replyDesdeGemini, puedeEnviarseAGemini } from './inten
 import { interpretarReplyRegistro, geminiDisponible } from './gemini.js';
 import { limitadorGemini } from './limiteGemini.js';
 import { fechaHoySantiago } from './fechas.js';
+import { analizarMonto } from './parser.js';
 
 const ESPERA_MS = 10 * 60 * 1000;
 const CORREGIBLES = ['movimiento', 'pago_cuota'];
@@ -152,9 +153,36 @@ export function crearRegistros(ctx) {
       return true;
     }
 
+    // Corrección entendida por reglas (por ejemplo "eran 4690"): se aplica directo y queda en el historial
+    // para deshacerla. Si el monto cambia más de 20 veces (típico de "lucas" o "mil" mal puestos), se confirma.
+    const montoCambio = vista.cambios.find(c => c.campo === 'monto');
+    const montoSospechoso = montoCambio && (
+      montoCambio.despuesNumero >= montoCambio.antesNumero * 20 || montoCambio.despuesNumero * 20 <= montoCambio.antesNumero
+    );
+    if (r.origen === 'reglas' && !montoSospechoso) {
+      const aplicada = await corregirMovimiento(registroId, r.cambios, chatId);
+      if (!aplicada.ok) {
+        await enviar(chatId, esc(aplicada.error));
+        return true;
+      }
+      const lineasCorregido = vista.cambios.map(c => (
+        c.campo === 'monto'
+          ? `${c.antes.replace(/^\$/, '')} → ${c.despues.replace(/^\$/, '')}`
+          : `${c.etiqueta} ${c.antes} → ${c.despues}`
+      ));
+      const enviado = await enviar(chatId, `Corregido: ${esc(lineasCorregido.join('; '))}`, {
+        reply_markup: { inline_keyboard: [[{ text: 'Deshacer', callback_data: `rgu_${aplicada.historialId}` }]] }
+      });
+      // Responder «deshacer» a este mensaje también funciona
+      if (enviado?.message_id) await vincularMensajes(chatId, [enviado.message_id], 'historial', aplicada.historialId);
+      return true;
+    }
+
     const key = guardarPendiente(chatId, { accion: 'corregir', tipo, registroId, cambios: r.cambios });
     await enviar(chatId,
-      `<b>¿Guardar esta corrección?</b>\n\n` +
+      (montoSospechoso && r.origen === 'reglas'
+        ? '<b>Ese monto cambia muchísimo. ¿Seguro?</b>\n\n'
+        : '<b>¿Guardar esta corrección?</b>\n\n') +
       vista.cambios.map(c => `${esc(c.etiqueta)}: ${esc(c.antes)} → <b>${esc(c.despues)}</b>`).join('\n'),
       {
         reply_markup: {
@@ -241,6 +269,8 @@ export function crearRegistros(ctx) {
     const porReglas = clasificarReply(texto, { ...contexto, hoy });
     if (porReglas) return porReglas;
 
+    // Los montos se entienden solo con reglas: nunca se consulta a Gemini por una cifra
+    if (analizarMonto(texto)) return null;
     if (!geminiDisponible() || !puedeEnviarseAGemini(texto)) return null;
     if (!limitador.consumir(chatId)) return null;
 

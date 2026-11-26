@@ -195,6 +195,7 @@ export async function actualizarMovimiento(id, cambios) {
     tipo_movimiento: actual.tipo_movimiento,
     es_prestamo: actual.es_prestamo,
     persona_prestamo: actual.persona_prestamo,
+    descripcion: actual.descripcion,
     ...cambios
   };
 
@@ -214,6 +215,13 @@ export async function actualizarMovimiento(id, cambios) {
   const monto = Number(nuevo.monto);
   if (!Number.isFinite(monto) || monto <= 0) return { ok: false, error: 'El monto debe ser mayor que 0' };
 
+  // La descripción solo cambia si se pidió; no puede quedar vacía
+  let descripcion = null;
+  if (cambios.descripcion !== undefined) {
+    descripcion = String(cambios.descripcion).trim().slice(0, 255);
+    if (!descripcion) return { ok: false, error: 'La descripción no puede quedar vacía' };
+  }
+
   // La fecha solo cambia si se pidió; debe ser YYYY-MM-DD
   let fecha = null;
   if (cambios.fecha !== undefined) {
@@ -231,11 +239,11 @@ export async function actualizarMovimiento(id, cambios) {
   await query(
     `UPDATE movimientos
      SET monto = ?, categoria_id = ?, cuenta_id = ?, cuenta_destino_id = ?, tipo = ?, tipo_movimiento = ?,
-         es_prestamo = ?, persona_prestamo = ?, fecha = COALESCE(?, fecha)
+         es_prestamo = ?, persona_prestamo = ?, fecha = COALESCE(?, fecha), descripcion = COALESCE(?, descripcion)
      WHERE id = ?`,
     [
       monto, nuevo.categoria_id ?? null, nuevo.cuenta_id, nuevo.cuenta_destino_id ?? null,
-      nuevo.tipo, nuevo.tipo_movimiento, esPrestamo ? 1 : 0, persona || null, fecha, id
+      nuevo.tipo, nuevo.tipo_movimiento, esPrestamo ? 1 : 0, persona || null, fecha, descripcion, id
     ]
   );
   return { ok: true, movimiento: await obtenerMovimiento(id) };
