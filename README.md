@@ -729,7 +729,8 @@ El bot saca el **monto** (24 mil, 24.000, 24k), la **descripción**, **a quién 
   migración que se aplica sola al arrancar (SQLite y MariaDB) y están en `database/schema.sql`.
 - **Pago del gasto fijo:** cuando sale una transferencia a ese destinatario por un monto parecido (±10 %) del gasto fijo, el bot propone con botones
   marcarla como ese pago (`movimientos.gasto_fijo_id`). Una transferencia marcada cuenta como gasto fijo en `/plan` y **no otra vez como gasto libre**.
-  Si ese mes ya hay una marcada para ese gasto fijo, no vuelve a proponer.
+  Si ese mes ya hay una marcada para ese gasto fijo, no vuelve a proponer. Si respondes **No**, no se deja como gasto sin más: sigue la pregunta de
+  siempre (gasto, préstamo o pago), o se aplica lo que ya recordaba de ese destinatario.
 
 ### Guardar una cuenta o tarjeta con una frase
 
@@ -747,7 +748,9 @@ si viene un número largo guarda solo los últimos 4 y borra tu mensaje del chat
 
 **El bot no se queda en silencio:** un mensaje que ninguna regla entiende (y que no va a Gemini, por ejemplo por traer datos sensibles) recibe "No entendí ese
 mensaje" con botones (guardar una cuenta, registrar un gasto, ver gastos, plan, cuotas, cuentas, ayuda); un comando que no existe, un sticker, una nota de voz
-o un error inesperado también reciben respuesta (los errores quedan en el log, sin el texto del mensaje).
+o un error inesperado también reciben respuesta (los errores quedan en el log, sin el texto del mensaje). Un comando que existe pero recibe argumentos que no
+entiende (por ejemplo `/status algo`) responde "No entendí lo que escribiste después de /status" con cómo usarlo, y un botón que venció o ya no tiene
+estado responde "Este botón ya expiró, vuelve a intentarlo" en vez de quedarse girando.
 
 ### Cuentas, vínculos y datos guardados: /cuentas
 

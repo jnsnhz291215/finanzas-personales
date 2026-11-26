@@ -261,7 +261,7 @@ export function crearTransferencias(ctx) {
         reply_markup: {
           inline_keyboard: [[
             { text: `Sí, es el pago de ${fijo.nombre}`.slice(0, 40), callback_data: `tfj_${key}` },
-            { text: 'No, es otro gasto', callback_data: `tfn_${key}` }
+            { text: 'No, es otra cosa', callback_data: `tfk_${key}` }
           ]]
         }
       }
@@ -288,7 +288,7 @@ export function crearTransferencias(ctx) {
 
   /** Botones de este módulo. Devuelve true si el callback era suyo. */
   async function manejarCallback(cb, chatId, data) {
-    const m = data.match(/^tf([gpanythcj])_([a-z0-9]+)(?:_(\d+))?$/);
+    const m = data.match(/^tf([gpanythcjk])_([a-z0-9]+)(?:_(\d+))?$/);
     if (!m) return false;
     const [, tipo, key, indice] = m;
     const messageId = cb.message.message_id;
@@ -333,6 +333,23 @@ export function crearTransferencias(ctx) {
         const r = await pendiente.aplicar(repartirMonto(elegidas, pendiente.monto));
         await editar(r.ok ? r.texto : esc(r.error ?? 'No pude vincularla.'), { chat_id: chatId, message_id: messageId });
         await responderCallback(cb.id, { text: r.ok ? 'Vinculada' : 'Error' });
+        return true;
+      }
+
+      // No era el pago del gasto fijo: sigue la pregunta de siempre (gasto, préstamo o pago), o lo recordado del destinatario
+      if (tipo === 'k') {
+        await responderCallback(cb.id, {});
+        const recordada = await obtenerClasificacion(destinatario);
+        if (recordada) {
+          await aplicarClasificacion(mov.id, recordada, destinatario);
+          await editar(
+            `Entendido: no es ese gasto fijo. Apliqué lo que recordaba de ${esc(destinatario)}: ${recordada === 'prestamo' ? 'préstamo' : recordada}.`,
+            { chat_id: chatId, message_id: messageId }
+          );
+        } else {
+          await editar('Entendido: no es ese gasto fijo.', { chat_id: chatId, message_id: messageId });
+          await preguntar(chatId, mov, destinatario, cuentaId);
+        }
         return true;
       }
 

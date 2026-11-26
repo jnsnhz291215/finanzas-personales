@@ -161,8 +161,13 @@ async function editar(texto, opts = {}) {
   }
 }
 
+// Callbacks ya respondidos (para saber si un botón quedó sin respuesta); se limpian solos
+const callbacksRespondidos = new Set();
+
 /** answerCallbackQuery; nunca lanza */
 async function responderCallback(callbackId, opts = {}) {
+  callbacksRespondidos.add(callbackId);
+  setTimeout(() => callbacksRespondidos.delete(callbackId), 2 * 60 * 1000).unref?.();
   try {
     return await bot.answerCallbackQuery(callbackId, opts);
   } catch (err) {
@@ -413,6 +418,20 @@ function textoAyuda() {
   );
 }
 
+/**
+ * ¿Algún manejador de comandos (bot.onText) acepta este texto? Un comando conocido con argumentos que su patrón no admite
+ * (por ejemplo "/status algo") no lo atiende nadie y se avisa. Usa la lista de patrones de la librería; si no está disponible
+ * no se puede saber y no se responde de más.
+ */
+function algunComandoLoAtiende(texto) {
+  const patrones = bot?._textRegexpCallbacks;
+  if (!Array.isArray(patrones)) return true;
+  return patrones.some(({ regexp }) => {
+    regexp.lastIndex = 0;
+    return regexp.test(texto);
+  });
+}
+
 // Comandos que existen (quien manda un "/algo" que no está aquí recibe un aviso en vez de silencio)
 const COMANDOS_CONOCIDOS = new Set([
   'start', 'miid', 'help', 'ayuda', 'plan', 'cuotas', 'cuentas', 'datosguardados', 'resumen', 'ultimos', 'gastos', 'buscar',
@@ -586,8 +605,13 @@ function configurarManejadores() {
     // Los comandos los atienden sus propios manejadores; uno que no existe se avisa en vez de quedarse en silencio
     if (msg.text && msg.text.startsWith('/')) {
       const nombre = /^\/([a-z0-9_]+)/i.exec(msg.text)?.[1]?.toLowerCase();
-      if (nombre && !COMANDOS_CONOCIDOS.has(nombre) && esChatAutorizado(chatId)) {
-        await enviar(chatId, 'No conozco ese comando. Escribe /help para ver lo que puedo hacer, o cuéntame lo que necesitas con tus palabras.');
+      if (nombre && esChatAutorizado(chatId)) {
+        if (!COMANDOS_CONOCIDOS.has(nombre)) {
+          await enviar(chatId, 'No conozco ese comando. Escribe /help para ver lo que puedo hacer, o cuéntame lo que necesitas con tus palabras.');
+        } else if (!algunComandoLoAtiende(msg.text)) {
+          // El comando existe pero lo que le pusieron detrás no lo entiende ninguno de sus manejadores
+          await enviar(chatId, `No entendí lo que escribiste después de /${nombre}. Prueba /${nombre} solo, o escribe /help para ver cómo se usa.`);
+        }
       }
       return;
     }
@@ -697,6 +721,18 @@ function configurarManejadores() {
 
   // Manejador de callbacks (botones inline)
   bot.on('callback_query', async (cb) => {
+    try {
+      await procesarCallback(cb);
+    } catch (error) {
+      console.error('Error en el manejador de botones:', error.code ?? error.name);
+    }
+    // Un botón que ningún módulo respondió (venció, o ya no tiene estado) nunca queda girando: se avisa
+    if (!callbacksRespondidos.has(cb.id)) {
+      await responderCallback(cb.id, { text: 'Este botón ya expiró, vuelve a intentarlo' });
+    }
+  });
+
+  async function procesarCallback(cb) {
     const chatId = cb.message.chat.id;
     const data = cb.data;
 
@@ -1045,7 +1081,7 @@ function configurarManejadores() {
       // TODO: Implementar confirmación de importación
       await responderCallback(cb.id, { text: '⏳ Importando...' });
     }
-  });
+  }
 }
 
 /**
