@@ -1235,5 +1235,29 @@ export function crearCartolas(ctx) {
     return false;
   }
 
-  return { recibirArchivo, recibirFoto, esFotoDeCartola, manejarTexto, manejarCallback, proponerDigitos };
+  /** Cartolas esperando una respuesta que se iban a importar en esa cuenta (para /resetcuenta) */
+  function pendientesDeCuenta(cuentaId) {
+    const id = Number(cuentaId);
+    let n = [...pendientes.values()].filter(p => p.cuentaSugerida?.id === id).length;
+    for (const lote of lotes.values()) n += lote.items.filter(i => i.estado === 'pendiente' && i.cuentaSugerida?.id === id).length;
+    return n;
+  }
+
+  async function descartarPendientes(cuentaId) {
+    const id = Number(cuentaId);
+    for (const [key, p] of [...pendientes.entries()]) {
+      if (p.cuentaSugerida?.id !== id) continue;
+      pendientes.delete(key);
+      await borrarTemporal(p.tmp);
+    }
+    for (const lote of lotes.values()) {
+      for (const item of lote.items) {
+        if (item.estado !== 'pendiente' || item.cuentaSugerida?.id !== id) continue;
+        item.estado = 'omitido';
+        await borrarTemporal(item.tmp);
+      }
+    }
+  }
+
+  return { pendientesDeCuenta, descartarPendientes, recibirArchivo, recibirFoto, esFotoDeCartola, manejarTexto, manejarCallback, proponerDigitos };
 }

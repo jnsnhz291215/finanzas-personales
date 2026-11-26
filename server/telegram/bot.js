@@ -33,6 +33,7 @@ import { crearReset } from './resetBot.js';
 import { crearStatus } from './statusBot.js';
 import { crearVistaCuentas } from './vistaCuentasBot.js';
 import { crearEstadoCuenta } from './estadoCuentaBot.js';
+import { crearResetCuenta } from './resetCuentaBot.js';
 import { crearEditarCuenta } from './editarCuentaBot.js';
 import { mensajesAyuda, COMANDOS_CONOCIDOS, COMANDOS_MENU } from './comandos.js';
 import { crearLoteTerceros } from './loteTerceros.js';
@@ -99,6 +100,8 @@ let status = null;
 let vistaCuentas = null;
 // Estados de cuenta guardados, /estadocuenta (estadoCuentaBot.js); se crea al iniciar el bot
 let estadoCuenta = null;
+// Borrar los datos de una cuenta (o de un período), /resetcuenta (resetCuentaBot.js); se crea al iniciar el bot
+let resetCuenta = null;
 // Editar una cuenta o tarjeta, /editarcuenta (editarCuentaBot.js); se crea al iniciar el bot
 let editarCuenta = null;
 // Cartola de una tarjeta ajena + comprobante de la transferencia (loteTerceros.js); se crea al iniciar el bot
@@ -361,6 +364,16 @@ export async function iniciarBot() {
 
     estadoCuenta = crearEstadoCuenta({ bot, enviar, editar, responderCallback, esc, formatearMonto, esChatAutorizado });
     estadoCuenta.configurarComandos();
+
+    resetCuenta = crearResetCuenta({
+      bot, enviar, editar, responderCallback, esc, esChatAutorizado,
+      contarPendientes: async (cuentaId) => (terceros?.pendientesDeCuenta(cuentaId) ?? 0) + (cartolas?.pendientesDeCuenta(cuentaId) ?? 0),
+      descartarPendientes: async (cuentaId) => {
+        await terceros?.descartarPendientes(cuentaId);
+        await cartolas?.descartarPendientes(cuentaId);
+      }
+    });
+    resetCuenta.configurarComandos();
 
     editarCuenta = crearEditarCuenta({ bot, enviar, editar, responderCallback, esc, esChatAutorizado, borrarMensaje });
     editarCuenta.configurarComandos();
@@ -716,6 +729,11 @@ function configurarManejadores() {
       return;
     }
 
+    // "resetea la cuenta 8263", "borra enero de la 8263": borrar los datos de una cuenta o de un período (con confirmación)
+    if (msg.text && !msg.reply_to_message && resetCuenta && await resetCuenta.manejarTexto(msg)) {
+      return;
+    }
+
     // "estado de cuenta de la 8263", "historial de la tarjeta de Valeska", "cartolas de la 8263": revisar lo guardado
     if (msg.text && !msg.reply_to_message && estadoCuenta && await estadoCuenta.manejarTexto(msg)) {
       return;
@@ -867,6 +885,11 @@ function configurarManejadores() {
 
     // Botones de /editarcuenta (y el botón Editar de /cuentas)
     if (editarCuenta && await editarCuenta.manejarCallback(cb, chatId, data)) {
+      return;
+    }
+
+    // Botones de /resetcuenta (cuenta, año, opciones, confirmación y deshacer)
+    if (resetCuenta && await resetCuenta.manejarCallback(cb, chatId, data)) {
       return;
     }
 

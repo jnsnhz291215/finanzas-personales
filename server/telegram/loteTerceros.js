@@ -469,6 +469,43 @@ export function crearLoteTerceros(ctx) {
     for (const c of lote.cuotasNuevas) if (c.estado === 'pendiente' && !c.ofrecida) c.estado = 'ignorada';
   }
 
+  /** Selecciones o cartolas en espera que pertenecen a esa cuenta (para /resetcuenta) */
+  function pendientesDeCuenta(cuentaId) {
+    const id = Number(cuentaId);
+    let n = 0;
+    for (const lote of lotes.values()) if (lote.cuenta?.id === id && lote.seleccionEstado === 'pendiente') n++;
+    for (const p of preguntas.values()) if (p.item?.cuentaSugerida?.id === id) n++;
+    for (const lista of colaCartolas.values()) n += lista.filter(x => x.detectada?.id === id).length;
+    return n;
+  }
+
+  /** Descarta esas selecciones y cartolas en espera (borra sus archivos temporales) */
+  async function descartarPendientes(cuentaId) {
+    const id = Number(cuentaId);
+    for (const [chatId, lote] of [...lotes.entries()]) {
+      if (lote.cuenta?.id !== id || lote.seleccionEstado !== 'pendiente') continue;
+      clearTimeout(lote.timerVida);
+      clearTimeout(lote.timerEspera);
+      lotes.delete(chatId);
+      if (lote.item?.tmp) await borrarTemporal(lote.item.tmp);
+    }
+    for (const [clave, p] of [...preguntas.entries()]) {
+      if (p.item?.cuentaSugerida?.id !== id) continue;
+      preguntas.delete(clave);
+      if (p.item?.tmp) await borrarTemporal(p.item.tmp);
+    }
+    for (const [chatId, lista] of [...colaCartolas.entries()]) {
+      const quedan = [];
+      for (const x of lista) {
+        if (x.detectada?.id === id) {
+          if (x.item?.tmp) await borrarTemporal(x.item.tmp);
+        } else quedan.push(x);
+      }
+      if (quedan.length > 0) colaCartolas.set(chatId, quedan);
+      else colaCartolas.delete(chatId);
+    }
+  }
+
   /**
    * Una cartola que ya se había importado y se vuelve a mandar: no se duplica nada, solo se sincronizan las cuotas con las compras
    * en cuotas (y se ofrece crear las que no calzan). Devuelve true si la atendió.
@@ -1086,5 +1123,5 @@ export function crearLoteTerceros(ctx) {
     }
   }
 
-  return { avisarArchivo, procesarCartola, sincronizarSoloCuotas, manejarFoto, manejarReply, manejarCallback, acreedoresDe };
+  return { avisarArchivo, procesarCartola, sincronizarSoloCuotas, pendientesDeCuenta, descartarPendientes, manejarFoto, manejarReply, manejarCallback, acreedoresDe };
 }

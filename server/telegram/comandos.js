@@ -38,6 +38,7 @@ export const COMANDOS = [
   // Cuentas y datos
   { seccion: 'Cuentas y datos', nombre: 'cuentas', alias: ['datosguardados'], descripcion: 'Tus cuentas con vínculos, titulares, cuotas y totales', menu: 3, menuDescripcion: 'Mis cuentas, vínculos y datos guardados' },
   { seccion: 'Cuentas y datos', nombre: 'estadocuenta', alias: ['cartolas', 'historial'], uso: '[últimos 4 dígitos o titular]', descripcion: 'Revisar tus estados de cuenta guardados por año y mes, y descargar la cartola' },
+  { seccion: 'Cuentas y datos', nombre: 'resetcuenta', alias: ['limpiarcuenta'], uso: '[últimos 4 dígitos] [mes 1 | enero 2026 | mes 1 a 3]', descripcion: 'Borrar las importaciones (o todo) de una cuenta, o solo de un mes o rango, con respaldo y Deshacer' },
   { seccion: 'Cuentas y datos', nombre: 'savecard', alias: ['nuevacuenta'], uso: '<descripción>', descripcion: 'Crear una cuenta o tarjeta (con los últimos 4 dígitos)' },
   { seccion: 'Cuentas y datos', nombre: 'editarcuenta', alias: ['editartarjeta'], descripcion: 'Editar una cuenta o tarjeta: nombre, tipo, banco, titular, dígitos, vínculo y predeterminada' },
   { seccion: 'Cuentas y datos', nombre: 'borrarcuenta', uso: '[número]', descripcion: 'Desactivar una cuenta (sus movimientos se conservan)' },

@@ -860,6 +860,26 @@ y frases como `estado cuenta tarjeta 8263`, `estado de cuenta de la 8263`, `hist
   marcados/ignorados (columnas nuevas de `archivos_importados`, con migración en SQLite y MariaDB). Las anteriores se ubican por el último
   movimiento que se importó de ellas o, si no hay, por el mes en que se importaron; en ellas no hay conteo de marcados/ignorados.
 
+### Borrar los datos de una cuenta: /resetcuenta
+
+`/resetcuenta` (alias `/limpiarcuenta`) borra lo importado de **una** cuenta, o todo lo suyo, sin tocar la cuenta misma (nombre, titular,
+dígitos, banco, vínculo) ni las compras en cuotas, y sin borrar los PDF originales del almacenamiento. Uso: `/resetcuenta 8263`, la frase
+`resetea la cuenta 8263` o, sin argumentos, botones para elegir la cuenta (reglas locales, sin Gemini).
+
+- **Período opcional:** `/resetcuenta 8263 mes 1` (enero del año actual), `mes 1 2026`, `enero`, `enero 2026`, un rango `mes 1 a 3` o frases
+  como `borra enero de la 8263`. Sin año se usa el actual; si hay registros de ese mes en más de un año, pregunta con botones. Un movimiento
+  entra por su fecha y una cartola por el mes en que termina su período; fuera del período no se toca nada. Sin período, aplica a toda la
+  cuenta. («borra» solo se entiende con un período, para no confundirlo con desactivar una cuenta.)
+- **Resumen antes de borrar:** movimientos, cartolas importadas (registros de importación), cargos recordados de tarjetas de terceros,
+  pagos de cuotas y transferencias ligados, y las selecciones pendientes del lote de terceros (solo sin período).
+- **Dos opciones con botones:** *Solo importaciones de cartolas* (los movimientos que vinieron de cartolas, sus registros de importación y las
+  colas pendientes) o *Todo de esta cuenta* (además los movimientos manuales). Siempre pide una segunda confirmación con el botón *Sí, borrar*
+  (Telegram no permite botones de color).
+- **Cuotas:** si se borran pagos ligados a una compra en cuotas, su contador baja en esa cantidad y el bot avisa cuáles cambiaron.
+- **Respaldo y Deshacer:** antes de borrar se guarda un JSON con lo eliminado en `FINANZAS_STORAGE/respaldos/` (permisos 600; si falla, no se
+  borra nada) y el borrado es una sola transacción. El botón *Deshacer* funciona durante 10 minutos: vuelve a insertar lo borrado y devuelve
+  los contadores de cuotas a su valor anterior.
+
 ### Cuentas, vínculos y datos guardados: /cuentas
 
 `/cuentas` (alias `/datosguardados`; también "qué cuentas tengo", "muéstrame mis cuentas" y "qué datos tienes guardados", siempre por reglas,

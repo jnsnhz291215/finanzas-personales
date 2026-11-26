@@ -124,7 +124,7 @@ export async function obtenerCuenta(id) {
   return filas[0] ? { ...filas[0], id: Number(filas[0].id) } : null;
 }
 
-async function archivosDeCuenta(cuentaId) {
+export async function archivosDeCuenta(cuentaId) {
   const query = await consulta();
   const [archivos] = await query(
     `SELECT id, nombre_archivo, ruta_archivo, fecha_importacion, periodo_desde, periodo_hasta,
