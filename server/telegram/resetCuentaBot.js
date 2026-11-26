@@ -114,14 +114,19 @@ export function crearResetCuenta(ctx) {
       `Cartolas importadas (registros de importación): ${c.archivos}`,
       `Cargos recordados de cartolas de terceros: ${c.cargos}`,
       `Pagos de cuotas ligados: ${c.pagosCuota}${sel.compras.length > 0 ? ` (cambian ${sel.compras.map(x => esc(x.alias)).join(', ')})` : ''}`,
-      `Transferencias ligadas: ${c.transferencias}`
+      `Transferencias ligadas: ${c.transferencias}`,
+      ...(sel.modo === 'todo_archivos' ? [`Archivos que se mueven a la papelera: ${c.archivosFisicos} (PDF de cartolas y comprobantes; el Deshacer los devuelve)`] : [])
     ];
   }
 
   async function pasoResumen(chatId, messageId, sesionId) {
     const s = sesiones.get(sesionId);
     const rango = rangoDePeriodo(s.periodo, s.anio);
-    const [soloImportaciones, todo] = [await seleccionar(s.cuenta.id, rango, 'importaciones'), await seleccionar(s.cuenta.id, rango, 'todo')];
+    const [soloImportaciones, todo, conArchivos] = [
+      await seleccionar(s.cuenta.id, rango, 'importaciones'),
+      await seleccionar(s.cuenta.id, rango, 'todo'),
+      await seleccionar(s.cuenta.id, rango, 'todo_archivos')
+    ];
     const pendientes = !s.periodo && ctx.contarPendientes ? await ctx.contarPendientes(s.cuenta.id) : 0;
 
     const vacio = todo.conteos.movimientos === 0 && todo.conteos.archivos === 0 && pendientes === 0;
@@ -138,11 +143,13 @@ export function crearResetCuenta(ctx) {
     await mostrar(chatId, messageId,
       `${encabezado}\n\n<b>Solo importaciones de cartolas</b> borra:\n${lineasDe(soloImportaciones).join('\n')}\n\n` +
       `<b>Todo de esta cuenta</b> borra:\n${lineasDe(todo).join('\n')}\n\n` +
+      `<b>También borrar archivos</b>: lo mismo que "Todo de esta cuenta" y además mueve a la papelera ${conArchivos.conteos.archivosFisicos} archivos (no los elimina).\n\n` +
       (!s.periodo ? `Selecciones pendientes del lote de terceros: ${pendientes} (se descartan)\n\n` : 'Con un período no se tocan las colas pendientes.\n\n') +
-      'La cuenta, las compras en cuotas y los PDF originales se conservan. Antes de borrar se guarda un respaldo.',
+      'La cuenta y las compras en cuotas se conservan; los PDF originales solo se mueven con la tercera opción. Antes de borrar se guarda un respaldo.',
       [
         [{ text: 'Solo importaciones de cartolas', callback_data: `rcm_${sesionId}_i` }],
         [{ text: 'Todo de esta cuenta', callback_data: `rcm_${sesionId}_t` }],
+        [{ text: 'También borrar archivos', callback_data: `rcm_${sesionId}_a` }],
         [{ text: 'Cancelar', callback_data: `rcx_${sesionId}` }]
       ]
     );
@@ -150,11 +157,11 @@ export function crearResetCuenta(ctx) {
 
   async function pasoConfirmar(chatId, messageId, sesionId, modo) {
     const s = sesiones.get(sesionId);
-    s.modo = modo === 'i' ? 'importaciones' : 'todo';
+    s.modo = modo === 'i' ? 'importaciones' : modo === 'a' ? 'todo_archivos' : 'todo';
     const sel = await seleccionar(s.cuenta.id, rangoDePeriodo(s.periodo, s.anio), s.modo);
     await mostrar(chatId, messageId,
       `<b>Confirmar el borrado</b>\n${esc(s.cuenta.nombre)} · ${esc(etiquetaPeriodo(s.periodo, s.anio))}\n` +
-      `${s.modo === 'todo' ? 'Todo de esta cuenta' : 'Solo importaciones de cartolas'}:\n\n${lineasDe(sel).join('\n')}\n\n` +
+      `${s.modo === 'todo_archivos' ? 'Todo de esta cuenta y sus archivos' : s.modo === 'todo' ? 'Todo de esta cuenta' : 'Solo importaciones de cartolas'}:\n\n${lineasDe(sel).join('\n')}\n\n` +
       'Se guarda un respaldo y podrás deshacerlo durante 10 minutos. ¿Borro?',
       [
         [{ text: 'Sí, borrar', callback_data: `rcb_${sesionId}` }],
@@ -182,7 +189,8 @@ export function crearResetCuenta(ctx) {
       await mostrar(chatId, messageId,
         `<b>Listo</b>: borré ${conteos.movimientos} movimientos y ${conteos.archivos} registros de importación de ${esc(s.cuenta.nombre)} (${esc(etiquetaPeriodo(s.periodo, s.anio))}).` +
         (cuotas.length > 0 ? `\n\nCuotas que cambiaron:\n${cuotas.join('\n')}` : '') +
-        '\n\nGuardé un respaldo en la carpeta respaldos/. Los PDF originales siguen guardados.',
+        (sel.archivosFisicos.length > 0 ? `\n\nMoví ${sel.archivosFisicos.length} archivos a la carpeta papelera/ (no se eliminaron).` : '') +
+        '\n\nGuardé un respaldo en la carpeta respaldos/.' + (sel.modo === 'todo_archivos' ? '' : ' Los PDF originales siguen guardados.'),
         [[{ text: 'Deshacer (10 min)', callback_data: `rcz_${sesionId}` }]]
       );
     } catch (error) {
@@ -199,7 +207,7 @@ export function crearResetCuenta(ctx) {
     try {
       await deshacerDesdeRespaldo(s.respaldo);
       s.respaldo = null;
-      await mostrar(chatId, messageId, `Deshecho: devolví lo que borré de ${esc(s.cuenta.nombre)} y los contadores de cuotas a su valor anterior.`, []);
+      await mostrar(chatId, messageId, `Deshecho: devolví lo que borré de ${esc(s.cuenta.nombre)}, sus archivos y los contadores de cuotas a su valor anterior.`, []);
     } catch (error) {
       console.error('Error al deshacer /resetcuenta:', error.code ?? error.name);
       await mostrar(chatId, messageId, 'No pude deshacerlo (puede que ya se haya restaurado o que haya registros nuevos con los mismos datos). El respaldo sigue guardado.', []);

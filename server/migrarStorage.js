@@ -204,7 +204,8 @@ export async function construirInventario() {
 // Ejecución
 // ---------------------------------------------------------------------------
 
-async function moverArchivo(origenRel, destinoRel) {
+/** Mueve un archivo (rutas relativas a la raíz) y verifica que quedó en el destino, que el origen ya no está y que el tamaño coincide */
+export async function moverArchivo(origenRel, destinoRel) {
   const origen = path.join(rutaRaiz(), origenRel);
   const destino = path.join(rutaRaiz(), destinoRel);
   await fs.mkdir(path.dirname(destino), { recursive: true });

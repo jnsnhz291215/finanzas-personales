@@ -1,7 +1,8 @@
 /**
  * /resetcuenta: borrar de UNA cuenta sus importaciones de cartolas o todo lo suyo, opcionalmente solo de un período (un mes o un
- * rango de meses). La cuenta misma (nombre, titular, dígitos, banco, vínculo) y las compras en cuotas se conservan, y los PDF
- * originales no se borran del almacenamiento.
+ * rango de meses). La cuenta misma (nombre, titular, dígitos, banco, vínculo) y las compras en cuotas se conservan. Los PDF
+ * originales no se borran; con la opción "También borrar archivos" se MUEVEN a <FINANZAS_STORAGE>/papelera/<fecha>/ (no se eliminan)
+ * y el Deshacer los devuelve.
  *
  * Antes de borrar se guarda un respaldo JSON de lo eliminado en <FINANZAS_STORAGE>/respaldos/ (permisos 600) y el borrado es una sola
  * transacción. El respaldo permite deshacer. Si se borran pagos ligados a una compra en cuotas, su contador baja en la misma cantidad
@@ -13,7 +14,9 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import { rutaRaiz } from './storage.js';
+import { rutaRaiz, resolverArchivo, dentroDe } from './storage.js';
+import { moverArchivo } from './migrarStorage.js';
+import { fechaHoySantiago } from './telegram/fechas.js';
 import { normalizar } from './telegram/cuentas.js';
 import { archivosDeCuenta } from './estadoCuenta.js';
 
@@ -116,7 +119,7 @@ export function sentenciasInsertar(tabla, filas) {
 // Selección
 // ---------------------------------------------------------------------------
 
-const MODOS = ['importaciones', 'todo'];
+const MODOS = ['importaciones', 'todo', 'todo_archivos'];
 
 function enLista(ids) {
   return { marcas: ids.map(() => '?').join(','), ids };
@@ -178,6 +181,8 @@ export async function seleccionar(cuentaId, rango, modo) {
     compras = recalcularCuotas(filas, pagosQuitados);
   }
 
+  const archivosFisicos = modo === 'todo_archivos' ? await planearPapelera(query, movimientos, archivos) : [];
+
   const importados = movimientos.filter(m => m.importado_de).length;
   return {
     cuentaId,
@@ -187,16 +192,44 @@ export async function seleccionar(cuentaId, rango, modo) {
     cargos,
     mensajes,
     compras,
+    archivosFisicos,
     conteos: {
       movimientos: movimientos.length,
       importados,
       manuales: movimientos.length - importados,
       archivos: archivos.length,
+      archivosFisicos: archivosFisicos.length,
       cargos: cargos.length,
       pagosCuota: [...pagosQuitados.values()].reduce((t, n) => t + n, 0),
       transferencias: movimientos.filter(m => ['transferencia_propia', 'transferencia_terceros'].includes(m.tipo_movimiento) || m.cuenta_destino_id).length
     }
   };
+}
+
+/**
+ * Archivos (PDF de cartolas y comprobantes) que se moverían a la papelera: los de los registros que se borran, que existen dentro del
+ * almacenamiento y que ningún otro registro usa. Devuelve [{ valor, origen, destino }] (rutas relativas a la raíz).
+ */
+async function planearPapelera(query, movimientos, archivos) {
+  const valores = new Set([...archivos.map(a => a.ruta_archivo), ...movimientos.map(m => m.archivo_respaldo)].filter(Boolean));
+  const idsMov = new Set(movimientos.map(m => Number(m.id)));
+  const idsArchivo = new Set(archivos.map(a => Number(a.id)));
+  const fecha = fechaHoySantiago();
+  const plan = [];
+  const vistos = new Set();
+  for (const valor of valores) {
+    const absoluta = await resolverArchivo(valor);
+    if (!absoluta || !dentroDe(rutaRaiz(), absoluta)) continue;
+    const origen = path.relative(rutaRaiz(), absoluta).split(path.sep).join('/');
+    if (vistos.has(origen)) continue;
+    // Si otro registro que no se borra usa el mismo archivo, no se mueve
+    const [movs] = await query('SELECT id FROM movimientos WHERE archivo_respaldo = ? OR importado_de = ?', [valor, valor]);
+    const [arch] = await query('SELECT id FROM archivos_importados WHERE ruta_archivo = ?', [valor]);
+    if (movs.some(r => !idsMov.has(Number(r.id))) || arch.some(r => !idsArchivo.has(Number(r.id)))) continue;
+    vistos.add(origen);
+    plan.push({ valor, origen, destino: `papelera/${fecha}/${String(plan.length + 1).padStart(3, '0')}_${path.basename(origen)}` });
+  }
+  return plan;
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +284,8 @@ export async function guardarRespaldoJSON(seleccion, meta) {
       cargos_cartola: seleccion.cargos,
       mensajes_registro: seleccion.mensajes
     },
-    compras: seleccion.compras
+    compras: seleccion.compras,
+    archivosFisicos: seleccion.archivosFisicos ?? []
   };
   await fs.writeFile(absoluta, JSON.stringify(contenido), { mode: 0o600 });
   return { nombre, absoluta };
@@ -259,6 +293,25 @@ export async function guardarRespaldoJSON(seleccion, meta) {
 
 /** Borra la selección en una transacción y ajusta los contadores de las cuotas. Devuelve los conteos. */
 export async function borrarSeleccion(seleccion) {
+  // Con "También borrar archivos" los archivos se mueven a la papelera ANTES de tocar la BD; si algo falla, vuelven a su lugar
+  const movidos = [];
+  const devolver = async () => {
+    for (const f of [...movidos].reverse()) await moverArchivo(f.destino, f.origen).catch(() => {});
+  };
+  try {
+    for (const f of seleccion.archivosFisicos ?? []) {
+      await moverArchivo(f.origen, f.destino);
+      movidos.push(f);
+    }
+    await ejecutarBorrado(seleccion);
+  } catch (error) {
+    await devolver();
+    throw error;
+  }
+  return seleccion.conteos;
+}
+
+async function ejecutarBorrado(seleccion) {
   const sentencias = [
     ...sentenciasBorrar('mensajes_registro', seleccion.mensajes.map(f => f.id)),
     ...sentenciasBorrar('movimientos', seleccion.movimientos.map(f => f.id)),
@@ -270,7 +323,6 @@ export async function borrarSeleccion(seleccion) {
     }))
   ];
   await ejecutarEnTransaccion(sentencias);
-  return seleccion.conteos;
 }
 
 /** Vuelve a insertar lo que había en el respaldo y restaura los contadores de las cuotas. Lanza si algo no calza (no deja nada a medias). */
@@ -289,6 +341,17 @@ export async function deshacerDesdeRespaldo(nombre) {
       params: [c.antes, c.terminadaAntes ? 1 : 0, c.id]
     }))
   ];
-  await ejecutarEnTransaccion(sentencias);
+  // Los archivos que se movieron a la papelera vuelven primero; si la BD falla, se devuelven a la papelera
+  const devueltos = [];
+  try {
+    for (const f of datos.archivosFisicos ?? []) {
+      await moverArchivo(f.destino, f.origen);
+      devueltos.push(f);
+    }
+    await ejecutarEnTransaccion(sentencias);
+  } catch (error) {
+    for (const f of [...devueltos].reverse()) await moverArchivo(f.origen, f.destino).catch(() => {});
+    throw error;
+  }
   return datos;
 }

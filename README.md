@@ -107,23 +107,45 @@ exit
 ### 3. Configurar el Almacenamiento
 
 Todos los archivos (cartolas, comprobantes y lo que se manda al bot) viven bajo **una sola raíz**,
-`FINANZAS_STORAGE`, ordenados por tipo y por mes de recepción (hora de Chile):
+`FINANZAS_STORAGE`, ordenados **por cuenta, año y mes**:
 
 ```
 <FINANZAS_STORAGE>/
-├── cartolas/{YYYY-MM}/       cartolas importadas (web y bot)
-├── comprobantes/{YYYY-MM}/   comprobantes de cuotas y respaldos de movimientos
-├── archivos/{YYYY-MM}/       otros archivos que se mandan al bot
+├── cuentas/<tipo>-<titular>-<últimos4>/<año>/<mes 01-12>/
+│       cartola_2026-08.pdf             la cartola, por el mes en que termina su período
+│       comprobante_2026-08-19_1.jpg    comprobantes (fecha y número)
+│       foto_2026-08-19_1.jpg           fotos
+├── sin-cuenta/<año>/<mes>/             lo que no tiene cuenta
+├── papelera/<fecha>/                   archivos que /resetcuenta mueve en vez de borrar
+├── respaldos/                          respaldos de /reset, /resetcuenta y logs de migración
 └── tmp/
 ```
 
+- La carpeta de una cuenta **no usa su nombre** (que se puede editar) sino el tipo, el titular y los últimos 4 dígitos, por ejemplo
+  `credito-valeska-8263`; sin titular es `propio`. Si después editas el titular o los dígitos, lo que ya está guardado no se mueve (la BD
+  guarda la ruta) y lo nuevo va a la carpeta nueva.
 - **Producción** (junto a las apps de Basalto): `FINANZAS_STORAGE=/home/basalto/apps/finanzas-juan/storage`
 - **Desarrollo**: si la variable está vacía se usa `storage/` en la raíz del repo (ignorada por git).
 - El servidor crea las carpetas al arrancar; la raíz debe poder escribirse.
-- En la base de datos se guarda la ruta relativa a la raíz, por ejemplo `comprobantes/2026-11/respaldo_cuota_123_foto.jpg`.
-- `CARTOLAS_PATH` y `RESPALDOS_PATH` están **obsoletas**: si siguen definidas mandan para su tipo y el servidor avisa al
-  arrancar. Los registros anteriores (`/uploads/respaldos/<archivo>`, rutas absolutas de cartolas) se siguen resolviendo y los
-  archivos existentes **no se mueven**.
+- En la base de datos se guarda la ruta relativa a la raíz, por ejemplo `cuentas/credito-valeska-8263/2026/08/cartola_2026-08.pdf`
+  (`archivos_importados.ruta_archivo`, que `movimientos.importado_de` repite, y `movimientos.archivo_respaldo` para los comprobantes).
+  Las rutas de la estructura anterior (`cartolas/2026-11/...`, `comprobantes/2026-11/...`, `/uploads/respaldos/<archivo>`, rutas absolutas)
+  se siguen resolviendo.
+- Un comprobante que llega por Telegram antes de saber su cuenta se guarda en `sin-cuenta/` y la migración lo pasa a la carpeta de su cuenta.
+  Lo que se sube desde la web (si está habilitada) sigue usando la estructura anterior hasta que se migre.
+- `CARTOLAS_PATH` y `RESPALDOS_PATH` están **obsoletas**: si siguen definidas mandan para su tipo y el servidor avisa al arrancar.
+
+**Migrar lo que ya está guardado** a esta estructura (una sola vez, o cada tanto para ordenar lo que quedó en `sin-cuenta/`):
+
+```bash
+npm run migrar-storage              # solo simula y muestra cuántos archivos movería
+npm run migrar-storage -- --aplicar # mueve
+```
+
+La migración verifica antes que cada archivo de origen exista y que cada destino esté libre (si algo no calza, no mueve nada), mueve y
+verifica cada archivo, actualiza las rutas de la BD (`archivos_importados`, `movimientos.importado_de`, `movimientos.archivo_respaldo`) en una
+sola transacción y vuelve a verificar. Si algo falla en cualquier punto, devuelve los archivos a su lugar y deshace la BD. Deja un log de lo
+movido en `respaldos/migracion-storage-<fecha>.json` (permisos 600) y en consola solo imprime cantidades. Conviene correrla sin tráfico del bot.
 
 ```bash
 mkdir -p /home/basalto/apps/finanzas-juan/storage
@@ -905,13 +927,15 @@ dígitos, banco, vínculo) ni las compras en cuotas, y sin borrar los PDF origin
   cuenta. («borra» solo se entiende con un período, para no confundirlo con desactivar una cuenta.)
 - **Resumen antes de borrar:** movimientos, cartolas importadas (registros de importación), cargos recordados de tarjetas de terceros,
   pagos de cuotas y transferencias ligados, y las selecciones pendientes del lote de terceros (solo sin período).
-- **Dos opciones con botones:** *Solo importaciones de cartolas* (los movimientos que vinieron de cartolas, sus registros de importación y las
-  colas pendientes) o *Todo de esta cuenta* (además los movimientos manuales). Siempre pide una segunda confirmación con el botón *Sí, borrar*
-  (Telegram no permite botones de color).
+- **Tres opciones con botones:** *Solo importaciones de cartolas* (los movimientos que vinieron de cartolas, sus registros de importación y las
+  colas pendientes), *Todo de esta cuenta* (además los movimientos manuales) y *También borrar archivos* (lo mismo que *Todo* y además
+  **mueve** los PDF de las cartolas y los comprobantes de esos registros a `papelera/<fecha>/`, sin eliminarlos; no mueve un archivo que
+  otro registro que no se borra siga usando). Siempre pide una segunda confirmación con el botón *Sí, borrar* (Telegram no permite
+  botones de color). Las dos primeras opciones no tocan ningún archivo.
 - **Cuotas:** si se borran pagos ligados a una compra en cuotas, su contador baja en esa cantidad y el bot avisa cuáles cambiaron.
 - **Respaldo y Deshacer:** antes de borrar se guarda un JSON con lo eliminado en `FINANZAS_STORAGE/respaldos/` (permisos 600; si falla, no se
   borra nada) y el borrado es una sola transacción. El botón *Deshacer* funciona durante 10 minutos: vuelve a insertar lo borrado y devuelve
-  los contadores de cuotas a su valor anterior.
+  los contadores de cuotas a su valor anterior y, si se movieron archivos a la papelera, los devuelve a su lugar.
 
 ### Cuentas, vínculos y datos guardados: /cuentas
 
