@@ -553,6 +553,7 @@ export function crearAdmin(ctx) {
   function lineaFijo(f, prefijo = '') {
     return `${prefijo}<b>${esc(f.nombre)}</b> - ${dinero(f.monto)}` +
       `${f.dia_pago ? ` - día ${f.dia_pago}` : ''}` +
+      `${f.destinatario ? ` - se paga a ${esc(f.destinatario)}` : ''}` +
       `${f.palabras_clave ? ` - palabras: ${esc(f.palabras_clave)}` : ''}`;
   }
 

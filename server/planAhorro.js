@@ -104,6 +104,18 @@ export function validarGastoFijo(datos) {
     return { ok: false, error: 'Las palabras clave son demasiado largas (máximo 255 caracteres)' };
   }
 
+  // A quién se le paga (opcional). Solo se incluye si viene en los datos, para no borrarlo al editar otros campos
+  let destinatario;
+  let destinatarioId;
+  if (datos && 'destinatario' in datos) {
+    destinatario = String(datos.destinatario ?? '').trim() || null;
+    if (destinatario && (destinatario.length > 100 || /\d{4,}/.test(destinatario))) {
+      return { ok: false, error: 'El destinatario debe ser un nombre (hasta 100 caracteres, sin números de cuenta)' };
+    }
+    destinatarioId = datos.destinatario_id === undefined || datos.destinatario_id === null ? null : Number(datos.destinatario_id);
+    if (destinatarioId !== null && !Number.isInteger(destinatarioId)) destinatarioId = null;
+  }
+
   return {
     ok: true,
     valores: {
@@ -112,7 +124,8 @@ export function validarGastoFijo(datos) {
       dia_pago: diaPago,
       categoria_id: categoriaId,
       cuenta_id: cuentaId,
-      palabras_clave: palabrasClave || null
+      palabras_clave: palabrasClave || null,
+      ...(destinatario !== undefined ? { destinatario, destinatario_id: destinatario ? destinatarioId : null } : {})
     }
   };
 }
@@ -151,6 +164,8 @@ export function infoMes(hoy) {
 export function esGastoFijo(movimiento, gastosFijos) {
   // El pago de una cuota (ligado a su compra) siempre es un gasto fijo
   if (movimiento.compra_cuota_id !== null && movimiento.compra_cuota_id !== undefined) return true;
+  // Una transferencia marcada como el pago de un gasto fijo (ver transferenciasBot.js) no se cuenta otra vez como gasto libre
+  if (movimiento.gasto_fijo_id !== null && movimiento.gasto_fijo_id !== undefined) return true;
 
   const descripcion = normalizar(movimiento.descripcion);
   return gastosFijos.some(f => {
@@ -333,6 +348,7 @@ export async function listarGastosFijos({ incluirInactivos = false } = {}) {
   const query = await consulta();
   const [filas] = await query(
     `SELECT f.id, f.nombre, f.monto, f.dia_pago, f.categoria_id, f.cuenta_id, f.palabras_clave, f.activo,
+            f.destinatario, f.destinatario_id,
             c.nombre AS categoria_nombre, cu.nombre AS cuenta_nombre
      FROM gastos_fijos f
      LEFT JOIN categorias c ON f.categoria_id = c.id
@@ -343,16 +359,17 @@ export async function listarGastosFijos({ incluirInactivos = false } = {}) {
   return filas.map(normalizarFijo);
 }
 
-export async function crearGastoFijo({ nombre, monto, dia_pago, categoria_id, cuenta_id, palabras_clave }) {
+export async function crearGastoFijo({ nombre, monto, dia_pago, categoria_id, cuenta_id, palabras_clave, destinatario = null, destinatario_id = null }) {
   const query = await consulta();
   const [resultado] = await query(
-    'INSERT INTO gastos_fijos (nombre, monto, dia_pago, categoria_id, cuenta_id, palabras_clave) VALUES (?, ?, ?, ?, ?, ?)',
-    [nombre, monto, dia_pago, categoria_id, cuenta_id, palabras_clave ?? null]
+    `INSERT INTO gastos_fijos (nombre, monto, dia_pago, categoria_id, cuenta_id, palabras_clave, destinatario, destinatario_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [nombre, monto, dia_pago, categoria_id, cuenta_id, palabras_clave ?? null, destinatario, destinatario_id]
   );
   return resultado.insertId;
 }
 
-export async function actualizarGastoFijo(id, { nombre, monto, dia_pago, categoria_id, cuenta_id, palabras_clave }, activo = true) {
+export async function actualizarGastoFijo(id, { nombre, monto, dia_pago, categoria_id, cuenta_id, palabras_clave, destinatario, destinatario_id }, activo = true) {
   const query = await consulta();
   await query(
     `UPDATE gastos_fijos
@@ -361,6 +378,10 @@ export async function actualizarGastoFijo(id, { nombre, monto, dia_pago, categor
      WHERE id = ?`,
     [nombre, monto, dia_pago, categoria_id, cuenta_id, palabras_clave ?? null, activo ? 1 : 0, id]
   );
+  // El destinatario solo se toca si viene (editar otros campos no lo borra)
+  if (destinatario !== undefined) {
+    await query('UPDATE gastos_fijos SET destinatario = ?, destinatario_id = ? WHERE id = ?', [destinatario, destinatario_id ?? null, id]);
+  }
 }
 
 /** Soft delete: activo = 0, no se borra la fila */
@@ -387,7 +408,7 @@ export async function obtenerPlan(hoy = fechaHoySantiago()) {
   );
   const cuotas = await comprasParaPlan(inicio, fin);
   const [gastos] = await query(
-    `SELECT descripcion, monto, categoria_id, compra_cuota_id FROM movimientos
+    `SELECT descripcion, monto, categoria_id, compra_cuota_id, gasto_fijo_id FROM movimientos
      WHERE tipo = 'cargo'
        AND tipo_movimiento IN (${TIPOS_GASTO_LIBRE.map(t => `'${t}'`).join(', ')})
        AND fecha BETWEEN ? AND ?`,
@@ -452,6 +473,64 @@ export function parsearFijo(texto) {
     monto: analisis.monto,
     diaPago,
     palabrasClave
+  };
+}
+
+// Palabras que no son parte del nombre de un gasto fijo al borde del texto
+const CONECTORES_BORDE = new Set(['de', 'del', 'en', 'por', 'para', 'a', 'el', 'la', 'los', 'las', 'mi', 'mis', 'un', 'una', 'que', 'y']);
+
+function limpiarBordes(texto) {
+  const palabras = String(texto ?? '').replace(/[,;:¿?¡!]+/g, ' ').split(/\s+/).filter(Boolean);
+  while (palabras.length > 0 && CONECTORES_BORDE.has(normalizar(palabras[0]))) palabras.shift();
+  while (palabras.length > 0 && CONECTORES_BORDE.has(normalizar(palabras[palabras.length - 1]))) palabras.pop();
+  return palabras.join(' ');
+}
+
+const capitalizar = (t) => (t ? t[0].toUpperCase() + t.slice(1) : t);
+
+/**
+ * Reconoce un gasto fijo escrito con palabras: "Gasto fijo: 24 mil en telefonía, lo pago a Vivian",
+ * "fijo 15.990 netflix", "agrega gasto fijo de 350 mil arriendo, se lo pago a Don Pedro el 5 de cada mes",
+ * "pago fijo 24000 telefonía a Vivian". Devuelve null si el mensaje no empieza con "gasto fijo", "pago fijo" o
+ * "fijo" (con un verbo como agrega o anota al comienzo, si quieres); si no, { nombre, monto, diaPago,
+ * destinatario, palabrasClave }, donde monto y nombre son null si faltan (el bot los pregunta).
+ * No toca "mis gastos fijos" ni "/fijos": el marcador debe ir al comienzo y en singular.
+ */
+export function parsearGastoFijoNatural(texto) {
+  const original = String(texto ?? '').trim();
+  if (!original || original.startsWith('/')) return null;
+
+  const marcador = /^\s*(?:(?:por favor\s+)?(?:agrega(?:r|me)?|a[ñn]ade|a[ñn]adir|anota(?:r|me)?|registra(?:r|me)?|guarda(?:r|me)?|crea(?:r)?|nuevo|nueva)\s+)?(?:(?:un|el|mi)\s+)?(?:(?:gasto|pago)\s+)?fijo\b[\s:,.-]*/i.exec(original);
+  if (!marcador || !/\bfijo\b/i.test(marcador[0])) return null;
+  let resto = original.slice(marcador[0].length).trim();
+
+  // A quién se le paga: "lo pago a Vivian", "se lo pago a Don Pedro", "le pago a Camila", o un "a Vivian" al final
+  let destinatario = null;
+  const paga = /[,;]?\s*(?:(?:se\s+)?(?:lo|la|le)\s+)?(?:pago|transfiero|deposito|giro|paga)\s+a\s+(.+?)(?=\s+(?:el|los|cada|d[ií]a)\s+\d|\s+(?:cada|todos los)\s+mes|[,;]|$)/i.exec(resto);
+  if (paga) {
+    destinatario = paga[1];
+    resto = resto.replace(paga[0], ' ');
+  } else {
+    const alFinal = /\s+a\s+((?:(?:don|doña|dona|sr|sra)\s+)?[A-ZÁÉÍÓÚÑ][\p{L}'-]+(?:\s+[A-ZÁÉÍÓÚÑ][\p{L}'-]+){0,2})\s*$/u.exec(resto);
+    if (alFinal) {
+      destinatario = alFinal[1];
+      resto = resto.slice(0, alFinal.index);
+    }
+  }
+  if (destinatario) {
+    destinatario = destinatario.replace(/[\s.,;:]+$/g, '').replace(/\s+/g, ' ').trim();
+    if (!destinatario || /\d/.test(destinatario) || destinatario.length > 80) destinatario = null;
+    else destinatario = destinatario.split(' ').map(capitalizar).join(' ');
+  }
+
+  const base = parsearFijo(resto);
+  const nombre = limpiarBordes(base.nombre ?? resto.replace(/\$+/g, ' '));
+  return {
+    nombre: nombre ? capitalizar(nombre) : null,
+    monto: base.monto,
+    diaPago: base.diaPago,
+    destinatario,
+    palabrasClave: null
   };
 }
 

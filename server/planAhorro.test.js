@@ -7,6 +7,7 @@ import {
   listaPalabrasClave,
   TIPOS_GASTO_LIBRE,
   parsearFijo,
+  parsearGastoFijoNatural,
   detectarConsultaPlan
 } from './planAhorro.js';
 
@@ -338,5 +339,56 @@ describe('detectarConsultaPlan', () => {
     expect(detectarConsultaPlan('cuánto me queda si gasto 5 mil')).toBe(false);
     expect(detectarConsultaPlan('pagué 5 mil en uber')).toBe(false);
     expect(detectarConsultaPlan('/plan')).toBe(false);
+  });
+});
+
+describe('gasto fijo en lenguaje natural', () => {
+  test('"Gasto fijo: 24 mil en telefonía, lo pago a Vivian"', () => {
+    expect(parsearGastoFijoNatural('Gasto fijo: 24 mil en telefonía, lo pago a Vivian')).toEqual({
+      nombre: 'Telefonía', monto: 24000, diaPago: null, destinatario: 'Vivian', palabrasClave: null
+    });
+  });
+
+  test('"fijo 15.990 netflix" y "gasto fijo 24k internet"', () => {
+    expect(parsearGastoFijoNatural('fijo 15.990 netflix')).toMatchObject({ nombre: 'Netflix', monto: 15990, destinatario: null });
+    expect(parsearGastoFijoNatural('gasto fijo 24k internet')).toMatchObject({ nombre: 'Internet', monto: 24000 });
+  });
+
+  test('con verbo, destinatario con "Don" y día del mes', () => {
+    expect(parsearGastoFijoNatural('agrega gasto fijo de 350 mil arriendo, se lo pago a Don Pedro el 5 de cada mes')).toEqual({
+      nombre: 'Arriendo', monto: 350000, diaPago: 5, destinatario: 'Don Pedro', palabrasClave: null
+    });
+  });
+
+  test('"pago fijo 24000 telefonía a Vivian"', () => {
+    expect(parsearGastoFijoNatural('pago fijo 24000 telefonía a Vivian')).toMatchObject({ nombre: 'Telefonía', monto: 24000, destinatario: 'Vivian' });
+  });
+
+  test('si falta el monto o la descripción lo deja en null para preguntarlo', () => {
+    expect(parsearGastoFijoNatural('gasto fijo luz')).toMatchObject({ nombre: 'Luz', monto: null });
+    expect(parsearGastoFijoNatural('fijo 24 mil')).toMatchObject({ nombre: null, monto: 24000 });
+    expect(parsearGastoFijoNatural('fijo')).toMatchObject({ nombre: null, monto: null });
+  });
+
+  test('no se confunde con consultas ni con gastos', () => {
+    expect(parsearGastoFijoNatural('mis gastos fijos')).toBeNull();
+    expect(parsearGastoFijoNatural('cuánto tengo en gastos fijos')).toBeNull();
+    expect(parsearGastoFijoNatural('almuerzo 5500')).toBeNull();
+    expect(parsearGastoFijoNatural('/fijos')).toBeNull();
+  });
+});
+
+describe('destinatario del gasto fijo y pago marcado', () => {
+  test('el destinatario se valida solo si viene y no admite números de cuenta', () => {
+    expect(validarGastoFijo({ nombre: 'Telefonía', monto: 24000, destinatario: 'Vivian', destinatario_id: 3 }).valores)
+      .toMatchObject({ destinatario: 'Vivian', destinatario_id: 3 });
+    expect(validarGastoFijo({ nombre: 'Telefonía', monto: 24000 }).valores).not.toHaveProperty('destinatario');
+    expect(validarGastoFijo({ nombre: 'Telefonía', monto: 24000, destinatario: 'Vivian 12345678' }).ok).toBe(false);
+  });
+
+  test('una transferencia marcada como pago de un gasto fijo cuenta como fija, no como libre', () => {
+    const fijos = [{ id: 1, nombre: 'Telefonía', monto: 24000, activo: true }];
+    expect(esGastoFijo({ descripcion: 'TRANSFERENCIA A VIVIAN', monto: 25000, gasto_fijo_id: 1 }, fijos)).toBe(true);
+    expect(esGastoFijo({ descripcion: 'TRANSFERENCIA A VIVIAN', monto: 25000, gasto_fijo_id: null }, fijos)).toBe(false);
   });
 });

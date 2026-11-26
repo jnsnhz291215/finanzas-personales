@@ -141,9 +141,45 @@ export function cruzarConAnteriores(monto, anteriores, compras) {
   return null;
 }
 
+/**
+ * El gasto fijo al que parece corresponder una transferencia: se le paga a ese destinatario (mismo nombre, o uno contenido
+ * en el otro como "Pedro" y "Don Pedro") y el monto está dentro del 10 % del gasto fijo. Si hay varios, el más cercano.
+ */
+export function fijoQueCalza(destinatario, monto, fijos, tolerancia = 0.10) {
+  const clave = clavePorNombre(destinatario);
+  if (!clave) return null;
+  const candidatos = fijos
+    .filter(f => (f.activo === undefined || f.activo === true || Number(f.activo) === 1) && f.destinatario)
+    .filter(f => {
+      const c = clavePorNombre(f.destinatario);
+      return c.length >= 3 && (c === clave || c.includes(clave) || clave.includes(c));
+    })
+    .map(f => ({ fijo: f, diferencia: Math.abs(Number(monto) - Number(f.monto)) }))
+    .filter(x => x.diferencia <= Number(x.fijo.monto) * tolerancia + 0.5)
+    .sort((a, b) => a.diferencia - b.diferencia);
+  return candidatos[0]?.fijo ?? null;
+}
+
 // ---------------------------------------------------------------------------
 // Datos
 // ---------------------------------------------------------------------------
+
+/** ¿Ya hay una transferencia marcada este mes como el pago de ese gasto fijo? (para no proponer otra vez) */
+export async function fijoPagadoEnElMes(gastoFijoId, fecha) {
+  const query = await consulta();
+  const mes = String(fecha).slice(0, 7);
+  const [filas] = await query(
+    'SELECT COUNT(*) AS n FROM movimientos WHERE gasto_fijo_id = ? AND fecha >= ? AND fecha <= ?',
+    [gastoFijoId, `${mes}-01`, `${mes}-31`]
+  );
+  return Number(filas[0]?.n ?? 0) > 0;
+}
+
+/** Marca la transferencia como el pago de un gasto fijo: el plan la cuenta como fija y no como gasto libre */
+export async function marcarPagoDeGastoFijo(movimientoId, gastoFijoId) {
+  const query = await consulta();
+  await query('UPDATE movimientos SET gasto_fijo_id = ? WHERE id = ?', [gastoFijoId, movimientoId]);
+}
 
 /**
  * Transferencias del mes de `fecha` al mismo destinatario que todavía no están ligadas a ninguna cuota

@@ -10,12 +10,16 @@
  */
 
 import { listarCompras } from '../cuotas.js';
+import { listarGastosFijos } from '../planAhorro.js';
 import {
   esTransferenciaSaliente,
   extraerDestinatario,
   esDestinoPropio,
   clavePorNombre,
   cruzarCuotas,
+  fijoQueCalza,
+  fijoPagadoEnElMes,
+  marcarPagoDeGastoFijo,
   cruzarConAnteriores,
   repartirMonto,
   transferenciasSinVincularDelMes,
@@ -66,6 +70,7 @@ export function crearTransferencias(ctx) {
       const propias = cuentas.filter(c => esTitularPropio(c.titular));
       const titularPropio = (process.env.TITULAR_POR_DEFECTO || '').trim();
       const compras = await listarCompras();
+      const fijos = (await listarGastosFijos()).filter(f => f.destinatario);
 
       let internas = 0;
       const recordadas = [];
@@ -94,6 +99,13 @@ export function crearTransferencias(ctx) {
         // 2. A quien se le paga una compra en cuotas
         const deEsaPersona = comprasDeTitular(compras, destinatario);
         if (deEsaPersona.length > 0 && await ofrecerCuotas(chatId, mov, destinatario, deEsaPersona, cuentaId)) continue;
+
+        // 2b. A quien se le paga un gasto fijo (con un monto parecido, ±10 %): se propone marcarla como ese pago
+        const fijo = fijoQueCalza(destinatario, mov.monto, fijos);
+        if (fijo && !(await fijoPagadoEnElMes(fijo.id, mov.fecha))) {
+          await proponerPagoFijo(chatId, mov, destinatario, fijo);
+          continue;
+        }
 
         // 3. Ya se sabe qué es lo que le transfiere a esa persona
         const recordada = await obtenerClasificacion(destinatario);
@@ -238,6 +250,24 @@ export function crearTransferencias(ctx) {
     });
   }
 
+  /** La transferencia parece el pago de un gasto fijo: se pregunta antes de marcarla (así el plan no la cuenta dos veces) */
+  async function proponerPagoFijo(chatId, mov, destinatario, fijo) {
+    const key = guardar({ chatId, mov, destinatario, fijo });
+    await enviar(chatId,
+      `Transferencia de ${dinero(mov.monto)} a <b>${esc(destinatario)}</b> (${formatearFechaCL(String(mov.fecha).slice(0, 10))}). ` +
+      `Parece el pago de tu gasto fijo <b>${esc(fijo.nombre)}</b> (${dinero(fijo.monto)}${fijo.dia_pago ? `, día ${fijo.dia_pago}` : ''}). ` +
+      '¿La marco como ese pago? Así el plan no la cuenta otra vez como gasto.',
+      {
+        reply_markup: {
+          inline_keyboard: [[
+            { text: `Sí, es el pago de ${fijo.nombre}`.slice(0, 40), callback_data: `tfj_${key}` },
+            { text: 'No, es otro gasto', callback_data: `tfn_${key}` }
+          ]]
+        }
+      }
+    );
+  }
+
   /** ¿Gasto, préstamo o pago? La respuesta se recuerda para ese destinatario */
   async function preguntar(chatId, mov, destinatario, cuentaId) {
     const key = guardar({ chatId, mov, destinatario, cuentaId });
@@ -258,7 +288,7 @@ export function crearTransferencias(ctx) {
 
   /** Botones de este módulo. Devuelve true si el callback era suyo. */
   async function manejarCallback(cb, chatId, data) {
-    const m = data.match(/^tf([gpanythc])_([a-z0-9]+)(?:_(\d+))?$/);
+    const m = data.match(/^tf([gpanythcj])_([a-z0-9]+)(?:_(\d+))?$/);
     if (!m) return false;
     const [, tipo, key, indice] = m;
     const messageId = cb.message.message_id;
@@ -303,6 +333,18 @@ export function crearTransferencias(ctx) {
         const r = await pendiente.aplicar(repartirMonto(elegidas, pendiente.monto));
         await editar(r.ok ? r.texto : esc(r.error ?? 'No pude vincularla.'), { chat_id: chatId, message_id: messageId });
         await responderCallback(cb.id, { text: r.ok ? 'Vinculada' : 'Error' });
+        return true;
+      }
+
+      // Pago de un gasto fijo
+      if (tipo === 'j') {
+        await marcarPagoDeGastoFijo(mov.id, pendiente.fijo.id);
+        await editar(
+          `Listo: la transferencia a ${esc(destinatario)} quedó como el pago de <b>${esc(pendiente.fijo.nombre)}</b>. ` +
+          'El plan no la cuenta otra vez como gasto.',
+          { chat_id: chatId, message_id: messageId }
+        );
+        await responderCallback(cb.id, { text: 'Marcada' });
         return true;
       }
 

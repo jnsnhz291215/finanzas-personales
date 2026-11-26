@@ -4,8 +4,8 @@
  * prompt corto. Los comandos siguen funcionando como respaldo.
  *
  * Intenciones: registrar, pagar_cuota, nueva_compra_cuotas, consultar_gastos, plan,
- * datos_transferencia, cuentas, cuotas_pendientes, buscar, ayuda, eliminar_ultimo, asignar_digitos, guardar_cuenta, estado, reset y
- * restaurar_respaldo.
+ * datos_transferencia, cuentas, cuotas_pendientes, buscar, ayuda, eliminar_ultimo, asignar_digitos, guardar_cuenta, gasto_fijo, estado,
+ * reset y restaurar_respaldo.
  *
  * También entiende las respuestas (reply de Telegram) a un mensaje que creó un registro: eliminar,
  * corregir o deshacer (clasificarReply; la ejecución está en registrosBot.js).
@@ -22,7 +22,7 @@
 import { analizarMonto, parsearMontoExacto } from './parser.js';
 import { fechaHoySantiago, sumarDias, diaSemana, construirFecha } from './fechas.js';
 import { detectarConsultaDatos, terminoDesdeTexto } from './datosTransferencia.js';
-import { detectarConsultaPlan } from '../planAhorro.js';
+import { detectarConsultaPlan, parsearGastoFijoNatural } from '../planAhorro.js';
 import { parsearPagoCuota, detectarAltaCuotas, detectarConsultaCuotas } from './cuotas.js';
 import { normalizar, capitalizarNombre } from './cuentas.js';
 import { interpretarIntencion, geminiDisponible } from './gemini.js';
@@ -436,6 +436,10 @@ export function clasificarPorReglas(texto) {
   const reinicio = detectarReset(original);
   if (reinicio) return resultado(reinicio);
 
+  // "gasto fijo: 24 mil en telefonía, lo pago a Vivian": un gasto fijo (la regla local de /fijo, sin Gemini)
+  const gastoFijo = parsearGastoFijoNatural(original);
+  if (gastoFijo) return resultado('gasto_fijo', gastoFijo);
+
   // "guarda la tarjeta crédito 8263 es de Valeska": guardar una cuenta o tarjeta (siempre por reglas, sin Gemini)
   const nuevaCuenta = detectarGuardarCuenta(original);
   if (nuevaCuenta) return resultado('guardar_cuenta', nuevaCuenta);
@@ -624,6 +628,13 @@ export function crearIntenciones(ctx) {
       case 'ayuda':
         await ctx.ayuda(chatId);
         return true;
+
+      case 'gasto_fijo':
+        if (ctx.gastoFijo) {
+          await ctx.gastoFijo(msg, datos);
+          return true;
+        }
+        return preguntarIntencion(chatId, texto);
 
       case 'guardar_cuenta':
         if (datos.textoCuenta && ctx.guardarCuenta) {

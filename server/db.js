@@ -154,6 +154,26 @@ if (MOTOR_ELEGIDO === 'mariadb') {
   }
 
   /**
+   * Migración idempotente (MariaDB): a quién se le paga cada gasto fijo (gastos_fijos.destinatario y destinatario_id, este
+   * último el enlace con destinatarios_transferencia si existe) y movimientos.gasto_fijo_id, la transferencia marcada como el
+   * pago de un gasto fijo (para no contarla otra vez en el plan).
+   */
+  async function migrarGastoFijoDestinatario(connection) {
+    const [filas] = await connection.query(
+      `SELECT TABLE_NAME AS tabla, COLUMN_NAME AS columna FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND ((TABLE_NAME = 'gastos_fijos' AND COLUMN_NAME IN ('destinatario', 'destinatario_id'))
+           OR (TABLE_NAME = 'movimientos' AND COLUMN_NAME = 'gasto_fijo_id'))`
+    );
+    const tiene = (tabla, columna) => filas.some(f => f.tabla === tabla && f.columna === columna);
+    if (!tiene('gastos_fijos', 'destinatario')) await connection.query('ALTER TABLE gastos_fijos ADD COLUMN destinatario VARCHAR(100) NULL');
+    if (!tiene('gastos_fijos', 'destinatario_id')) await connection.query('ALTER TABLE gastos_fijos ADD COLUMN destinatario_id INT NULL');
+    if (!tiene('movimientos', 'gasto_fijo_id')) {
+      await connection.query('ALTER TABLE movimientos ADD COLUMN gasto_fijo_id INT NULL, ADD INDEX idx_movimientos_gasto_fijo (gasto_fijo_id)');
+    }
+  }
+
+  /**
    * Migración idempotente (MariaDB): destinatarios_transferencia, la clasificación que Juan eligió para las
    * transferencias a cada destinatario (gasto, préstamo o pago), para no volver a preguntar.
    */
@@ -350,6 +370,7 @@ if (MOTOR_ELEGIDO === 'mariadb') {
         await migrarDatosTransferencia(connection);
         await migrarPlanAhorro(connection);
         await migrarComprasCuotas(connection);
+        await migrarGastoFijoDestinatario(connection);
         await asegurarClaveCompraCuota(connection);
         
         const [usuarios] = await connection.query('SELECT * FROM usuario LIMIT 1');

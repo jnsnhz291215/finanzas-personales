@@ -136,6 +136,9 @@ export async function inicializarDB() {
     // Migración: compras en cuotas y su vínculo con movimientos
     migrarComprasCuotas(database);
 
+    // Migración: destinatario de los gastos fijos y la marca de pago de un gasto fijo en movimientos
+    migrarGastoFijoDestinatario(database);
+
     // Insertar categorías por defecto
     const categorias = [
       ['Supermercado', '#10B981', 'fa-shopping-cart'],
@@ -342,6 +345,21 @@ function migrarRegistros(database) {
     );
     CREATE INDEX IF NOT EXISTS idx_historial_cambios_reg ON historial_cambios(tipo, registro_id);
   `);
+}
+
+/**
+ * Migración idempotente (SQLite): a quién se le paga cada gasto fijo (gastos_fijos.destinatario y destinatario_id, este
+ * último el enlace con destinatarios_transferencia si existe) y movimientos.gasto_fijo_id, la transferencia marcada como el
+ * pago de un gasto fijo (para no contarla otra vez en el plan).
+ */
+function migrarGastoFijoDestinatario(database) {
+  const fijos = database.prepare('PRAGMA table_info(gastos_fijos)').all().map(c => c.name);
+  if (!fijos.includes('destinatario')) database.exec('ALTER TABLE gastos_fijos ADD COLUMN destinatario TEXT');
+  if (!fijos.includes('destinatario_id')) database.exec('ALTER TABLE gastos_fijos ADD COLUMN destinatario_id INTEGER');
+
+  const movimientos = database.prepare('PRAGMA table_info(movimientos)').all().map(c => c.name);
+  if (!movimientos.includes('gasto_fijo_id')) database.exec('ALTER TABLE movimientos ADD COLUMN gasto_fijo_id INTEGER');
+  database.exec('CREATE INDEX IF NOT EXISTS idx_movimientos_gasto_fijo ON movimientos(gasto_fijo_id)');
 }
 
 /**

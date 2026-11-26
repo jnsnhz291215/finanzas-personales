@@ -711,6 +711,26 @@ Si el comprobante llega antes que la cartola espera hasta 25 segundos (110 si ya
 comprobante, lo registra como pago de la siguiente cuota; si manda solo la cartola, al final ofrece registrar la cuota con el monto del
 cargo. Una foto que no parece un comprobante de transferencia sigue el flujo de siempre. A Gemini no viaja nada de esto.
 
+### Gastos fijos con una frase
+
+Además de `/fijo`, puedes escribirlos como hablas (reglas locales, sin Gemini):
+
+- `gasto fijo: 24 mil en telefonía, lo pago a Vivian`
+- `fijo 15.990 netflix`
+- `agrega gasto fijo de 350 mil arriendo, se lo pago a Don Pedro el 5 de cada mes`
+- `pago fijo 24000 telefonía a Vivian`
+
+El bot saca el **monto** (24 mil, 24.000, 24k), la **descripción**, **a quién se le paga** (opcional) y el **día del mes** (opcional). Muestra un resumen con
+**Guardar** y **Cancelar**; si falta el monto o la descripción, lo pregunta. Si ya existe un gasto fijo con esa descripción, ofrece **actualizar su monto**
+(y el día o el destinatario) en vez de duplicarlo. `/fijos` muestra el día y a quién se le paga.
+
+- **Destinatario:** se guarda en `gastos_fijos.destinatario`; si ya existe en `destinatarios_transferencia` (por nombre, sin tildes ni mayúsculas) también se
+  guarda el enlace en `destinatario_id`. Se agregaron `gastos_fijos.destinatario`, `gastos_fijos.destinatario_id` y `movimientos.gasto_fijo_id` con una
+  migración que se aplica sola al arrancar (SQLite y MariaDB) y están en `database/schema.sql`.
+- **Pago del gasto fijo:** cuando sale una transferencia a ese destinatario por un monto parecido (±10 %) del gasto fijo, el bot propone con botones
+  marcarla como ese pago (`movimientos.gasto_fijo_id`). Una transferencia marcada cuenta como gasto fijo en `/plan` y **no otra vez como gasto libre**.
+  Si ese mes ya hay una marcada para ese gasto fijo, no vuelve a proponer.
+
 ### Guardar una cuenta o tarjeta con una frase
 
 Además de `/savecard`, puedes escribirlo como hablas (siempre con los **últimos 4 dígitos**; reglas locales, sin Gemini):

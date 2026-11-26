@@ -5,7 +5,8 @@ import {
   esDestinoPropio,
   cruzarCuotas,
   cruzarConAnteriores,
-  repartirMonto
+  repartirMonto,
+  fijoQueCalza
 } from './transferencias.js';
 
 describe('transferencias salientes', () => {
@@ -89,5 +90,26 @@ describe('varias compras, varias transferencias', () => {
     expect(repartirMonto([a, b], 100000).map(c => c.montoAplicado)).toEqual([85000, 15000]);
     expect(repartirMonto([a, b], 150000).map(c => c.montoAplicado)).toEqual([85000, 65000]);
     expect(repartirMonto([a], 60000).map(c => c.montoAplicado)).toEqual([60000]);
+  });
+});
+
+describe('pago de un gasto fijo', () => {
+  const fijos = [
+    { id: 1, nombre: 'Telefonía', monto: 24000, destinatario: 'Vivian', activo: true },
+    { id: 2, nombre: 'Arriendo', monto: 350000, destinatario: 'Don Pedro', activo: true },
+    { id: 3, nombre: 'Luz', monto: 30000, destinatario: null, activo: true }
+  ];
+
+  test('calza por destinatario y monto dentro del 10 %', () => {
+    expect(fijoQueCalza('Vivian', 25000, fijos)?.id).toBe(1);
+    expect(fijoQueCalza('Vivian', 26400, fijos)?.id).toBe(1);
+    expect(fijoQueCalza('Vivian', 27000, fijos)).toBeNull();
+    expect(fijoQueCalza('Pedro', 350000, fijos)?.id).toBe(2);
+  });
+
+  test('sin destinatario, otro destinatario o gasto inactivo no calza', () => {
+    expect(fijoQueCalza('Camila', 24000, fijos)).toBeNull();
+    expect(fijoQueCalza('Vivian', 24000, [{ ...fijos[0], activo: false }])).toBeNull();
+    expect(fijoQueCalza('', 24000, fijos)).toBeNull();
   });
 });

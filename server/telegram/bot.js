@@ -20,6 +20,7 @@ import {
   obtenerPlan,
   listarGastosFijos,
   crearGastoFijo,
+  actualizarGastoFijo,
   validarGastoFijo,
   parsearFijo,
   TIPOS_GASTO_LIBRE
@@ -35,6 +36,7 @@ import { crearLoteTerceros } from './loteTerceros.js';
 import { crearTransferencias } from './transferenciasBot.js';
 import { esTitularPropio } from './terceros.js';
 import { fijarTitular } from '../resumenDatos.js';
+import { clavePorNombre } from '../transferencias.js';
 import { crearSistema } from './sistemaBot.js';
 import { crearIntenciones, clasificarPorReglas } from './intenciones.js';
 import { limitadorGemini } from './limiteGemini.js';
@@ -288,6 +290,7 @@ export async function iniciarBot() {
       buscar: (chatId, texto) => admin.buscar(chatId, texto),
       ayuda: (chatId) => enviar(chatId, textoAyuda()),
       eliminarUltimo: (chatId) => registros.eliminarUltimo(chatId),
+      gastoFijo: (msg, datos) => procesarGastoFijo(msg.chat.id, datos),
       guardarCuenta: (msg, datos) => procesarCuentaDesdeTexto(msg, datos.textoCuenta, { natural: true, numeroLargo: datos.numeroLargo }),
       ayudaGuardarCuenta: (chatId) => enviarAyudaGuardarCuenta(chatId),
       asignarDigitos: (chatId, datos) => cartolas.proponerDigitos(chatId, datos),
@@ -367,6 +370,11 @@ function textoAyuda() {
     '• busca uber de octubre\n' +
     '• qué cuentas tengo, qué datos tienes guardados\n' +
     '• pásame los datos de la mercado pago\n\n' +
+    '<b>Gastos fijos</b>\n' +
+    '• gasto fijo: 24 mil en telefonía, lo pago a Vivian\n' +
+    '• fijo 15.990 netflix\n' +
+    '• agrega gasto fijo de 350 mil arriendo, se lo pago a Don Pedro el 5 de cada mes\n' +
+    '• pago fijo 24000 telefonía a Vivian\n\n' +
     '<b>Guardar una cuenta o tarjeta</b> (con los últimos 4 dígitos)\n' +
     '• guarda la tarjeta crédito 8263 es de Valeska Sanhueza\n' +
     '• agrega mi cuenta rut 1234 del banco estado\n' +
@@ -651,6 +659,11 @@ function configurarManejadores() {
 
     // Respuesta pendiente de administración (monto de un movimiento, plan, gastos fijos)
     if (msg.text && admin && await admin.manejarTexto(msg)) {
+      return;
+    }
+
+    // Respuesta a "¿De cuánto es?" o "¿Cómo se llama?" de un gasto fijo incompleto
+    if (msg.text && await manejarRespuestaFijo(msg)) {
       return;
     }
 
@@ -2810,8 +2823,108 @@ function textoConfirmacionFijo(datos) {
     `Nombre: ${esc(datos.nombre)}\n` +
     `Monto: $${formatearMonto(datos.monto)}\n` +
     `Día de pago: ${datos.diaPago ?? 'sin indicar'}` +
+    (datos.destinatario ? `\nSe le paga a: ${esc(datos.destinatario)}` : '') +
     (datos.palabrasClave ? `\nPalabras clave: ${esc(datos.palabrasClave)}` : '')
   );
+}
+
+// Gasto fijo al que le falta el monto o la descripción: chatId -> { datos, hasta }
+const esperandoFijo = new Map();
+
+/** Id del destinatario en destinatarios_transferencia si ya existe uno con ese nombre (enlace opcional) */
+async function buscarDestinatarioId(nombre) {
+  const clave = clavePorNombre(nombre);
+  if (!clave) return null;
+  const [filas] = await query('SELECT id FROM destinatarios_transferencia WHERE clave = ?', [clave]);
+  return filas[0] ? Number(filas[0].id) : null;
+}
+
+/**
+ * Lo que sigue a /fijo y a una frase como "gasto fijo: 24 mil en telefonía, lo pago a Vivian": si falta el monto o la
+ * descripción lo pregunta; si ya existe un gasto fijo con esa descripción ofrece actualizar su monto en vez de duplicarlo;
+ * si no, muestra el resumen con Guardar y Cancelar. `datos`: { nombre, monto, diaPago, destinatario, palabrasClave }.
+ */
+async function procesarGastoFijo(chatId, datos) {
+  try {
+    const falta = !datos.monto ? 'monto' : !datos.nombre ? 'nombre' : null;
+    if (falta) {
+      esperandoFijo.set(chatId, { datos, hasta: Date.now() + 5 * 60 * 1000 });
+      await enviar(chatId,
+        falta === 'monto'
+          ? `¿De cuánto es el gasto fijo${datos.nombre ? ` <b>${esc(datos.nombre)}</b>` : ''}? Escribe el monto (por ejemplo 24 mil o 15.990).`
+          : `¿Cómo se llama el gasto fijo de $${formatearMonto(datos.monto)}? Por ejemplo: telefonía, arriendo o netflix.`,
+        { reply_markup: { inline_keyboard: [[{ text: 'Cancelar', callback_data: 'fjc_x' }]] } }
+      );
+      return;
+    }
+    esperandoFijo.delete(chatId);
+
+    const existentes = await listarGastosFijos();
+    const repetido = existentes.find(f => normalizar(f.nombre) === normalizar(datos.nombre));
+    const key = `${chatId}_${Date.now()}`;
+    pendingFijos.set(key, { datos, actualizarId: repetido?.id ?? null, existente: repetido ?? null });
+    setTimeout(() => pendingFijos.delete(key), 5 * 60 * 1000);
+
+    if (repetido) {
+      const mismoMonto = Number(repetido.monto) === Number(datos.monto);
+      await enviar(chatId,
+        `Ya existe un gasto fijo llamado <b>${esc(repetido.nombre)}</b> ($${formatearMonto(repetido.monto)}). ` +
+        (mismoMonto
+          ? '¿Actualizo sus otros datos (día o a quién se le paga)?'
+          : `¿Actualizo el monto a <b>$${formatearMonto(datos.monto)}</b> en vez de crear otro?`),
+        {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: 'Sí, actualizar', callback_data: `fju_${key}` },
+              { text: 'No', callback_data: `fjx_${key}` }
+            ]]
+          }
+        }
+      );
+      return;
+    }
+
+    await enviar(chatId, textoConfirmacionFijo(datos), {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: 'Guardar', callback_data: `fjs_${key}` },
+          { text: 'Cancelar', callback_data: `fjx_${key}` }
+        ]]
+      }
+    });
+  } catch (error) {
+    console.error('Error al preparar el gasto fijo:', error.code ?? error.name);
+    await enviar(chatId, 'Error al procesar el gasto fijo.');
+  }
+}
+
+/** Respuesta a "¿De cuánto es?" o "¿Cómo se llama?" de un gasto fijo incompleto. true si consumió el mensaje. */
+async function manejarRespuestaFijo(msg) {
+  const chatId = msg.chat.id;
+  const espera = esperandoFijo.get(chatId);
+  if (!espera) return false;
+  if (Date.now() > espera.hasta) {
+    esperandoFijo.delete(chatId);
+    return false;
+  }
+
+  const datos = { ...espera.datos };
+  const texto = msg.text.trim();
+  if (!datos.monto) {
+    const monto = parsearMontoExacto(texto);
+    if (!monto) {
+      await enviar(chatId, 'No entendí el monto. Escríbelo así: 24 mil, 15.990 o 24k.',
+        { reply_markup: { inline_keyboard: [[{ text: 'Cancelar', callback_data: 'fjc_x' }]] } });
+      return true;
+    }
+    datos.monto = monto;
+  } else if (!datos.nombre) {
+    const nombre = texto.replace(/[,;:¿?¡!]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100);
+    if (!nombre) return true;
+    datos.nombre = nombre[0].toUpperCase() + nombre.slice(1);
+  }
+  await procesarGastoFijo(chatId, datos);
+  return true;
 }
 
 function configurarComandosPlan() {
@@ -2840,44 +2953,19 @@ function configurarComandosPlan() {
     }
 
     const parsed = parsearFijo(match[1] || '');
-    if (!parsed.nombre || !parsed.monto) {
+    if (!parsed.nombre && !parsed.monto) {
       await enviar(chatId,
         '<b>Agregar un gasto fijo</b>\n\n' +
         'Escribe el nombre, el monto y, si quieres, el día de pago:\n' +
         '/fijo arriendo 350 mil el 5\n' +
         '/fijo internet 25.990 el 10\n' +
-        '/fijo celular 20 mil el 10 palabras movistar, entel'
+        '/fijo celular 20 mil el 10 palabras movistar, entel\n\n' +
+        'También puedes escribirlo como hablas: «gasto fijo: 24 mil en telefonía, lo pago a Vivian».'
       );
       return;
     }
 
-    try {
-      const existentes = await listarGastosFijos();
-      const repetido = existentes.find(f => normalizar(f.nombre) === normalizar(parsed.nombre));
-      if (repetido) {
-        await enviar(chatId,
-          `Ya existe un gasto fijo llamado <b>${esc(repetido.nombre)}</b> ($${formatearMonto(repetido.monto)}). ` +
-          'Edítalo desde la página Plan de ahorro.'
-        );
-        return;
-      }
-
-      const key = `${chatId}_${Date.now()}`;
-      pendingFijos.set(key, { datos: parsed });
-      setTimeout(() => pendingFijos.delete(key), 5 * 60 * 1000);
-
-      await enviar(chatId, textoConfirmacionFijo(parsed), {
-        reply_markup: {
-          inline_keyboard: [[
-            { text: 'Guardar', callback_data: `fjs_${key}` },
-            { text: 'Cancelar', callback_data: `fjx_${key}` }
-          ]]
-        }
-      });
-    } catch (error) {
-      console.error('Error al preparar el gasto fijo:', error.code ?? error.name);
-      await enviar(chatId, 'Error al procesar el gasto fijo.');
-    }
+    await procesarGastoFijo(chatId, parsed);
   });
 }
 
@@ -2898,7 +2986,9 @@ async function manejarCallbackFijos(cb, chatId, data) {
         nombre: pendiente.datos.nombre,
         monto: pendiente.datos.monto,
         dia_pago: pendiente.datos.diaPago,
-        palabras_clave: pendiente.datos.palabrasClave
+        palabras_clave: pendiente.datos.palabrasClave,
+        destinatario: pendiente.datos.destinatario ?? null,
+        destinatario_id: pendiente.datos.destinatario ? await buscarDestinatarioId(pendiente.datos.destinatario) : null
       });
       if (!validado.ok) {
         await responderCallback(cb.id, { text: validado.error });
@@ -2916,6 +3006,54 @@ async function manejarCallbackFijos(cb, chatId, data) {
       console.error('Error al guardar gasto fijo:', error.code ?? error.name);
       await responderCallback(cb.id, { text: 'Error al guardar' });
     }
+    return true;
+  }
+
+  // Actualizar el gasto fijo que ya existe con esa descripción (monto, día y a quién se le paga)
+  if (data.startsWith('fju_')) {
+    const key = data.replace('fju_', '');
+    const pendiente = pendingFijos.get(key);
+    if (!pendiente?.existente) {
+      await responderCallback(cb.id, { text: 'Solicitud expirada' });
+      return true;
+    }
+    try {
+      const f = pendiente.existente;
+      const d = pendiente.datos;
+      const validado = validarGastoFijo({
+        nombre: f.nombre,
+        monto: d.monto,
+        dia_pago: d.diaPago ?? f.dia_pago,
+        categoria_id: f.categoria_id,
+        cuenta_id: f.cuenta_id,
+        palabras_clave: f.palabras_clave,
+        ...(d.destinatario
+          ? { destinatario: d.destinatario, destinatario_id: await buscarDestinatarioId(d.destinatario) }
+          : {})
+      });
+      if (!validado.ok) {
+        await responderCallback(cb.id, { text: validado.error });
+        return true;
+      }
+      await actualizarGastoFijo(f.id, validado.valores, true);
+      pendingFijos.delete(key);
+      await editar(
+        `Listo: actualicé <b>${esc(f.nombre)}</b> a $${formatearMonto(validado.valores.monto)}` +
+        `${d.diaPago ? ` (día ${d.diaPago})` : ''}${d.destinatario ? `, se le paga a ${esc(d.destinatario)}` : ''}.`,
+        { chat_id: chatId, message_id: messageId }
+      );
+      await responderCallback(cb.id, { text: 'Actualizado' });
+    } catch (error) {
+      console.error('Error al actualizar gasto fijo:', error.code ?? error.name);
+      await responderCallback(cb.id, { text: 'Error al guardar' });
+    }
+    return true;
+  }
+
+  if (data === 'fjc_x') {
+    esperandoFijo.delete(chatId);
+    await editar('Cancelado', { chat_id: chatId, message_id: messageId });
+    await responderCallback(cb.id, { text: 'Cancelado' });
     return true;
   }
 
