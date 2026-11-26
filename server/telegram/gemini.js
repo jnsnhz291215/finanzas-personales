@@ -153,12 +153,64 @@ function validarRespuesta(datos, contexto) {
 }
 
 /**
- * Llama a Gemini pidiendo JSON con el esquema dado y devuelve el objeto ya parseado.
- * Lanza ErrorGemini (o el error de red/timeout) si algo falla; quien llama lo registra
- * con logErrorGemini. Timeout de 8 s.
+ * ¿Este fallo del modelo justifica probar el siguiente? Sí con 404 (el modelo no existe), 429 (cuota), 5xx (500, 503...) o timeout.
+ * No con 400 (API_KEY_INVALID, solicitud inválida), 401 o 403 (la clave): con otro modelo fallaría igual. Tampoco con una respuesta vacía
+ * o inválida ni con un corte de red: no dependen del modelo.
+ */
+export function conviertePasarAlSiguiente(err) {
+  if (err?.name === 'TimeoutError' || err?.name === 'AbortError') return true;
+  const http = Number(err?.http ?? err?.codigo);
+  if (!Number.isFinite(http)) return false;
+  return http === 404 || http === 429 || http >= 500;
+}
+
+// Modelos que dieron 404 hace poco: no se vuelven a intentar durante 10 minutos (el modelo no existe, reintentar solo hace esperar)
+const modelosNoEncontrados = new Map();
+const OLVIDAR_404_MS = 10 * 60 * 1000;
+
+/**
+ * Llama a Gemini pidiendo JSON con el esquema dado y devuelve el objeto ya parseado. Prueba GEMINI_MODEL (o el de por defecto) y, si falla con
+ * 404, 429, 5xx o timeout, los de GEMINI_MODEL_FALLBACKS en orden; con 400 (API_KEY_INVALID) o 403 no sigue. Registra qué modelo falló y cuál
+ * respondió. Si todos fallan lanza el último error (ErrorGemini o el de red/timeout) y quien llama lo registra con logErrorGemini y sigue con las
+ * reglas locales. Con `modelo` prueba solo ese (el diagnóstico de /mantenimiento). Timeout de 8 s por modelo y un máximo de 2 timeouts en total.
  */
 async function llamarGemini(instrucciones, mensaje, esquema, { timeoutMs = TIMEOUT_MS, modelo: modeloForzado = null } = {}) {
-  const modelo = modeloForzado || process.env.GEMINI_MODEL || MODELO_POR_DEFECTO;
+  if (modeloForzado) return llamarModelo(modeloForzado, instrucciones, mensaje, esquema, { timeoutMs });
+
+  const modelos = modelosParaProbar();
+  const limite = Date.now() + timeoutMs * 2;
+  const fallos = [];
+  let ultimo = null;
+  for (let i = 0; i < modelos.length; i++) {
+    const modelo = modelos[i];
+    const hasta404 = modelosNoEncontrados.get(modelo);
+    if (hasta404 && hasta404 > Date.now() && i < modelos.length - 1) {
+      fallos.push(`${modelo}: 404 (no existe, se omite)`);
+      continue;
+    }
+    // Los respaldos usan el tiempo que queda del total
+    const restante = i === 0 ? timeoutMs : Math.min(timeoutMs, limite - Date.now());
+    if (restante < 1500) break;
+    try {
+      const datos = await llamarModelo(modelo, instrucciones, mensaje, esquema, { timeoutMs: restante });
+      if (fallos.length > 0) console.log(`[gemini] respondió el modelo ${modelo} (fallaron antes: ${fallos.join('; ')})`);
+      return datos;
+    } catch (err) {
+      ultimo = err;
+      const { causa } = describirError(err, 'gemini', modelo, { registrar: false });
+      const http = err?.http ? `HTTP ${err.http}${err.estado ? ` ${err.estado}` : ''}` : (err?.name ?? 'error');
+      fallos.push(`${modelo}: ${http}`);
+      if (Number(err?.http) === 404) modelosNoEncontrados.set(modelo, Date.now() + OLVIDAR_404_MS);
+      const siguiente = conviertePasarAlSiguiente(err) ? modelos[i + 1] : null;
+      console.error(`[gemini] el modelo ${modelo} falló (${http}): ${causa}${siguiente ? `; pruebo con ${siguiente}` : ''}`);
+      if (!siguiente) break;
+    }
+  }
+  throw ultimo ?? new ErrorGemini('SIN_MODELO', 'no hubo tiempo para probar ningún modelo');
+}
+
+/** Una sola llamada a un modelo (sin respaldos) */
+async function llamarModelo(modelo, instrucciones, mensaje, esquema, { timeoutMs = TIMEOUT_MS } = {}) {
 
   const generationConfig = {
     temperature: 0,

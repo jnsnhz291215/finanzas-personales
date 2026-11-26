@@ -936,7 +936,10 @@ npm run reparar-fechas -- --aplicar # repara, en una transacción
   También: *Probar Gemini* (una llamada mínima con texto fijo a cada modelo de `GEMINI_MODEL` y, si existe, `GEMINI_MODEL_FALLBACKS` separados por
   coma; informa si la clave existe y su largo —nunca su valor—, el tiempo y, si falla, el código HTTP y el status de Google traducido) y *Últimos
   errores del bot* (las últimas 30 líneas de `logs/err.log` de PM2, o de un buffer en memoria si no existe, sin tokens, keys, URLs, RUT ni números
-  largos). Cuando Gemini falla, el log registra el código HTTP, el status de Google y la causa traducida, y el bot sigue con las reglas locales. Para agregar otra tarea, se suma una entrada a `TAREAS`.
+  largos). Cuando Gemini falla, el log registra el código HTTP, el status de Google y la causa traducida, y el bot sigue con las reglas locales.
+  **Modelos de respaldo:** si `GEMINI_MODEL` falla con 404, 429, 5xx o timeout, el bot prueba en orden los de `GEMINI_MODEL_FALLBACKS` (separados por
+  coma, opcional). Con 400 (`API_KEY_INVALID`), 401 o 403 no sigue probando. El log dice qué modelo falló y cuál respondió; si todos fallan, el bot
+  sigue con las reglas locales. Un modelo que da 404 se omite durante 10 minutos. Para agregar otra tarea, se suma una entrada a `TAREAS`.
 
 ### Botón Cerrar y /limpiar
 

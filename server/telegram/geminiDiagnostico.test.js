@@ -1,6 +1,7 @@
 import { describirError, clasificarError, sanear } from './errores.js';
 import { lineasDeGemini } from './mantenimientoBot.js';
 import { limpiarLinea, ultimasLineasDeError } from './bufferErrores.js';
+import { conviertePasarAlSiguiente } from './gemini.js';
 
 const errorGemini = (http, estado, motivo = null, mensaje = 'x') =>
   Object.assign(new Error(mensaje), { name: 'ErrorGemini', codigo: http, http, estado, motivo });
@@ -51,5 +52,18 @@ describe('líneas de error sin secretos', () => {
   test('sin archivo de log usa la memoria', async () => {
     const r = await ultimasLineasDeError(5, '/no/existe/err.log');
     expect(r.origen).toBe('memoria');
+  });
+});
+
+describe('cuándo Gemini prueba el modelo de respaldo', () => {
+  test('sí con 404, 429, 5xx y timeout', () => {
+    for (const http of [404, 429, 500, 503]) expect(conviertePasarAlSiguiente(errorGemini(http, 'X'))).toBe(true);
+    expect(conviertePasarAlSiguiente(Object.assign(new Error('x'), { name: 'TimeoutError' }))).toBe(true);
+  });
+
+  test('no con 400 (API_KEY_INVALID), 401, 403, respuesta vacía ni corte de red', () => {
+    for (const http of [400, 401, 403]) expect(conviertePasarAlSiguiente(errorGemini(http, 'X'))).toBe(false);
+    expect(conviertePasarAlSiguiente(Object.assign(new Error('x'), { name: 'ErrorGemini', codigo: 'SIN_CONTENIDO' }))).toBe(false);
+    expect(conviertePasarAlSiguiente(new TypeError('fetch failed'))).toBe(false);
   });
 });
