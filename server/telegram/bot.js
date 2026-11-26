@@ -42,6 +42,8 @@ import { crearBotonesTemporales } from './botonesTemporales.js';
 import { crearMantenimiento } from './mantenimientoBot.js';
 import { instalarBufferErrores } from './bufferErrores.js';
 import { crearLimpiar } from './limpiarBot.js';
+import { crearCuotasGestion } from './cuotasGestionBot.js';
+import { crearDeudas } from './deudasBot.js';
 import { registrarMensaje, registrarSalidas, programarPurga } from './mensajesChat.js';
 import { crearEditarCuenta } from './editarCuentaBot.js';
 import { mensajesAyuda, COMANDOS_CONOCIDOS, COMANDOS_MENU } from './comandos.js';
@@ -104,6 +106,8 @@ instalarBufferErrores();
 let sistema = null;
 let mantenimiento = null;
 let limpiar = null;
+let cuotasGestion = null;
+let deudas = null;
 // Botones con vencimiento: se quitan solos al vencer (botonesTemporales.js)
 let botonesTemporales = null;
 // Eliminar/corregir/deshacer respondiendo a un mensaje (registrosBot.js); se crea al iniciar el bot
@@ -322,7 +326,11 @@ export async function iniciarBot() {
     configurarComandosDatos();
     configurarComandosPlan();
 
-    admin = crearAdmin({ bot, enviar, editar, responderCallback, esc, esChatAutorizado, formatearMonto });
+    admin = crearAdmin({
+      bot, enviar, editar, responderCallback, esc, esChatAutorizado, formatearMonto,
+      // /deudas: debajo de lo que te deben, lo que tú debes con sus abonos (deudasBot.js)
+      enviarDeudasLibres: (chatId) => deudas?.enviarDeudas(chatId) ?? false
+    });
     admin.configurarComandos();
 
     cuotas = crearCuotas({
@@ -376,6 +384,15 @@ export async function iniciarBot() {
     });
 
     botonesTemporales = crearBotonesTemporales({ bot });
+
+    // Renombrar y agrupar compras en cuotas (/renombrarcuota, /agruparcuotas) y deudas con abonos libres (/deudas)
+    cuotasGestion = crearCuotasGestion({ bot, enviar, editar, responderCallback, esc, esChatAutorizado, formatearMonto });
+    cuotasGestion.configurarComandos();
+    deudas = crearDeudas({
+      bot, enviar, editar, responderCallback, esc, esChatAutorizado, formatearMonto,
+      registrar: (msg, opciones) => registrarTransaccion(msg, opciones),
+      guardarArchivo: (fileId, nombre) => guardarRespaldoCuota(fileId, nombre, 'respaldo_deuda_')
+    });
 
     registros = crearRegistros({ enviar, editar, responderCallback, esc, botonesTemporales });
 
@@ -802,6 +819,11 @@ function configurarManejadores() {
       return;
     }
 
+    // Foto o PDF con una frase de deuda de caption ("abono 20 mil a la deuda de mi mamá"): queda de comprobante del abono
+    if ((msg.document || msg.photo) && msg.caption && deudas && await deudas.manejarEnvio(msg)) {
+      return;
+    }
+
     if ((msg.document || msg.photo) && cuotas && await cuotas.manejarEnvio(msg)) {
       return;
     }
@@ -865,6 +887,14 @@ function configurarManejadores() {
     }
 
     // Respuesta a una pregunta del alta de una compra en cuotas
+    // Renombrar o agrupar compras en cuotas, y deudas con abonos libres ("le debo 300 mil a mi mamá")
+    if (msg.text && !msg.reply_to_message && cuotasGestion && await cuotasGestion.manejarTexto(msg)) {
+      return;
+    }
+    if (msg.text && !msg.reply_to_message && deudas && await deudas.manejarTexto(msg)) {
+      return;
+    }
+
     if (msg.text && cuotas && await cuotas.manejarTexto(msg)) {
       return;
     }
@@ -956,6 +986,14 @@ function configurarManejadores() {
     if (data === CALLBACK_CERRAR) {
       await responderCallback(cb.id, {});
       await botonesTemporales?.quitarTeclado(chatId, cb.message.message_id);
+      return;
+    }
+
+    // Botones de renombrar y agrupar compras en cuotas, y de deudas
+    if (cuotasGestion && await cuotasGestion.manejarCallback(cb, chatId, data)) {
+      return;
+    }
+    if (deudas && await deudas.manejarCallback(cb, chatId, data)) {
       return;
     }
 
@@ -1091,9 +1129,14 @@ function configurarManejadores() {
 
         await responderCallback(cb.id, { text: '✅ Guardado' });
 
+        // Abono a una deuda: la transferencia es el gasto y el abono solo la vincula a la deuda (no se cuenta doble)
+        if (tx.abonoDeuda && deudas) {
+          await deudas.vincularAbono(chatId, tx, movimientoId);
+        }
+
         // Transferencia a un tercero: ¿pago de cuotas, gasto, préstamo o pago? (se recuerda por destinatario)
-        let sinTratar = true;
-        if (tx.tipo_movimiento === 'transferencia_terceros' && transferencias) {
+        let sinTratar = !tx.abonoDeuda;
+        if (!tx.abonoDeuda && tx.tipo_movimiento === 'transferencia_terceros' && transferencias) {
           const restantes = await transferencias.procesarMovimientos(
             chatId,
             [{ id: movimientoId, fecha: tx.fecha, descripcion: tx.descripcion, monto: tx.monto, tipo: tx.tipo }],
@@ -1599,7 +1642,7 @@ function combinarConGemini(reglas, ia) {
 /**
  * Registra una transacción desde un mensaje de texto
  */
-async function registrarTransaccion(msg, { confianzaBaja = false } = {}) {
+async function registrarTransaccion(msg, { confianzaBaja = false, forzar = null, abonoDeuda = null, archivo = null } = {}) {
   const chatId = msg.chat.id;
   const texto = msg.text;
 
@@ -1607,8 +1650,13 @@ async function registrarTransaccion(msg, { confianzaBaja = false } = {}) {
     const cuentas = await listarCuentas();
     let datos = parsearMensaje(texto, { cuentas });
 
+    // Una transferencia que viene de una deuda (abono): monto, tipo y descripción ya están decididos
+    if (forzar) {
+      datos = { ...datos, monto: forzar.monto, tipo: 'cargo', tipoMovimiento: forzar.tipoMovimiento ?? datos.tipoMovimiento };
+    }
+
     // Respaldo: si las reglas no encontraron monto o categoría, consultar Gemini
-    if (!datos.monto || !datos.categoriaDetectada) {
+    if (!forzar && (!datos.monto || !datos.categoriaDetectada)) {
       const ia = await interpretarConGemini(texto, cuentas, chatId);
       if (ia) datos = combinarConGemini(datos, ia);
     }
@@ -1670,7 +1718,8 @@ async function registrarTransaccion(msg, { confianzaBaja = false } = {}) {
     let esPrestamo = false;
     let persona = null;
     let descripcion = datos.descripcion;
-    if (datos.tipo === 'cargo' && !requiereDestino(datos.tipoMovimiento)) {
+    if (forzar?.descripcion) descripcion = forzar.descripcion;
+    if (!forzar && datos.tipo === 'cargo' && !requiereDestino(datos.tipoMovimiento)) {
       const prestamo = detectarPrestamo(texto);
       if (prestamo.esPrestamo) {
         esPrestamo = true;
@@ -1698,7 +1747,8 @@ async function registrarTransaccion(msg, { confianzaBaja = false } = {}) {
       medioPago: datos.medioPago,
       aproximado: datos.aproximado,
       confianzaBaja,
-      archivo_respaldo: null,
+      archivo_respaldo: archivo ?? null,
+      abonoDeuda,
       messageId: null,
       // Mensaje de Juan que originó el gasto (para poder eliminarlo o corregirlo respondiéndole)
       mensajeUsuarioId: msg.message_id ?? null

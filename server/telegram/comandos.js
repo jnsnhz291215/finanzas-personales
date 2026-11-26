@@ -29,11 +29,13 @@ export const COMANDOS = [
   { seccion: 'Finanzas', nombre: 'buscar', uso: '<texto o mes>', ejemplo: '/buscar uber octubre', descripcion: 'Buscar movimientos' },
   { seccion: 'Finanzas', nombre: 'gastos', ejemplo: '/gastos', descripcion: 'Gastos del mes por categoría y uso de tus tarjetas de crédito' },
   { seccion: 'Finanzas', nombre: 'plan', uso: '[config | ingreso <monto> | 50 30 20]', ejemplo: '/plan ingreso 1500000', descripcion: 'Plan de ahorro del mes: cuánto puedes gastar', menu: 2, menuDescripcion: 'Mi plan de ahorro del mes' },
-  { seccion: 'Finanzas', nombre: 'deudas', ejemplo: '/deudas', descripcion: 'Quién te debe y cuánto' },
+  { seccion: 'Finanzas', nombre: 'deudas', ejemplo: '/deudas', descripcion: 'Lo que te deben y, debajo, lo que debes con sus abonos (por ejemplo «le debo 300 mil a mi mamá»)' },
   { seccion: 'Finanzas', nombre: 'pago', uso: '<persona> <monto>', ejemplo: '/pago Pedro 20 mil', descripcion: 'Registrar el pago de una deuda' },
 
   // Cuotas y fijos
   { seccion: 'Cuotas y fijos', nombre: 'cuotas', uso: '[nueva ... | cartola ...]', ejemplo: '/cuotas', descripcion: 'Todas tus compras en cuotas (activas y terminadas) por titular', menu: 4, menuDescripcion: 'Mis compras en cuotas' },
+  { seccion: 'Cuotas y fijos', nombre: 'renombrarcuota', alias: ['renombrar'], uso: '<compra> [valor de la cuota] a <nombre nuevo>', ejemplo: '/renombrarcuota Apple 21.749 a AppleCare', descripcion: 'Cambiar el nombre con que se muestra una compra en cuotas (el real sigue emparejando con las cartolas)' },
+  { seccion: 'Cuotas y fijos', nombre: 'agruparcuotas', uso: '[<compra> y <compra> como <grupo> | desagrupar <grupo>]', ejemplo: '/agruparcuotas Apple 202.332 y Apple 21.749 como Mac', descripcion: 'Juntar compras en cuotas en un grupo con su total (solo visual)' },
   { seccion: 'Cuotas y fijos', nombre: 'fijo', uso: '<nombre> <monto> [a <quién>] [el <día>]', ejemplo: '/fijo 24000 telefonía a Vivian el 5', descripcion: 'Agregar un gasto fijo' },
   { seccion: 'Cuotas y fijos', nombre: 'fijos', ejemplo: '/fijos', descripcion: 'Ver tus gastos fijos, editarlos o desactivarlos' },
 

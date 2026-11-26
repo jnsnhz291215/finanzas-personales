@@ -17,7 +17,7 @@ async function consulta() {
   return (await import('./db.js')).query;
 }
 
-const COLUMNAS = `id, alias, alias_cartola, acreedor, monto_total, monto_cuota, total_cuotas,
+const COLUMNAS = `id, alias, alias_cartola, nombre_mostrar, grupo_id, acreedor, monto_total, monto_cuota, total_cuotas,
   cuotas_pagadas, fecha_inicio, dia_pago, terminada, activa`;
 
 function normalizarFila(f) {
@@ -27,6 +27,7 @@ function normalizarFila(f) {
     monto_cuota: Number(f.monto_cuota),
     total_cuotas: Number(f.total_cuotas),
     cuotas_pagadas: Number(f.cuotas_pagadas),
+    grupo_id: f.grupo_id === null || f.grupo_id === undefined ? null : Number(f.grupo_id),
     terminada: Number(f.terminada) === 1,
     activa: Number(f.activa) === 1
   };
@@ -137,6 +138,63 @@ export async function desactivarCompra(id) {
     [id]
   );
   return resultado.affectedRows > 0;
+}
+
+/**
+ * Cambia el nombre con que se MUESTRA una compra (nombre_mostrar). El nombre real (alias y alias_cartola) no cambia nunca: es el que se usa
+ * para emparejar con las cartolas. Con texto vacío vuelve a mostrar el nombre real.
+ */
+export async function renombrarCompra(id, nombre) {
+  const limpio = String(nombre ?? '').replace(/\s+/g, ' ').trim().slice(0, 100);
+  const query = await consulta();
+  const [resultado] = await query(
+    'UPDATE compras_cuotas SET nombre_mostrar = ?, actualizado_en = CURRENT_TIMESTAMP WHERE id = ?',
+    [limpio || null, id]
+  );
+  return resultado.affectedRows > 0;
+}
+
+/** Grupos de compras (solo para mostrar y sumar): [{ id, nombre, acreedor }] */
+export async function listarGrupos() {
+  const query = await consulta();
+  const [filas] = await query('SELECT id, nombre, acreedor FROM grupos_cuotas ORDER BY nombre');
+  return filas.map(g => ({ ...g, id: Number(g.id) }));
+}
+
+/** Crea un grupo (o devuelve el que ya existe con ese nombre para ese acreedor) */
+export async function crearGrupo(nombre, acreedor) {
+  const limpio = String(nombre ?? '').replace(/\s+/g, ' ').trim().slice(0, 100);
+  if (!limpio) return { ok: false, error: 'Falta el nombre del grupo' };
+  const existente = (await listarGrupos()).find(g => normalizar(g.nombre) === normalizar(limpio) && normalizar(g.acreedor) === normalizar(acreedor));
+  if (existente) return { ok: true, id: existente.id, existente: true };
+  const query = await consulta();
+  const [r] = await query('INSERT INTO grupos_cuotas (nombre, acreedor) VALUES (?, ?)', [limpio, acreedor]);
+  return { ok: true, id: Number(r.insertId), existente: false };
+}
+
+/** Pone las compras en un grupo (grupoId null las saca). Agrupar no cambia el emparejamiento con cartolas ni los pagos. */
+export async function asignarGrupo(compraIds, grupoId) {
+  if (compraIds.length === 0) return 0;
+  const query = await consulta();
+  const [r] = await query(
+    `UPDATE compras_cuotas SET grupo_id = ?, actualizado_en = CURRENT_TIMESTAMP WHERE id IN (${compraIds.map(() => '?').join(', ')})`,
+    [grupoId, ...compraIds]
+  );
+  return Number(r.affectedRows ?? 0);
+}
+
+/** Deshace un grupo: sus compras quedan sueltas y el grupo se borra */
+export async function desagruparGrupo(grupoId) {
+  const query = await consulta();
+  await query('UPDATE compras_cuotas SET grupo_id = NULL WHERE grupo_id = ?', [grupoId]);
+  const [r] = await query('DELETE FROM grupos_cuotas WHERE id = ?', [grupoId]);
+  return Number(r.affectedRows ?? 0) > 0;
+}
+
+/** Borra los grupos que quedaron sin compras */
+export async function limpiarGruposVacios() {
+  const query = await consulta();
+  await query('DELETE FROM grupos_cuotas WHERE id NOT IN (SELECT grupo_id FROM compras_cuotas WHERE grupo_id IS NOT NULL)');
 }
 
 export async function fijarAliasCartola(id, aliasCartola) {

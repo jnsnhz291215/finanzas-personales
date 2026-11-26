@@ -966,17 +966,21 @@ export function crearAdmin(ctx) {
     // /deudas
     comando(/^\/deudas(?:@\w+)?\s*$/i, async (chatId) => {
       const pendientes = (await resumenDeudas()).filter(r => Math.abs(r.saldo) > 0.5).sort((a, b) => b.saldo - a.saldo);
-      if (pendientes.length === 0) {
-        await enviar(chatId, 'No tienes deudas pendientes.');
-        return;
+      if (pendientes.length > 0) {
+        await enviar(chatId,
+          '<b>Deudas pendientes:</b>\n\n' +
+          pendientes
+            .map(r => `${esc(r.persona)}: ${r.saldo > 0 ? 'te debe' : 'le debes'} ${dinero(Math.abs(r.saldo))}`)
+            .join('\n') +
+          '\n\nRegistra un pago con /pago <persona> <monto>.',
+          { reply_markup: { inline_keyboard: [botonCerrar()] } }
+        );
       }
-      await enviar(chatId,
-        '<b>Deudas pendientes:</b>\n\n' +
-        pendientes
-          .map(r => `${esc(r.persona)}: ${r.saldo > 0 ? 'te debe' : 'le debes'} ${dinero(Math.abs(r.saldo))}`)
-          .join('\n') +
-        '\n\nRegistra un pago con /pago <persona> <monto>.'
-      );
+      // Debajo, lo que tú debes con abonos libres (por ejemplo a tu mamá), con sus botones
+      const hayDeudas = ctx.enviarDeudasLibres ? await ctx.enviarDeudasLibres(chatId) : false;
+      if (pendientes.length === 0 && !hayDeudas) {
+        await enviar(chatId, 'No tienes deudas pendientes. Crea una escribiendo, por ejemplo: le debo 300 mil a mi mamá.');
+      }
     });
 
     // /pago <persona> <monto>

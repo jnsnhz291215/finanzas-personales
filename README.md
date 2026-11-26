@@ -941,6 +941,22 @@ npm run reparar-fechas -- --aplicar # repara, en una transacción
   coma, opcional). Con 400 (`API_KEY_INVALID`), 401 o 403 no sigue probando. El log dice qué modelo falló y cuál respondió; si todos fallan, el bot
   sigue con las reglas locales. Un modelo que da 404 se omite durante 10 minutos. Para agregar otra tarea, se suma una entrada a `TAREAS`.
 
+### Renombrar y agrupar cuotas, y deudas con abonos
+
+- **Renombrar** (`/renombrarcuota`, alias `/renombrar`, o «renombra la cuota Apple de 21.749 a AppleCare», «la de apple de 202 mil es el Mac», o el
+  botón *Renombrar* de `/cuotas`): cambia solo `nombre_mostrar`. El nombre real (`alias` y `alias_cartola`) sigue siendo el que empareja con las
+  cartolas. `/cuotas` muestra `Mac (Apple) 7/12 …`. Si el texto es ambiguo, pregunta con botones que traen el valor de la cuota.
+- **Agrupar** (`/agruparcuotas`, «junta Apple 202.332 y Apple 21.749 como Mac», «el AppleCare es parte del Mac»; para deshacer, «desagrupa el Mac»):
+  tabla `grupos_cuotas` y `compras_cuotas.grupo_id`. Solo es visual y de totales; los pagos y el emparejamiento con cartolas no cambian.
+  `/cuotas` muestra el grupo con su cuota mensual, lo pagado y lo que se debe, y debajo cada compra con su avance.
+- **Deudas con abonos libres** (lo que tú debes a una persona, sin cuotas fijas): tablas `deudas` y `abonos`. «le debo 300 mil a mi mamá» la crea;
+  «abono 20 mil a la deuda de mi mamá» o «le transferí 50 mil a mi mamá de una cuota, son 50 de 300.000 que me quedan» registran un abono. Con una
+  foto o PDF con esa frase de caption, el archivo queda de comprobante del movimiento y del abono. **La transferencia es el gasto** (un movimiento
+  normal, con su confirmación Guardar) y el abono solo la vincula a la deuda: nunca se crea un segundo movimiento, así que `/plan` y los gastos no
+  cuentan doble. Si la deuda no existe, pregunta con botones cómo crearla (por ejemplo «Crear deuda con Mamá por $300.000» o «Solo $250.000
+  pendientes»). `/deudas` muestra primero lo que te deben (préstamos) y debajo lo que debes, con *Ver abonos*, *Renombrar*, *Alias*, *Cerrar deuda*
+  y *Cerrar*. «mamá», «mi mamá» y «mama» son la misma persona; cada deuda admite alias.
+
 ### Botón Cerrar y /limpiar
 
 - Toda lista con botones de acción (`/cuotas`, `/fijos`, `/cuentas`, `/ultimos`, reglas, plan, `/estadocuenta`, `/mantenimiento`, la ficha de un

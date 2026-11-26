@@ -27,6 +27,7 @@ import {
   lineaDetalleCompra,
   detalleCompra,
   partirEnMensajes,
+  nombreDeCompra,
   normalizar
 } from './cuotas.js';
 import {
@@ -39,7 +40,8 @@ import {
   vincularMovimientoACuota,
   buscarCuotasPorCartola,
   resumenMensualPorTitular,
-  pagosRealesPorCompra
+  pagosRealesPorCompra,
+  listarGrupos
 } from '../cuotas.js';
 
 const ESPERA_MS = 5 * 60 * 1000;
@@ -107,21 +109,24 @@ export function crearCuotas(ctx) {
     const lineas = [
       '<b>Compras en cuotas</b>',
       '',
-      ...lineasListaCuotas(todas, await pagosRealesPorCompra(), dinero, esc),
+      ...lineasListaCuotas(todas, await pagosRealesPorCompra(), dinero, esc, await listarGrupos()),
       ...(titulares.length > 0 ? ['', '<b>Este mes, por titular:</b>', ...lineasPorTitular(titulares, dinero, esc)] : []),
       '',
       'Paga una cuota escribiendo, por ejemplo: pagué cuota tía mac'
     ];
     const mensajes = partirEnMensajes(lineas);
     // Compras con el mismo nombre se distinguen por el valor de la cuota: "Desactivar Apple ($21.749)"
-    const nombres = nombresDistinguibles(activas, dinero);
+    const nombres = nombresDistinguibles(activas.map(c => ({ ...c, alias: nombreDeCompra(c) })), dinero);
     for (let i = 0; i < mensajes.length; i++) {
       const ultimo = i === mensajes.length - 1;
       // Los botones para desactivar una compra van en el último mensaje
       await enviar(chatId, mensajes[i], ultimo && activas.length > 0
         ? {
             reply_markup: {
-              inline_keyboard: conCerrar(activas.map((c, i) => [{ text: `Desactivar ${nombres[i]}`.slice(0, 48), callback_data: `cqe_${c.id}` }]))
+              inline_keyboard: conCerrar(activas.map((c, i) => [
+                { text: `Desactivar ${nombres[i]}`.slice(0, 40), callback_data: `cqe_${c.id}` },
+                { text: 'Renombrar', callback_data: `cgn_${c.id}` }
+              ]))
             }
           }
         : undefined);

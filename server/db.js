@@ -125,6 +125,53 @@ if (MOTOR_ELEGIDO === 'mariadb') {
     );
   }
 
+  /**
+   * Migración idempotente (MariaDB): nombre_mostrar y grupo_id en compras_cuotas, grupos_cuotas (agrupar compras solo para mostrar y sumar), y las
+   * deudas con abonos libres (deudas y abonos).
+   */
+  async function migrarCuotasYDeudas(connection) {
+    const [filas] = await connection.query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'compras_cuotas'`
+    );
+    const columnas = filas.map(f => f.COLUMN_NAME);
+    if (!columnas.includes('nombre_mostrar')) await connection.query('ALTER TABLE compras_cuotas ADD COLUMN nombre_mostrar VARCHAR(100) NULL');
+    if (!columnas.includes('grupo_id')) await connection.query('ALTER TABLE compras_cuotas ADD COLUMN grupo_id INT NULL');
+    await connection.query(
+      `CREATE TABLE IF NOT EXISTS grupos_cuotas (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        nombre VARCHAR(100) NOT NULL,
+        acreedor VARCHAR(100) NOT NULL,
+        creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
+    );
+    await connection.query(
+      `CREATE TABLE IF NOT EXISTS deudas (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        acreedor VARCHAR(100) NOT NULL,
+        descripcion VARCHAR(200) NULL,
+        alias VARCHAR(200) NULL,
+        monto_total DECIMAL(15,2) NOT NULL,
+        fecha_inicio DATE NULL,
+        activa BOOLEAN NOT NULL DEFAULT TRUE,
+        creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_deudas_activa (activa)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
+    );
+    await connection.query(
+      `CREATE TABLE IF NOT EXISTS abonos (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        deuda_id INT NOT NULL,
+        movimiento_id INT NULL,
+        monto DECIMAL(15,2) NOT NULL,
+        fecha DATE NOT NULL,
+        archivo VARCHAR(500) NULL,
+        creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_abonos_deuda (deuda_id),
+        INDEX idx_abonos_movimiento (movimiento_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
+    );
+  }
+
   /** Migración idempotente (MariaDB): mensajes del chat (ids de Telegram de las últimas 48 h, para /limpiar) */
   async function migrarMensajesChat(connection) {
     await connection.query(
@@ -459,6 +506,7 @@ if (MOTOR_ELEGIDO === 'mariadb') {
         await migrarDatosTransferencia(connection);
         await migrarPlanAhorro(connection);
         await migrarComprasCuotas(connection);
+        await migrarCuotasYDeudas(connection);
         await migrarGastoFijoDestinatario(connection);
         await migrarEdicionCuentas(connection);
         await asegurarClaveCompraCuota(connection);

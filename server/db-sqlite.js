@@ -140,6 +140,7 @@ export async function inicializarDB() {
 
     // Migración: compras en cuotas y su vínculo con movimientos
     migrarComprasCuotas(database);
+    migrarCuotasYDeudas(database);
 
     // Migración: destinatario de los gastos fijos y la marca de pago de un gasto fijo en movimientos
     migrarGastoFijoDestinatario(database);
@@ -315,6 +316,46 @@ function migrarComprasCuotas(database) {
  * Migración idempotente (SQLite): agrega ultimos4_cuenta a cuentas, los últimos 4 dígitos del
  * número de cuenta (ultimos4 es el de la tarjeta). Nunca se guardan números completos.
  */
+/**
+ * Migración idempotente (SQLite): nombre_mostrar y grupo_id en compras_cuotas, grupos_cuotas (agrupar compras solo para mostrar y sumar), y las
+ * deudas con abonos libres (deudas y abonos).
+ */
+function migrarCuotasYDeudas(database) {
+  const columnas = database.prepare('PRAGMA table_info(compras_cuotas)').all().map(c => c.name);
+  if (!columnas.includes('nombre_mostrar')) database.exec('ALTER TABLE compras_cuotas ADD COLUMN nombre_mostrar TEXT');
+  if (!columnas.includes('grupo_id')) database.exec('ALTER TABLE compras_cuotas ADD COLUMN grupo_id INTEGER');
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS grupos_cuotas (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nombre TEXT NOT NULL,
+      acreedor TEXT NOT NULL,
+      creado_en DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS deudas (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      acreedor TEXT NOT NULL,
+      descripcion TEXT,
+      alias TEXT,
+      monto_total REAL NOT NULL,
+      fecha_inicio DATE,
+      activa INTEGER NOT NULL DEFAULT 1,
+      creado_en DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_deudas_activa ON deudas(activa);
+    CREATE TABLE IF NOT EXISTS abonos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      deuda_id INTEGER NOT NULL,
+      movimiento_id INTEGER,
+      monto REAL NOT NULL,
+      fecha DATE NOT NULL,
+      archivo TEXT,
+      creado_en DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_abonos_deuda ON abonos(deuda_id);
+    CREATE INDEX IF NOT EXISTS idx_abonos_movimiento ON abonos(movimiento_id);
+  `);
+}
+
 /** Migración idempotente (SQLite): mensajes del chat (ids de Telegram de las últimas 48 h, para /limpiar) */
 function migrarMensajesChat(database) {
   database.exec(`

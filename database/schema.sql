@@ -279,3 +279,39 @@ CREATE TABLE IF NOT EXISTS mensajes_chat (
   UNIQUE KEY uq_mensajes_chat (chat_id, message_id),
   INDEX idx_mensajes_chat_fecha (fecha)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Renombrar y agrupar compras en cuotas (solo para mostrar y sumar; el emparejamiento con cartolas usa siempre alias/alias_cartola)
+ALTER TABLE compras_cuotas ADD COLUMN IF NOT EXISTS nombre_mostrar VARCHAR(100) NULL;
+ALTER TABLE compras_cuotas ADD COLUMN IF NOT EXISTS grupo_id INT NULL;
+
+CREATE TABLE IF NOT EXISTS grupos_cuotas (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  nombre VARCHAR(100) NOT NULL,
+  acreedor VARCHAR(100) NOT NULL,
+  creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Deudas con abonos libres (lo que le debes a una persona, sin cuotas fijas); cada abono se liga al movimiento de la transferencia
+CREATE TABLE IF NOT EXISTS deudas (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  acreedor VARCHAR(100) NOT NULL,
+  descripcion VARCHAR(200) NULL,
+  alias VARCHAR(200) NULL,
+  monto_total DECIMAL(15,2) NOT NULL,
+  fecha_inicio DATE NULL,
+  activa BOOLEAN NOT NULL DEFAULT TRUE,
+  creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_deudas_activa (activa)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS abonos (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  deuda_id INT NOT NULL,
+  movimiento_id INT NULL,
+  monto DECIMAL(15,2) NOT NULL,
+  fecha DATE NOT NULL,
+  archivo VARCHAR(500) NULL,
+  creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_abonos_deuda (deuda_id),
+  INDEX idx_abonos_movimiento (movimiento_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

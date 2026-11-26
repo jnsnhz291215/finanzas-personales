@@ -237,8 +237,8 @@ export function validarPagoCuota(compra, { numero = null, total = null } = {}) {
 export function buscarCompras(compras, palabras) {
   if (!palabras || palabras.length === 0) return compras;
   return compras.filter(c => {
-    const claves = [...tokens(c.alias), ...tokens(c.acreedor)];
-    const alias = normalizar(c.alias);
+    const claves = [...tokens(c.alias), ...tokens(c.nombre_mostrar ?? ''), ...tokens(c.acreedor)];
+    const alias = `${normalizar(c.alias)} ${normalizar(c.nombre_mostrar ?? '')}`;
     const acreedor = normalizar(c.acreedor);
     return palabras.every(p =>
       claves.some(k => k === p || k.startsWith(p) || p.startsWith(k)) || alias.includes(p) || acreedor.includes(p)
@@ -359,9 +359,18 @@ export function detalleCompra(c, pagosReales = new Map()) {
   return { compra: c, total, pagadas, cuota, pagado, debe: terminada ? 0 : Math.max(0, totalCompra - pagado), quedan: Math.max(0, total - pagadas), terminada };
 }
 
+/** Nombre con que se muestra una compra: el que le puso el usuario (nombre_mostrar) o, si no, el real (alias) */
+export const nombreDeCompra = (c) => c.nombre_mostrar || c.alias;
+
+/** "Mac (Apple)": el nombre mostrado y, entre paréntesis, el nombre real cuando es distinto */
+export function nombreConReal(c) {
+  const mostrado = mayuscula(nombreDeCompra(c));
+  return c.nombre_mostrar && normalizar(c.nombre_mostrar).trim() !== normalizar(c.alias).trim() ? `${mostrado} (${mayuscula(c.alias)})` : mostrado;
+}
+
 /** "Macbook 6/12 · cuota $X · pagado $Y · se debe $Z · quedan N cuotas" o "Macbook 12/12 · pagado $Y · terminada" */
 export function lineaDetalleCompra(d, dinero, esc = (t) => t) {
-  const nombre = esc(mayuscula(d.compra.alias));
+  const nombre = esc(nombreConReal(d.compra));
   if (d.terminada) return `${nombre} ${d.total}/${d.total} · pagado ${dinero(d.pagado)} · terminada`;
   return `${nombre} ${d.pagadas}/${d.total} · cuota ${dinero(d.cuota)} · pagado ${dinero(d.pagado)} · se debe ${dinero(d.debe)} · ` +
     `${d.quedan === 1 ? 'queda 1 cuota' : `quedan ${d.quedan} cuotas`}`;
@@ -371,7 +380,24 @@ export function lineaDetalleCompra(d, dinero, esc = (t) => t) {
  * Todas las compras en cuotas (activas y terminadas), agrupadas por titular: primero las activas y después las terminadas,
  * con el total pagado y lo que se debe de cada grupo y un total general. Devuelve las líneas (sin cortar ninguna).
  */
-export function lineasListaCuotas(compras, pagosReales, dinero, esc = (t) => t) {
+/** Líneas de un grupo de compras: el total del grupo y debajo cada compra con su propio avance */
+function lineasDeGrupo(grupo, items, dinero, esc) {
+  const activas = items.filter(d => !d.terminada);
+  const cuotaMensual = activas.reduce((s, d) => s + d.cuota, 0);
+  const pagado = items.reduce((s, d) => s + d.pagado, 0);
+  const debe = items.reduce((s, d) => s + d.debe, 0);
+  const lineas = [
+    activas.length > 0
+      ? `<b>${esc(mayuscula(grupo.nombre))}</b> · cuota ${dinero(cuotaMensual)} · pagado ${dinero(pagado)} · se debe ${dinero(debe)}`
+      : `<b>${esc(mayuscula(grupo.nombre))}</b> · pagado ${dinero(pagado)} · terminado`
+  ];
+  for (const d of [...items].sort((a, b) => Number(a.terminada) - Number(b.terminada) || nombreDeCompra(a.compra).localeCompare(nombreDeCompra(b.compra)))) {
+    lineas.push(`   ${esc(nombreConReal(d.compra))} ${d.pagadas}/${d.total} ${dinero(d.cuota)}${d.terminada ? ' · terminada' : ''}`);
+  }
+  return lineas;
+}
+
+export function lineasListaCuotas(compras, pagosReales, dinero, esc = (t) => t, gruposDeCuotas = []) {
   const grupos = new Map();
   for (const c of compras) {
     const clave = normalizar(c.acreedor).trim();
@@ -383,13 +409,26 @@ export function lineasListaCuotas(compras, pagosReales, dinero, esc = (t) => t) 
   let pagadoTotal = 0;
   let debeTotal = 0;
   for (const g of [...grupos.values()].sort((a, b) => a.titular.localeCompare(b.titular))) {
-    const activas = g.items.filter(d => !d.terminada).sort((a, b) => a.compra.alias.localeCompare(b.compra.alias));
-    const terminadas = g.items.filter(d => d.terminada).sort((a, b) => a.compra.alias.localeCompare(b.compra.alias));
+    // Las compras agrupadas (solo visual y de totales) se muestran juntas bajo el nombre de su grupo
+    const nombreGrupos = new Map(gruposDeCuotas.map(gr => [Number(gr.id), gr]));
+    const enGrupo = new Map();
+    const sueltas = [];
+    for (const d of g.items) {
+      const gid = d.compra.grupo_id;
+      if (gid && nombreGrupos.has(Number(gid))) enGrupo.set(Number(gid), [...(enGrupo.get(Number(gid)) ?? []), d]);
+      else sueltas.push(d);
+    }
+    const porNombre = (a, b) => nombreDeCompra(a.compra).localeCompare(nombreDeCompra(b.compra));
+    const activas = sueltas.filter(d => !d.terminada).sort(porNombre);
+    const terminadas = sueltas.filter(d => d.terminada).sort(porNombre);
     const pagado = g.items.reduce((s, d) => s + d.pagado, 0);
     const debe = g.items.reduce((s, d) => s + d.debe, 0);
     pagadoTotal += pagado;
     debeTotal += debe;
     lineas.push(`<b>${esc(g.titular)}</b>`);
+    for (const [gid, items] of [...enGrupo.entries()].sort((a, b) => nombreGrupos.get(a[0]).nombre.localeCompare(nombreGrupos.get(b[0]).nombre))) {
+      lineas.push(...lineasDeGrupo(nombreGrupos.get(gid), items, dinero, esc));
+    }
     for (const d of [...activas, ...terminadas]) lineas.push(lineaDetalleCompra(d, dinero, esc));
     lineas.push(`Total pagado ${dinero(pagado)} · se debe ${dinero(debe)}`, '');
   }
