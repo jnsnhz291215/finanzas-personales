@@ -120,6 +120,28 @@ export function extraerNumeroCuota(descripcion) {
   return null;
 }
 
+/** ¿La descripción dice "TASA INT. x%"? Así vienen las compras en cuotas de una tarjeta de crédito */
+export function tieneTasaInteres(descripcion) {
+  return /\btasa\s+int\.?\s*[\d.,]*\s*%?/.test(normalizar(descripcion ?? ''));
+}
+
+/** Cargos propios del banco (comisión, impuestos, intereses): nunca son una compra de nadie */
+export function esCargoBanco(descripcion) {
+  return /\b(?:comision|impuesto\s+decreto\s+ley|impuesto\s+d\.?l|intereses?\s+rotativos?|interes\s+rotativo|intereses?\s+de\s+mora|interes\s+de\s+mora|interes\s+moratorio|intereses?\s+moratorios?|seguro\s+desgravamen|mantencion)\b/.test(normalizar(descripcion ?? ''));
+}
+
+/**
+ * Nombre sugerido para una compra en cuotas según el comercio: "APPLE.COM CL APPLE TASA INT. 0,00% 06/12" -> "Apple".
+ * Quita la tasa, el número de cuota, el dominio (.com) y el país, y no repite palabras.
+ */
+export function nombreSugerido(descripcion) {
+  const sinTasa = String(descripcion ?? '').replace(/\bTASA\s+INT\.?\s*[\d.,]*\s*%?/gi, ' ').replace(/\.(?:com|cl|net|org)\b/gi, ' ');
+  const palabras = aliasDeCargo(sinTasa).split(' ').filter(p => p && !['cl', 'com', 'int', 'tasa', 'chile'].includes(p) && !/^\d+$/.test(p));
+  const unicas = [...new Set(palabras)].slice(0, 3);
+  const nombre = unicas.join(' ') || 'compra en cuotas';
+  return nombre[0].toUpperCase() + nombre.slice(1);
+}
+
 /** Nombre corto de una compra en cuotas a partir de la descripción del cargo (sin el "06/12") */
 export function aliasDeCargo(descripcion) {
   const limpio = normalizar(descripcion ?? '')

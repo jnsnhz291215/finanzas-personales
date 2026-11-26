@@ -204,6 +204,21 @@ CREATE TABLE IF NOT EXISTS archivos_importados (
   INDEX idx_hash (hash_archivo)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Cargos leídos de cartolas de tarjetas de terceros (para reconocer compras que se repiten cada mes)
+CREATE TABLE IF NOT EXISTS cargos_cartola (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  cuenta_id INT NOT NULL,
+  hash_archivo VARCHAR(64) NOT NULL,
+  fecha DATE NOT NULL,
+  descripcion VARCHAR(255) NOT NULL,
+  monto DECIMAL(15,2) NOT NULL,
+  cuota_actual INT NULL,
+  cuota_total INT NULL,
+  creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_cargos_cartola_cuenta (cuenta_id),
+  INDEX idx_cargos_cartola_hash (hash_archivo)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Mensajes de Telegram que crearon cada registro (para eliminar/corregir respondiéndoles)
 CREATE TABLE IF NOT EXISTS mensajes_registro (
   id INT PRIMARY KEY AUTO_INCREMENT,

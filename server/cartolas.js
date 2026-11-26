@@ -379,15 +379,58 @@ const PALABRAS_CARGO = /\b(cargo|compra|pago|giro|comisi[oó]n|retiro|impuesto|t
  * del signo del monto o de palabras como "abono" o "compra".
  * @returns {{ movimientos: Array, lineasCandidatas: number, sinTipo: number }}
  */
+/**
+ * Fila de un estado de cuenta de tarjeta de crédito, como la entrega el texto del PDF:
+ *   <LUGAR><dd/mm/aaaa><código> <DESCRIPCIÓN> [TASA INT. x,xx%] $ <monto operación> $ <monto total><NN>/<TT> $ <valor cuota>
+ * El código de operación va pegado a la fecha y el número de cuota (NN/TT) va pegado al segundo monto, por eso el parser
+ * genérico (una fecha y un solo monto) la saltaba. Devuelve { fecha, descripcion, monto, tipo: 'cargo', cuota } o null.
+ * `monto` es el valor de la cuota (lo que se cobra ese mes); `cuota` = { actual, total, valorCuota, montoOperacion, tasa }.
+ * Una fila 01/01 es una compra a una sola cuota: sin `cuota`.
+ */
+const FILA_TARJETA = /(\d{2}[/-]\d{2}[/-]\d{4})\d{0,14}\s+(.+?)\s+\$\s*(-?\d{1,3}(?:\.\d{3})*)\s*\$\s*(-?\d{1,3}(?:\.\d{3})*)(\d{2})\/(\d{2})\s*\$\s*(-?\d{1,3}(?:\.\d{3})*)\s*$/;
+
+export function parsearFilaTarjeta(linea) {
+  const m = FILA_TARJETA.exec(String(linea));
+  if (!m) return null;
+  const fecha = normalizarFecha(m[1]);
+  const actual = Number(m[5]);
+  const total = Number(m[6]);
+  // Un monto negativo (por ejemplo "MONTO CANCELADO") es un abono
+  const abono = m[7].startsWith('-');
+  const valorCuota = Math.abs(normalizarMonto(m[7].replace('-', '')));
+  const montoOperacion = Math.abs(normalizarMonto(m[3].replace('-', '')));
+  let descripcion = m[2].replace(/\s+/g, ' ').trim();
+  // Cuota 00/NN: la compra se hizo pero todavía no se cobra ninguna cuota; no es un cargo de este mes
+  if (!fecha || !(valorCuota > 0) || !descripcion || !(total >= 1) || actual < 1 || actual > total) return null;
+
+  const tasa = /\bTASA\s+INT\.?\s*([\d.,]+)\s*%/i.exec(descripcion)?.[1] ?? null;
+  const movimiento = { fecha, descripcion, monto: valorCuota, tipo: abono ? 'abono' : 'cargo' };
+  if (total >= 2 && !abono) {
+    movimiento.descripcion = `${descripcion} ${String(actual).padStart(2, '0')}/${String(total).padStart(2, '0')}`;
+    movimiento.cuota = { actual, total, valorCuota, montoOperacion, tasa };
+  }
+  return movimiento;
+}
+
 export function movimientosDesdeTextoPDF(texto) {
   const movimientos = [];
   let lineasCandidatas = 0;
   let sinTipo = 0;
+  let filasTarjeta = 0;
 
   const patronFecha = /(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})/;
   const patronMonto = /([-+(]?)\s*\$?\s*(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d{4,})\)?(\s*-)?/g;
 
   for (const linea of String(texto).split('\n')) {
+    // Estado de cuenta de tarjeta: la fila trae la cuota y varios montos
+    const fila = parsearFilaTarjeta(linea);
+    if (fila) {
+      lineasCandidatas++;
+      filasTarjeta++;
+      movimientos.push(fila);
+      continue;
+    }
+
     const matchFecha = linea.match(patronFecha);
     if (!matchFecha) continue;
 
@@ -416,7 +459,7 @@ export function movimientosDesdeTextoPDF(texto) {
     movimientos.push({ fecha, descripcion, monto, tipo });
   }
 
-  return { movimientos, lineasCandidatas, sinTipo };
+  return { movimientos, lineasCandidatas, sinTipo, filasTarjeta };
 }
 
 /**
@@ -493,7 +536,8 @@ export async function analizarPDF(buffer, { interpretarConIA = null } = {}) {
   const ultimos4 = buscarUltimos4(texto);
 
   const reglas = movimientosDesdeTextoPDF(texto);
-  if (reglas.movimientos.length >= MIN_MOVIMIENTOS_REGLAS && reglas.sinTipo === 0) {
+  // En un estado de cuenta de tarjeta las líneas sin tipo son encabezados con fechas (el período), no movimientos
+  if (reglas.movimientos.length >= MIN_MOVIMIENTOS_REGLAS && (reglas.sinTipo === 0 || reglas.filasTarjeta > 0)) {
     return { movimientos: reglas.movimientos, origen: 'reglas', legible: true, banco, ultimos4 };
   }
 

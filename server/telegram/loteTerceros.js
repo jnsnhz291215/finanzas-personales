@@ -38,8 +38,12 @@ import {
   montosCalzan,
   parsearSeleccion,
   lineaCargo,
-  textoResumenLote
+  textoResumenLote,
+  esCargoBanco,
+  tieneTasaInteres,
+  nombreSugerido
 } from './terceros.js';
+import { registrarCargosVistos, posicionesRepetidas } from '../cargosCartola.js';
 import { fechaHoySantiago, formatearFechaCL } from './fechas.js';
 
 const ESPERA_CARTOLA_SOLO_FOTO_MS = 25 * 1000;
@@ -93,6 +97,8 @@ export function crearLoteTerceros(ctx) {
       lista: null,           // { messageId, otros: [{ mov }], elegidos: Set }
       gastos: 0,
       otras: [],             // otras compras en cuotas creadas o actualizadas desde la cartola
+      cuotasNuevas: [],      // cuotas de la cartola sin compra registrada: se ofrece crearla o ignorarla
+      banco: [],             // cargos del banco (comisión, impuestos, intereses): nunca se marcan
       archivoVisto: anterior?.archivoVisto ?? 0,
       comprobanteEn: 0,
       timerEspera: null,
@@ -247,11 +253,20 @@ export function crearLoteTerceros(ctx) {
       }
     }
 
-    // Los demás cargos (los abonos no son gastos de nadie)
-    const otros = item.movimientos
+    // Los demás cargos (los abonos no son gastos de nadie). Se separan los del banco (nunca se marcan) y las cuotas
+    // (con número, con "TASA INT. x%" o la misma compra de otros meses): esas se cruzan con las compras en cuotas.
+    const repetidas = await posicionesRepetidas(cuenta.id, item.hash, item.movimientos).catch(() => new Set());
+    const cargos = item.movimientos
       .map((mov, i) => ({ mov, i }))
       .filter(({ mov, i }) => mov.tipo === 'cargo' && i !== indiceCuota);
+    const delBanco = cargos.filter(({ mov }) => esCargoBanco(mov.descripcion));
+    const sinBanco = cargos.filter(c => !delBanco.includes(c));
+    const esCuota = ({ mov, i }) => Boolean(mov.cuota || extraerNumeroCuota(mov.descripcion) || tieneTasaInteres(mov.descripcion) || repetidas.has(i));
+    const cuotasOtras = sinBanco.filter(esCuota);
+    const otros = sinBanco.filter(c => !esCuota(c));
+    lote.banco = delBanco;
     lote.lista = { messageId: null, otros, elegidos: new Set() };
+    await atenderCuotas(lote, cuotasOtras);
 
     const encabezado = [`<b>Cartola de ${esc(titular)}</b>`];
     if (lote.cuota) {
@@ -283,7 +298,10 @@ export function crearLoteTerceros(ctx) {
         cuerpo += `${linea}\n`;
         mostrados++;
       }
-      if (mostrados < lineas.length) cuerpo += `... y ${lineas.length - mostrados} más que no se muestran (se tratan como de ${esc(titular)}).`;
+      if (mostrados < lineas.length) cuerpo += `... y ${lineas.length - mostrados} más que no se muestran (se tratan como de ${esc(titular)}).\n`;
+      if (delBanco.length > 0) {
+        cuerpo += `\n<b>Cargos del banco</b> (no se marcan)\n${delBanco.map(({ mov }) => `- ${esc(String(mov.descripcion).slice(0, 45))} ${dinero(mov.monto)}`).join('\n')}`;
+      }
       lote.lista.otros = otros.slice(0, mostrados);
       const texto =
         `Estos cargos son de <b>${esc(titular)}</b> por defecto. ¿Cuáles son tuyos?\n` +
@@ -293,6 +311,9 @@ export function crearLoteTerceros(ctx) {
       const enviado = await enviar(chatId, texto, tecladoLista(lote));
       lote.lista.messageId = enviado?.message_id ?? null;
     }
+
+    // Cuotas de la cartola que no calzan con ninguna compra: crearla como mía o ignorarla
+    await ofrecerCuotasNuevas(chatId, lote);
 
     // La cartola no calza con el contador: se pregunta antes de cambiarlo
     if (lote.cuota?.consulta) {
@@ -321,8 +342,9 @@ export function crearLoteTerceros(ctx) {
     }));
     const filas = [];
     for (let i = 0; i < botones.length; i += 4) filas.push(botones.slice(i, i + 4));
+    filas.push([{ text: `Guardar mi selección (${elegidos.size})`, callback_data: 'lcg_s' }]);
     filas.push([
-      { text: `Guardar mi selección (${elegidos.size})`, callback_data: 'lcg_s' },
+      { text: 'Todos son míos', callback_data: 'lca_s' },
       { text: 'Ninguno es mío', callback_data: 'lc0_s' }
     ]);
     return { reply_markup: { inline_keyboard: filas } };
@@ -347,9 +369,12 @@ export function crearLoteTerceros(ctx) {
           movimientosLeidos: item.movimientos,
           cargosLeidos: item.movimientos.filter(m => m.tipo === 'cargo').length,
           marcadosMios: movimientos.length,
-          ignorados: Math.max(0, lista.otros.length - movimientos.length)
+          // Lo no marcado y los cargos del banco
+          ignorados: Math.max(0, lista.otros.length - movimientos.length) + (lote.banco?.length ?? 0)
         }
       });
+      // Se recuerdan los cargos leídos (también los no marcados) para reconocer las compras que se repiten cada mes
+      await registrarCargosVistos(cuenta.id, item.hash, item.movimientos).catch(() => {});
       await vincular(chatId, [item.mensajeUsuarioId, lista?.messageId], 'importacion', archivoId);
       lote.gastos = importados;
       await sincronizarOtrasCuotas(lote, movimientos, registrados);
@@ -385,6 +410,94 @@ export function crearLoteTerceros(ctx) {
         }
       }
     );
+  }
+
+  /**
+   * Cruza cada cuota de la cartola con las compras en cuotas de ese titular (mismo total y monto, o nombre parecido) y sincroniza el
+   * contador (solo hacia adelante). Las que no calzan con ninguna quedan pendientes para ofrecer crearlas o ignorarlas.
+   */
+  async function atenderCuotas(lote, cuotas) {
+    if (cuotas.length === 0) return;
+    try {
+      const existentes = await listarCompras({ incluirTerminadas: true });
+      const delTitular = comprasDeTitular(existentes, lote.titular);
+      for (const { mov } of cuotas) {
+        const nc = mov.cuota ? { actual: mov.cuota.actual, total: mov.cuota.total } : extraerNumeroCuota(mov.descripcion);
+        let compra = nc ? buscarCompraSimilar(delTitular, mov.descripcion, mov.monto, nc.total) : null;
+        if (!compra) {
+          const iguales = delTitular.filter(c => montosCalzan(c.monto_cuota, mov.monto) && (!nc || Number(c.total_cuotas) === nc.total));
+          if (iguales.length === 1) compra = iguales[0];
+        }
+        if (compra && compra.id === lote.compra?.id) continue;
+
+        if (compra) {
+          let estado = 'igual';
+          if (nc && nc.actual > Number(compra.cuotas_pagadas)) {
+            compra = await fijarCuotasPagadas(compra.id, nc.actual);
+            estado = 'actualizada';
+          }
+          lote.otras.push({
+            alias: compra.alias, actual: nc?.actual ?? Number(compra.cuotas_pagadas), total: Number(compra.total_cuotas), estado,
+            terminada: Boolean(compra.terminada)
+          });
+        } else {
+          lote.cuotasNuevas.push({ mov, nc, alias: nombreSugerido(mov.descripcion), estado: 'pendiente', ofrecida: false });
+        }
+      }
+    } catch (error) {
+      console.error('Error al cruzar las cuotas de la cartola:', error.code ?? error.name);
+    }
+  }
+
+  /** Pregunta, con botones, qué hacer con cada cuota que no calza con ninguna compra (crearla como mía o ignorarla) */
+  async function ofrecerCuotasNuevas(chatId, lote) {
+    const pendientes = lote.cuotasNuevas.map((c, k) => ({ c, k })).filter(({ c }) => c.estado === 'pendiente' && !c.ofrecida);
+    for (const { c, k } of pendientes.slice(0, 8)) {
+      c.ofrecida = true;
+      const etiqueta = c.nc ? `${c.alias} ${c.nc.actual}/${c.nc.total}` : c.alias;
+      const botones = [];
+      if (c.nc) botones.push([{ text: `Crear «${c.alias}» (${c.nc.total} cuotas de ${dinero(c.mov.monto)}) como mía`.slice(0, 64), callback_data: `lcq_${k}` }]);
+      botones.push([{ text: 'Ignorarla', callback_data: `lci_${k}` }]);
+      await enviar(chatId,
+        `Cuota sin compra registrada: <b>${esc(etiqueta)}</b> (${dinero(c.mov.monto)}, compra del ${formatearFechaCL(String(c.mov.fecha).slice(0, 10))}). ` +
+        `¿La creo como una compra en cuotas tuya o la ignoro?` +
+        (c.nc ? '' : ' No trae número de cuota, así que no puedo crearla sola.'),
+        { reply_markup: { inline_keyboard: botones } }
+      );
+    }
+    // Lo que no se alcanza a ofrecer no queda pendiente para siempre
+    for (const c of lote.cuotasNuevas) if (c.estado === 'pendiente' && !c.ofrecida) c.estado = 'ignorada';
+  }
+
+  /**
+   * Una cartola que ya se había importado y se vuelve a mandar: no se duplica nada, solo se sincronizan las cuotas con las compras
+   * en cuotas (y se ofrece crear las que no calzan). Devuelve true si la atendió.
+   */
+  async function sincronizarSoloCuotas(chatId, item, cuentaId) {
+    try {
+      const cuenta = (await cuentasActivas()).find(c => c.id === Number(cuentaId));
+      if (!cuenta || esTitularPropio(cuenta.titular)) return false;
+      const cuotas = item.movimientos
+        .map((mov, i) => ({ mov, i }))
+        .filter(({ mov }) => mov.tipo === 'cargo' && !esCargoBanco(mov.descripcion) && (mov.cuota || extraerNumeroCuota(mov.descripcion)));
+      if (cuotas.length === 0 || obtenerLote(chatId)?.item) return false;
+
+      const lote = obtenerLote(chatId) ?? nuevoLote(chatId);
+      lote.titular = cuenta.titular;
+      lote.cuenta = cuenta;
+      await atenderCuotas(lote, cuotas);
+
+      const lineas = ['Esta cartola ya estaba importada: no dupliqué nada, solo sincronicé las cuotas.'];
+      for (const o of lote.otras) lineas.push(`${o.alias} ${o.actual}/${o.total}: ${o.estado === 'actualizada' ? 'contador actualizado' : 'al día'}`);
+      if (lote.otras.length === 0 && lote.cuotasNuevas.length === 0) lineas.push('Ninguna cuota calzó con tus compras en cuotas.');
+      await enviar(chatId, lineas.map(l => esc(l)).join('\n'));
+      await ofrecerCuotasNuevas(chatId, lote);
+      await cerrarSiListo(chatId);
+      return true;
+    } catch (error) {
+      console.error('Error al sincronizar las cuotas de una cartola ya importada:', error.code ?? error.name);
+      return false;
+    }
   }
 
   /**
@@ -764,7 +877,7 @@ export function crearLoteTerceros(ctx) {
   async function cerrarSiListo(chatId) {
     const lote = obtenerLote(chatId);
     if (!lote) return;
-    const pendiente = lote.seleccionEstado === 'pendiente' || Boolean(lote.cuota?.consulta) || ['esperando', 'confirmando'].includes(lote.pagoEstado);
+    const pendiente = lote.seleccionEstado === 'pendiente' || lote.cuotasNuevas?.some(c => c.estado === 'pendiente') || Boolean(lote.cuota?.consulta) || ['esperando', 'confirmando'].includes(lote.pagoEstado);
     if (pendiente) return;
 
     if (lote.item) {
@@ -875,9 +988,39 @@ export function crearLoteTerceros(ctx) {
         await responderCallback(cb.id, {});
         return true;
       }
-      if ((tipo === 'g' || tipo === '0') && lote.lista && lote.seleccionEstado === 'pendiente') {
+      if ((tipo === 'g' || tipo === '0' || tipo === 'a') && lote.lista && lote.seleccionEstado === 'pendiente') {
         await responderCallback(cb.id, {});
-        await aplicarSeleccion(chatId, tipo === '0' ? [] : [...lote.lista.elegidos].sort((a, b) => a - b));
+        const todos = lote.lista.otros.map((_, n) => n + 1);
+        await aplicarSeleccion(chatId, tipo === '0' ? [] : tipo === 'a' ? todos : [...lote.lista.elegidos].sort((a, b) => a - b));
+        return true;
+      }
+
+      // Una cuota sin compra registrada: crearla como mía o ignorarla
+      if ((tipo === 'q' || tipo === 'i') && lote.cuotasNuevas?.[Number(valor)]?.estado === 'pendiente') {
+        const c = lote.cuotasNuevas[Number(valor)];
+        await responderCallback(cb.id, {});
+        if (tipo === 'i') {
+          c.estado = 'ignorada';
+          await editar(`Ignoré la cuota de ${esc(c.alias)}.`, { chat_id: chatId, message_id: messageId });
+        } else {
+          const creada = await crearCompra({
+            alias: c.alias,
+            acreedor: lote.titular,
+            montoCuota: c.mov.monto,
+            totalCuotas: c.nc.total,
+            cuotasPagadas: c.nc.actual,
+            diaPago: Number(String(c.mov.fecha).slice(8, 10)) || null,
+            aliasCartola: c.alias
+          });
+          if (!creada.ok) {
+            await editar('No pude crear la compra en cuotas.', { chat_id: chatId, message_id: messageId });
+            return true;
+          }
+          c.estado = 'creada';
+          lote.otras.push({ alias: c.alias, actual: c.nc.actual, total: c.nc.total, estado: 'nueva', terminada: c.nc.actual >= c.nc.total });
+          await editar(`Creé la compra en cuotas <b>${esc(c.alias)}</b>: ${c.nc.actual} de ${c.nc.total}, cuota de ${dinero(c.mov.monto)}.`, { chat_id: chatId, message_id: messageId });
+        }
+        await cerrarSiListo(chatId);
         return true;
       }
 
@@ -943,5 +1086,5 @@ export function crearLoteTerceros(ctx) {
     }
   }
 
-  return { avisarArchivo, procesarCartola, manejarFoto, manejarReply, manejarCallback, acreedoresDe };
+  return { avisarArchivo, procesarCartola, sincronizarSoloCuotas, manejarFoto, manejarReply, manejarCallback, acreedoresDe };
 }

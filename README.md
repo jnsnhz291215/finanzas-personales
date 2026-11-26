@@ -627,6 +627,17 @@ El bot se usa casi sin comandos: escribe como hablas o manda un archivo. Un enru
   (formato o banco, fechas, movimientos y totales). Con *Importar todo* se usa la cuenta sugerida según el contenido (por ejemplo
   Falabella) y se pregunta solo por los que no tienen sugerencia; con *Revisar uno por uno* ves cada archivo (con vista previa si
   es PDF). Las preguntas de cuotas se hacen al final, todas juntas.
+- **Estado de cuenta de una tarjeta de crédito (PDF):** cada fila trae el lugar, la fecha de compra con el código de operación pegado,
+  la descripción (por ejemplo `APPLE.COM CL APPLE TASA INT. 0,00%`), el monto de la operación, el monto total con el número de cuota
+  pegado (`06/12`) y el valor de la cuota. El parser une todo eso en un solo cargo con el valor de la cuota como monto, `06/12` en la
+  descripción y los datos de la cuota. Las cuotas `00/NN` (compra hecha, sin cuota cobrada todavía) no cuentan, y un monto negativo es un
+  abono. En una tarjeta de terceros, las cuotas (con número, con `TASA INT. x%` o la misma compra —fecha, comercio y monto— que ya
+  apareció en otra cartola de otro mes) no se ofrecen como cargos sueltos: se cruzan con tus compras en cuotas (mismo total y valor de
+  cuota, o nombre parecido) y sincronizan el contador hacia adelante; las que no calzan con ninguna se ofrecen con botones para crear la
+  compra en cuotas como tuya (nombre según el comercio, total y valor de la cuota) o ignorarla. Los cargos del banco (comisión, impuesto
+  decreto ley, intereses rotativos, interés de mora) salen agrupados al final como *Cargos del banco* y nunca se marcan. La lista de
+  cargos tiene los botones *Todos son míos* y *Ninguno es mío*. Si vuelves a mandar una cartola ya importada, no se duplica nada y solo se
+  sincronizan las cuotas.
 - **Texto junto a las cartolas:** si mandas una o varias cartolas (PDF, CSV/Excel o fotos, sueltas o en álbum) con un texto como
   `son de la tarjeta 8263`, `cartola de la 8263` o `es de la crédito de Valeska`, el bot lo usa con reglas locales (nunca Gemini).
   Vale el caption del archivo o del álbum, y también un mensaje de texto justo antes o justo después (hasta 2 minutos); se aplica a

@@ -126,6 +126,7 @@ export async function inicializarDB() {
     // Migración: ultimos4_cuenta (últimos 4 del número de cuenta, distinto de ultimos4 de la tarjeta)
     migrarUltimos4Cuenta(database);
     migrarPeriodoArchivos(database);
+    migrarCargosCartola(database);
     migrarRegistros(database);
     migrarDestinatarios(database);
 
@@ -313,6 +314,24 @@ function migrarComprasCuotas(database) {
  * número de cuenta (ultimos4 es el de la tarjeta). Nunca se guardan números completos.
  */
 /** Migración idempotente (SQLite): período, cargos leídos, marcados como míos e ignorados de cada cartola importada */
+function migrarCargosCartola(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS cargos_cartola (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cuenta_id INTEGER NOT NULL,
+      hash_archivo TEXT NOT NULL,
+      fecha TEXT NOT NULL,
+      descripcion TEXT NOT NULL,
+      monto REAL NOT NULL,
+      cuota_actual INTEGER,
+      cuota_total INTEGER,
+      creado_en DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_cargos_cartola_cuenta ON cargos_cartola(cuenta_id);
+    CREATE INDEX IF NOT EXISTS idx_cargos_cartola_hash ON cargos_cartola(hash_archivo);
+  `);
+}
+
 function migrarPeriodoArchivos(database) {
   const columnas = database.prepare('PRAGMA table_info(archivos_importados)').all().map(c => c.name);
   for (const [nombre, tipo] of [['periodo_desde', 'TEXT'], ['periodo_hasta', 'TEXT'], ['cargos_leidos', 'INTEGER'], ['marcados_mios', 'INTEGER'], ['ignorados', 'INTEGER']]) {

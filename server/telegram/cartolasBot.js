@@ -365,10 +365,19 @@ export function crearCartolas(ctx) {
       }
       vistos.add(hash);
 
-      if (await cartolaYaImportada(hash)) {
-        avisos.push(unico
-          ? 'Esta cartola ya fue importada antes, así que no la importé de nuevo.'
-          : `${prefijo}ya fue importada antes, la descarté.`);
+      const previa = await cartolaYaImportada(hash);
+      if (previa) {
+        // Una cartola de una tarjeta de terceros que se vuelve a mandar: no se duplica nada, solo se sincronizan las cuotas
+        let sincronizada = false;
+        if (ctx.terceros?.sincronizarSoloCuotas && previa.cuenta_id) {
+          const analisis = await analizarArchivo(archivo);
+          if (analisis.estado === 'ok') sincronizada = await ctx.terceros.sincronizarSoloCuotas(chatId, { movimientos: analisis.movimientos }, previa.cuenta_id);
+        }
+        if (!sincronizada) {
+          avisos.push(unico
+            ? 'Esta cartola ya fue importada antes, así que no la importé de nuevo.'
+            : `${prefijo}ya fue importada antes, la descarté.`);
+        }
         continue;
       }
 
