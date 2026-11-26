@@ -3,8 +3,11 @@
  * editan el mismo mensaje. Al elegir un mes muestra el resumen (cargos, abonos, cuotas, marcados como míos e ignorados) y la
  * lista de movimientos, y ofrece descargar la cartola original guardada.
  *
+ * Al elegir el mes, el mensaje del selector queda cerrado (sin botones, solo "Cuenta · mes año") y el detalle sale en mensajes nuevos;
+ * los botones de acción (Descargar cartola, Otro mes, Cerrar) van solo en el último.
+ *
  * Botones (prefijo ex): exl_x lista de cuentas · exc_<cuenta> años · exa_<cuenta>_<año> meses · exm_<cuenta>_<YYYY-MM> mes ·
- * exd_<cartola> descargar.
+ * exd_<cartola> descargar · exo_<cuenta>_<YYYY-MM> otro mes (abre el selector otra vez) · exz_x cerrar.
  *
  * Privacidad: nunca se muestra la ruta de un archivo; la descarga solo envía archivos que están dentro de FINANZAS_STORAGE.
  */
@@ -126,23 +129,29 @@ export function crearEstadoCuenta(ctx) {
     if (r.marcadosMios !== null) lineas.push(`Marcados como míos: ${r.marcadosMios} · ignorados: ${r.ignorados}`);
     if (archivos.length > 0) lineas.push(`Cartolas guardadas: ${archivos.length}`);
 
+    // El selector donde se eligió el mes queda cerrado: sin botones y solo con la cuenta y el mes
+    if (messageId) await editar(`${esc(cuenta.nombre)} · ${esc(nombreMes(mes))}`, { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } });
+
     const botones = archivos.map((a, i) => [{
       text: archivos.length === 1 ? 'Descargar cartola' : `Descargar cartola ${i + 1}${a.periodo_hasta ? ` (hasta ${formatearFechaCL(String(a.periodo_hasta).slice(0, 10))})` : ''}`.slice(0, 60),
       callback_data: `exd_${a.id}`
     }]);
-    const anio = mes.slice(0, 4);
-    botones.push([{ text: 'Volver', callback_data: `exa_${cuentaId}_${anio}` }]);
-    await mostrar(chatId, messageId, lineas.join('\n'), botones);
+    botones.push([
+      { text: 'Otro mes', callback_data: `exo_${cuentaId}_${mes}` },
+      { text: 'Cerrar', callback_data: 'exz_x' }
+    ]);
 
+    // Resumen y movimientos en mensajes nuevos; los botones van solo en el último
+    const lineasDetalle = [...lineas];
     if (movimientos.length > 0) {
       const mostrados = movimientos.slice(0, MAX_MOVIMIENTOS);
       const resto = movimientos.length - mostrados.length;
-      const mensajes = partirEnMensajes([
-        '<b>Movimientos</b>',
-        ...mostrados.map(lineaMovimiento),
-        ...(resto > 0 ? [`... y ${resto} más`] : [])
-      ]);
-      for (const m of mensajes) await enviar(chatId, m);
+      lineasDetalle.push('', '<b>Movimientos</b>', ...mostrados.map(lineaMovimiento), ...(resto > 0 ? [`... y ${resto} más`] : []));
+    }
+    const mensajes = partirEnMensajes(lineasDetalle);
+    for (let i = 0; i < mensajes.length; i++) {
+      const ultimo = i === mensajes.length - 1;
+      await enviar(chatId, mensajes[i], ultimo ? { reply_markup: { inline_keyboard: botones } } : undefined);
     }
   }
 
@@ -240,6 +249,17 @@ export function crearEstadoCuenta(ctx) {
       if ((m = data.match(/^exm_(\d+)_(\d{4}-\d{2})$/))) {
         await responderCallback(cb.id, {});
         await pasoMes(chatId, messageId, Number(m[1]), m[2]);
+        return true;
+      }
+      if ((m = data.match(/^exo_(\d+)_(\d{4})-\d{2}$/))) {
+        // Otro mes: abre el selector de meses en un mensaje nuevo; el detalle y sus botones se quedan como están
+        await responderCallback(cb.id, {});
+        await pasoMeses(chatId, null, Number(m[1]), m[2]);
+        return true;
+      }
+      if (data === 'exz_x') {
+        await responderCallback(cb.id, {});
+        await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId }).catch(() => {});
         return true;
       }
       if ((m = data.match(/^exd_(\d+)$/))) {

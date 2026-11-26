@@ -906,10 +906,12 @@ y frases como `estado cuenta tarjeta 8263`, `estado de cuenta de la 8263`, `hist
 
 - **Navegación con botones**, editando el mismo mensaje: cuenta, año (solo los que tienen registros; si hay uno solo se salta) y mes (solo
   los meses con movimientos o cartolas). Año y mes tienen botón *Volver*.
-- **Al elegir un mes:** cuenta, titular y período; cargos (cantidad y total) y abonos; cuotas detectadas (por ejemplo `Macbook 6/12`, ya
+- **Al elegir un mes**, el mensaje del selector queda cerrado (sin botones, solo `Cuenta · mes año`) y el detalle sale en mensajes nuevos; los
+  botones *Descargar cartola*, *Otro mes* (abre el selector otra vez) y *Cerrar* (quita los botones) van solo en el último mensaje. Lo mismo vale
+  para los demás selectores con botones: el mensaje donde elegiste queda cerrado y las acciones van en el resultado. El detalle trae: cuenta, titular y período; cargos (cantidad y total) y abonos; cuotas detectadas (por ejemplo `Macbook 6/12`, ya
   sea porque el cargo está ligado a una compra en cuotas o porque la descripción trae el número de cuota); en las tarjetas de terceros,
   cuántos cargos marcaste como tuyos y cuántos se ignoraron; y la lista de movimientos, dividida en varios mensajes si es larga (hasta 80).
-- **Descargar cartola:** si el mes tiene cartola guardada aparece un botón por archivo, que envía el original con `sendDocument`. Solo se
+- **Descargar cartola:** si el mes tiene cartola guardada aparece un botón por archivo, al final del detalle, que envía el original con `sendDocument`. Solo se
   envía un archivo que esté dentro de `FINANZAS_STORAGE`, y la ruta nunca se muestra en el chat.
 - **A qué mes pertenece una cartola:** al del final de su período. Las cartolas se importan ahora con su período, los cargos leídos y los
   marcados/ignorados (columnas nuevas de `archivos_importados`, con migración en SQLite y MariaDB). Las anteriores se ubican por el último

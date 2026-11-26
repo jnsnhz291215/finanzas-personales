@@ -185,6 +185,12 @@ export function crearAdmin(ctx) {
         await responderCallback(cb.id, { text: 'El movimiento ya no existe' });
         return true;
       }
+      // La lista donde se eligió queda cerrada (sin botones); la ficha, con sus acciones, sale en un mensaje nuevo
+      const descripcion = String(movimiento.descripcion ?? '');
+      await editar(
+        `Movimiento elegido: ${formatearFechaCL(movimiento.fecha)} - ${esc(descripcion.length > 40 ? `${descripcion.slice(0, 39)}...` : descripcion)} - ${movimiento.tipo === 'cargo' ? '-' : '+'}${dinero(Number(movimiento.monto))}`,
+        { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } }
+      );
       await enviar(chatId, textoMovimiento(movimiento), tecladoMovimiento(movimiento));
       await responderCallback(cb.id, {});
       return true;
@@ -625,6 +631,10 @@ export function crearAdmin(ctx) {
       return true;
     }
     if ((m = data.match(/^fjf_(\d+)_([mdpn])$/))) {
+      // El selector de campos queda cerrado con lo que se eligió; la pregunta sale en un mensaje nuevo
+      const elegido = (await listarGastosFijos()).find(f => String(f.id) === m[1]);
+      const campoElegido = { m: 'Monto', d: 'Día de pago', p: 'Palabras clave', n: 'Nombre' }[m[2]];
+      await editar(`Editar <b>${esc(elegido?.nombre ?? 'gasto fijo')}</b> · ${campoElegido}`, { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } });
       esperar(chatId, { accion: 'fijo', id: m[1], campo: m[2] });
       const pista = m[2] === 'd' || m[2] === 'p' ? ' Escribe "sin" para quitarlo.' : '';
       await enviar(chatId, `Escribe ${NOMBRES_CAMPO_FIJO[m[2]]}.${pista}`, botonCancelar);
