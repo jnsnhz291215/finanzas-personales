@@ -32,6 +32,7 @@ import { crearRegistros } from './registrosBot.js';
 import { crearReset } from './resetBot.js';
 import { crearStatus } from './statusBot.js';
 import { crearVistaCuentas } from './vistaCuentasBot.js';
+import { mensajesAyuda, COMANDOS_CONOCIDOS, COMANDOS_MENU } from './comandos.js';
 import { crearLoteTerceros } from './loteTerceros.js';
 import { crearTransferencias } from './transferenciasBot.js';
 import { esTitularPropio } from './terceros.js';
@@ -293,7 +294,7 @@ export async function iniciarBot() {
       datos: (chatId, termino) => responderConsultaDatos(chatId, termino),
       cuentas: (chatId) => enviarCuentas(chatId),
       buscar: (chatId, texto) => admin.buscar(chatId, texto),
-      ayuda: (chatId) => enviar(chatId, textoAyuda()),
+      ayuda: (chatId) => enviarAyuda(chatId),
       eliminarUltimo: (chatId) => registros.eliminarUltimo(chatId),
       gastoFijo: (msg, datos) => procesarGastoFijo(msg.chat.id, datos),
       guardarCuenta: (msg, datos) => procesarCuentaDesdeTexto(msg, datos.textoCuenta, { natural: true, numeroLargo: datos.numeroLargo }),
@@ -352,70 +353,13 @@ function esChatAutorizado(chatId) {
 }
 
 /**
- * Texto de ayuda (HTML), compartido por /start, /ayuda y /help. Casi todo se hace escribiendo
- * como hablas o mandando un archivo; los comandos quedan de respaldo.
+ * Manda la ayuda (/start, /ayuda y /help): la lista de TODOS los comandos por sección y unos ejemplos de frases. Sale de
+ * comandos.js, la única fuente de los comandos; si no cabe en un mensaje de Telegram, se manda en varios.
  */
-function textoAyuda() {
-  return (
-    '<b>Escríbeme como hablas</b>\n\n' +
-    '<b>Anotar gastos e ingresos</b>\n' +
-    '• almuerzo 5500 débito falabella\n' +
-    '• me pagaron 400 mil\n' +
-    '• pagué la tarjeta de crédito 50 mil\n' +
-    '• le pagué 15 mil a Christian con la CMR, me lo devuelve\n\n' +
-    '<b>Cuotas</b>\n' +
-    '• compré audífonos en 6 cuotas de 15 mil con la tarjeta de la tía\n' +
-    '• pagué cuota tía mac 7/12 (también con la foto del comprobante y ese texto)\n' +
-    '• cuánto le debo a la tía\n\n' +
-    '<b>Consultas</b>\n' +
-    '• cuánto gasté este mes\n' +
-    '• cuánto llevo en comida\n' +
-    '• cuánto puedo gastar\n' +
-    '• cuánto debería ahorrar\n' +
-    '• busca uber de octubre\n' +
-    '• qué cuentas tengo, qué datos tienes guardados\n' +
-    '• pásame los datos de la mercado pago\n\n' +
-    '<b>Gastos fijos</b>\n' +
-    '• gasto fijo: 24 mil en telefonía, lo pago a Vivian\n' +
-    '• fijo 15.990 netflix\n' +
-    '• agrega gasto fijo de 350 mil arriendo, se lo pago a Don Pedro el 5 de cada mes\n' +
-    '• pago fijo 24000 telefonía a Vivian\n\n' +
-    '<b>Guardar una cuenta o tarjeta</b> (con los últimos 4 dígitos)\n' +
-    '• guarda la tarjeta crédito 8263 es de Valeska Sanhueza\n' +
-    '• agrega mi cuenta rut 1234 del banco estado\n' +
-    '• nueva tarjeta débito 5555 de Juan\n' +
-    '• la tarjeta 8263 es de Valeska\n\n' +
-    '<b>Transferencias</b>\n' +
-    '• a una cuenta tuya: movimiento interno, no suma como gasto\n' +
-    '• a quien le pagas cuotas (Valeska): la vinculo a la cuota del mes o a la suma de varias, y te aviso si falta o sobra\n' +
-    '• a otra persona: te pregunto si es gasto, préstamo o pago y lo recuerdo\n\n' +
-    '<b>Estado de la app</b>\n' +
-    '• /status, «estado» o «todo bien?»: revisa servidor, base de datos, Gemini, Telegram, storage y más\n\n' +
-    '<b>Empezar de cero</b>\n' +
-    '• /reset o «empezar de cero»: muestra qué borraría, hace un respaldo y pide escribir BORRAR TODO\n' +
-    '• restaurar último respaldo\n\n' +
-    '<b>Reconocer cuentas en las cartolas</b>\n' +
-    '• la FAN termina en 6958\n' +
-    '• la cuenta de la falabella termina en 1234\n\n' +
-    '<b>Corregir o eliminar</b> (responde al mensaje del gasto, pago, cuenta o cartola)\n' +
-    '• elimina esto / bórralo / me equivoqué, sácalo\n' +
-    '• eran 4500 / era con la falabella / la categoría es comida / fue ayer\n' +
-    '• deshacer (respondiendo a la confirmación, hasta 24 horas después)\n' +
-    '• elimina el último gasto (sin responder a nada)\n\n' +
-    '<b>Archivos</b>\n' +
-    '• Manda la cartola (PDF, CSV o Excel) y elige la cuenta. Si mandas varias seguidas, te hago un solo resumen.\n' +
-    '• Manda la foto de un comprobante y te pregunto si es de una cuota o de otro gasto.\n\n' +
-    '<b>Comandos</b>\n' +
-    '/help - Esta ayuda\n' +
-    '/plan - Tu plan de ahorro del mes\n' +
-    '/cuotas - Tus compras en cuotas\n' +
-    '/cuentas - Tus cuentas, vínculos tarjeta-cuenta, titulares, cuotas y totales (también /datosguardados)\n' +
-    '/status - Estado de la app\n' +
-    '/update - Actualizar y reiniciar la app (solo en el servidor)\n\n' +
-    'Por seguridad, las cuentas y tus datos de transferencia se guardan solo con comandos: ' +
-    '/savecard (por ejemplo: /savecard efectivo) y /savetrans. ' +
-    'Los demás comandos (/ultimos, /buscar, /gastos, /fijo, /regla, /deudas...) siguen funcionando si los escribes.'
-  );
+async function enviarAyuda(chatId, saludo = null) {
+  for (const mensaje of mensajesAyuda(esc, { saludo })) {
+    await enviar(chatId, mensaje);
+  }
 }
 
 /**
@@ -432,22 +376,8 @@ function algunComandoLoAtiende(texto) {
   });
 }
 
-// Comandos que existen (quien manda un "/algo" que no está aquí recibe un aviso en vez de silencio)
-const COMANDOS_CONOCIDOS = new Set([
-  'start', 'miid', 'help', 'ayuda', 'plan', 'cuotas', 'cuentas', 'datosguardados', 'resumen', 'ultimos', 'gastos', 'buscar',
-  'fijo', 'fijos', 'deudas', 'pago', 'categoria', 'categorias', 'regla', 'savecard', 'nuevacuenta', 'borrarcuenta',
-  'savetrans', 'misdatos', 'datos', 'borrardatos', 'status', 'update', 'reboot', 'reset'
-]);
-
-// Menú "/" de Telegram (setMyCommands): solo lo esencial; lo demás funciona escribiéndolo o en lenguaje natural
-const COMANDOS_MENU = [
-  { command: 'help', description: 'Qué puedo hacer y ejemplos' },
-  { command: 'plan', description: 'Mi plan de ahorro del mes' },
-  { command: 'cuentas', description: 'Mis cuentas, vínculos y datos guardados' },
-  { command: 'cuotas', description: 'Mis compras en cuotas' },
-  { command: 'status', description: 'Estado de la app' },
-  { command: 'update', description: 'Actualizar y reiniciar la app' }
-];
+// Los comandos que existen (COMANDOS_CONOCIDOS) y el menú "/" de Telegram (COMANDOS_MENU: los marcados con `menu`) vienen
+// de comandos.js, la misma lista de la que sale /help
 
 // Menú para quien no está autorizado: solo /miid (para obtener su chat ID)
 const COMANDOS_PUBLICOS = [{ command: 'miid', description: 'Obtener mi chat ID' }];
@@ -502,9 +432,7 @@ function configurarComandos() {
       return;
     }
 
-    await enviar(chatId,
-      '¡Hola! 👋 Soy tu asistente de finanzas personales.\n\n' + textoAyuda()
-    );
+    await enviarAyuda(chatId, '¡Hola! 👋 Soy tu asistente de finanzas personales.');
   });
 
   // Comandos /ayuda y /help: misma respuesta
@@ -516,7 +444,7 @@ function configurarComandos() {
       return;
     }
 
-    await enviar(chatId, textoAyuda());
+    await enviarAyuda(chatId);
   });
 
   // Comando /resumen

@@ -503,11 +503,52 @@ El bot te mostrará un resumen y te pedirá confirmar antes de guardar.
 
 #### Comandos Disponibles
 
-- `/start` - Iniciar el bot y ver instrucciones
-- `/ayuda` - Ver todos los comandos disponibles
-- `/resumen` - Resumen del mes actual (ingresos, gastos, saldo)
-- `/ultimos` - Ver los últimos 10 movimientos
-- `/miid` - Obtener tu chat ID
+La lista sale de un solo lugar (`server/telegram/comandos.js`), la misma de `/help`, del aviso de "comando que no existe" y del menú "/" de Telegram (que muestra solo `/help`, `/plan`, `/cuentas`, `/cuotas`, `/status` y `/update`). `comandos.test.js` revisa el código y falla si un comando registrado no está en la lista o si la lista tiene uno que ya no existe.
+
+**General**
+
+- `/start` - Saludo y esta lista de comandos
+- `/help` (o `/ayuda`) - Esta lista de comandos y ejemplos
+- `/miid` - Ver tu chat ID (para autorizarlo en el servidor)
+- `/status` - Estado de la app: servidor, base de datos, Gemini, Telegram y más
+
+**Finanzas**
+
+- `/resumen` - Resumen del mes: ingresos, gastos y saldo
+- `/ultimos` - Últimos movimientos, con botones para editar o borrar
+- `/buscar <texto o mes>` - Buscar movimientos (por ejemplo: /buscar uber octubre)
+- `/gastos` - Gastos del mes por categoría y uso de tus tarjetas de crédito
+- `/plan [config | ingreso <monto> | 50 30 20]` - Plan de ahorro del mes: cuánto puedes gastar
+- `/deudas` - Quién te debe y cuánto
+- `/pago <persona> <monto>` - Registrar el pago de una deuda (por ejemplo: /pago Pedro 20 mil)
+
+**Cuotas y fijos**
+
+- `/cuotas [nueva ... | cartola ...]` - Compras en cuotas y lo del mes por titular
+- `/fijo <nombre> <monto> [el <día>]` - Agregar un gasto fijo (por ejemplo: /fijo arriendo 350 mil el 5)
+- `/fijos` - Ver tus gastos fijos, editarlos o desactivarlos
+
+**Cuentas y datos**
+
+- `/cuentas` (o `/datosguardados`) - Tus cuentas con vínculos, titulares, cuotas y totales
+- `/savecard <descripción>` (o `/nuevacuenta`) - Crear una cuenta o tarjeta (con los últimos 4 dígitos)
+- `/borrarcuenta [número]` - Desactivar una cuenta (sus movimientos se conservan)
+- `/savetrans` - Guardar tus datos de transferencia (para que te depositen)
+- `/misdatos` - Ver tus datos de transferencia guardados
+- `/datos <alias o banco>` - Pedir los datos de transferencia de una de tus cuentas
+- `/borrardatos [número]` - Desactivar datos de transferencia
+
+**Categorías y reglas**
+
+- `/categorias` - Ver las categorías
+- `/categoria nueva <nombre>` - Crear una categoría
+- `/regla <texto> <categoría>` - Categorizar solo lo que contenga ese texto (sin argumentos: lista las reglas)
+
+**Sistema**
+
+- `/update` - Actualizar la app y reiniciarla (solo en el servidor)
+- `/reboot` - Reiniciar la app (solo en el servidor)
+- `/reset` - Empezar de cero: respaldo, doble confirmación y opción de restaurar
 
 #### Importar Cartolas
 
