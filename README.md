@@ -503,52 +503,85 @@ El bot te mostrará un resumen y te pedirá confirmar antes de guardar.
 
 #### Comandos Disponibles
 
-La lista sale de un solo lugar (`server/telegram/comandos.js`), la misma de `/help`, del aviso de "comando que no existe" y del menú "/" de Telegram (que muestra solo `/help`, `/plan`, `/cuentas`, `/cuotas`, `/status` y `/update`). `comandos.test.js` revisa el código y falla si un comando registrado no está en la lista o si la lista tiene uno que ya no existe.
+La lista sale de un solo lugar (`server/telegram/comandos.js`), la misma de `/help`, del aviso de "comando que no existe" y del menú "/" de Telegram (que muestra solo `/help`, `/plan`, `/cuentas`, `/cuotas`, `/status` y `/update`). Cada comando lleva un campo `ejemplo` obligatorio (un uso real, o solo el comando si no lleva argumentos) que `/help` muestra debajo de la línea del comando como `Ej: ...`. `comandos.test.js` revisa el código y falla si un comando registrado no está en la lista, si la lista tiene uno que ya no existe o si a algún comando le falta el ejemplo. Si `/help` no cabe en un mensaje de Telegram, se divide por sección sin cortar ninguna entrada.
 
 **General**
 
 - `/start` - Saludo y esta lista de comandos
+  Ej: `/start`
 - `/help` (o `/ayuda`) - Esta lista de comandos y ejemplos
+  Ej: `/help`
 - `/miid` - Ver tu chat ID (para autorizarlo en el servidor)
+  Ej: `/miid`
 - `/status` - Estado de la app: servidor, base de datos, Gemini, Telegram y más
+  Ej: `/status`
 
 **Finanzas**
 
 - `/resumen` - Resumen del mes: ingresos, gastos y saldo
+  Ej: `/resumen`
 - `/ultimos` - Últimos movimientos, con botones para editar o borrar
-- `/buscar <texto o mes>` - Buscar movimientos (por ejemplo: /buscar uber octubre)
+  Ej: `/ultimos`
+- `/buscar <texto o mes>` - Buscar movimientos
+  Ej: `/buscar uber octubre`
 - `/gastos` - Gastos del mes por categoría y uso de tus tarjetas de crédito
+  Ej: `/gastos`
 - `/plan [config | ingreso <monto> | 50 30 20]` - Plan de ahorro del mes: cuánto puedes gastar
+  Ej: `/plan ingreso 1500000`
 - `/deudas` - Quién te debe y cuánto
-- `/pago <persona> <monto>` - Registrar el pago de una deuda (por ejemplo: /pago Pedro 20 mil)
+  Ej: `/deudas`
+- `/pago <persona> <monto>` - Registrar el pago de una deuda
+  Ej: `/pago Pedro 20 mil`
 
 **Cuotas y fijos**
 
-- `/cuotas [nueva ... | cartola ...]` - Compras en cuotas y lo del mes por titular
-- `/fijo <nombre> <monto> [el <día>]` - Agregar un gasto fijo (por ejemplo: /fijo arriendo 350 mil el 5)
+- `/cuotas [nueva ... | cartola ...]` - Todas tus compras en cuotas (activas y terminadas) por titular
+  Ej: `/cuotas`
+- `/fijo <nombre> <monto> [el <día>]` - Agregar un gasto fijo
+  Ej: `/fijo arriendo 350 mil el 5`
 - `/fijos` - Ver tus gastos fijos, editarlos o desactivarlos
+  Ej: `/fijos`
 
 **Cuentas y datos**
 
 - `/cuentas` (o `/datosguardados`) - Tus cuentas con vínculos, titulares, cuotas y totales
+  Ej: `/cuentas`
+- `/estadocuenta [últimos 4 dígitos o titular]` (o `/cartolas` o `/historial`) - Revisar tus estados de cuenta guardados por año y mes, y descargar la cartola
+  Ej: `/estadocuenta 8263`
+- `/resetcuenta [últimos 4 dígitos] [mes 1 | enero 2026 | mes 1 a 3]` (o `/limpiarcuenta`) - Borrar las importaciones (o todo) de una cuenta, o solo de un mes o rango, con respaldo y Deshacer
+  Ej: `/resetcuenta 8263 mes 1`
 - `/savecard <descripción>` (o `/nuevacuenta`) - Crear una cuenta o tarjeta (con los últimos 4 dígitos)
+  Ej: `/savecard tarjeta débito FAN banco de chile terminada en 1234`
+- `/editarcuenta [últimos 4 dígitos]` (o `/editartarjeta`) - Editar una cuenta o tarjeta: nombre, tipo, banco, titular, dígitos, vínculo y predeterminada
+  Ej: `/editarcuenta 8263`
 - `/borrarcuenta [número]` - Desactivar una cuenta (sus movimientos se conservan)
+  Ej: `/borrarcuenta 2`
 - `/savetrans` - Guardar tus datos de transferencia (para que te depositen)
+  Ej: `/savetrans`
 - `/misdatos` - Ver tus datos de transferencia guardados
+  Ej: `/misdatos`
 - `/datos <alias o banco>` - Pedir los datos de transferencia de una de tus cuentas
+  Ej: `/datos fan`
 - `/borrardatos [número]` - Desactivar datos de transferencia
+  Ej: `/borrardatos 1`
 
 **Categorías y reglas**
 
 - `/categorias` - Ver las categorías
+  Ej: `/categorias`
 - `/categoria nueva <nombre>` - Crear una categoría
+  Ej: `/categoria nueva Mascotas`
 - `/regla <texto> <categoría>` - Categorizar solo lo que contenga ese texto (sin argumentos: lista las reglas)
+  Ej: `/regla uber transporte`
 
 **Sistema**
 
 - `/update` - Actualizar la app y reiniciarla (solo en el servidor)
+  Ej: `/update`
 - `/reboot` - Reiniciar la app (solo en el servidor)
+  Ej: `/reboot`
 - `/reset` - Empezar de cero: respaldo, doble confirmación y opción de restaurar
+  Ej: `/reset`
 
 #### Importar Cartolas
 

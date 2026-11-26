@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { COMANDOS, COMANDOS_CONOCIDOS, COMANDOS_MENU, SECCIONES, EJEMPLOS, mensajesAyuda, lineaComando } from './comandos.js';
+import { COMANDOS, COMANDOS_CONOCIDOS, COMANDOS_MENU, SECCIONES, EJEMPLOS, mensajesAyuda, lineaComando, entradaComando } from './comandos.js';
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -34,6 +34,15 @@ describe('lista de comandos', () => {
     expect(COMANDOS_CONOCIDOS.has('borrar_ultimo')).toBe(false);
   });
 
+  test('cada comando tiene un ejemplo real que empieza con el comando (así nunca falta en los nuevos)', () => {
+    for (const c of COMANDOS) {
+      expect({ comando: c.nombre, ejemplo: typeof c.ejemplo }).toEqual({ comando: c.nombre, ejemplo: 'string' });
+      const nombres = [c.nombre, ...(c.alias ?? [])];
+      const primero = c.ejemplo.trim().split(/\s+/)[0];
+      expect({ comando: c.nombre, empiezaBien: nombres.map(n => `/${n}`).includes(primero) }).toEqual({ comando: c.nombre, empiezaBien: true });
+    }
+  });
+
   test('el menú de Telegram queda con los 6 de siempre, en su orden', () => {
     expect(COMANDOS_MENU.map(c => c.command)).toEqual(['help', 'plan', 'cuentas', 'cuotas', 'status', 'update']);
   });
@@ -43,9 +52,11 @@ describe('texto de /help', () => {
   const mensajes = mensajesAyuda((t) => t);
   const todo = mensajes.join('\n');
 
-  test('lista todos los comandos y todos los alias, uno por línea', () => {
+  test('lista todos los comandos y todos los alias, cada uno con su descripción y debajo "Ej: ..."', () => {
     for (const c of COMANDOS) {
       expect(todo).toContain(lineaComando(c));
+      expect(todo).toContain(entradaComando(c));
+      expect(todo).toContain(`Ej: ${c.ejemplo}`);
       for (const alias of c.alias ?? []) expect(todo).toContain(`/${alias}`);
     }
     expect(todo).not.toContain('borrar_ultimo');
@@ -63,7 +74,10 @@ describe('texto de /help', () => {
     for (const e of EJEMPLOS) expect(todo.indexOf(e.frase)).toBeGreaterThan(ejemplos);
   });
 
-  test('ningún mensaje pasa el límite de Telegram', () => {
+  test('ningún mensaje pasa el límite de Telegram y ninguna entrada queda partida', () => {
     for (const m of mensajes) expect(m.length).toBeLessThanOrEqual(4096);
+    for (const c of COMANDOS) {
+      expect(mensajes.some(m => m.includes(entradaComando(c)))).toBe(true);
+    }
   });
 });

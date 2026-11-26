@@ -12,50 +12,52 @@ export const SECCIONES = ['General', 'Finanzas', 'Cuotas y fijos', 'Cuentas y da
 
 /**
  * nombre: sin la barra; alias: otros nombres que hacen lo mismo; uso: argumentos opcionales para mostrar;
+ * ejemplo (OBLIGATORIO, comandos.test.js falla si falta): un uso real y claro, que empieza con el comando ("/estadocuenta 8263"); en un
+ * comando sin argumentos es solo el comando ("/cuotas");
  * menu: posición en el menú "/" de Telegram (1 a 6; sin menu no aparece), con menuDescripcion, la de ese menú.
  */
 export const COMANDOS = [
   // General
-  { seccion: 'General', nombre: 'start', descripcion: 'Saludo y esta lista de comandos' },
-  { seccion: 'General', nombre: 'help', alias: ['ayuda'], descripcion: 'Esta lista de comandos y ejemplos', menu: 1, menuDescripcion: 'Qué puedo hacer y ejemplos' },
-  { seccion: 'General', nombre: 'miid', descripcion: 'Ver tu chat ID (para autorizarlo en el servidor)' },
-  { seccion: 'General', nombre: 'status', descripcion: 'Estado de la app: servidor, base de datos, Gemini, Telegram y más', menu: 5, menuDescripcion: 'Estado de la app' },
+  { seccion: 'General', nombre: 'start', ejemplo: '/start', descripcion: 'Saludo y esta lista de comandos' },
+  { seccion: 'General', nombre: 'help', alias: ['ayuda'], ejemplo: '/help', descripcion: 'Esta lista de comandos y ejemplos', menu: 1, menuDescripcion: 'Qué puedo hacer y ejemplos' },
+  { seccion: 'General', nombre: 'miid', ejemplo: '/miid', descripcion: 'Ver tu chat ID (para autorizarlo en el servidor)' },
+  { seccion: 'General', nombre: 'status', ejemplo: '/status', descripcion: 'Estado de la app: servidor, base de datos, Gemini, Telegram y más', menu: 5, menuDescripcion: 'Estado de la app' },
 
   // Finanzas
-  { seccion: 'Finanzas', nombre: 'resumen', descripcion: 'Resumen del mes: ingresos, gastos y saldo' },
-  { seccion: 'Finanzas', nombre: 'ultimos', descripcion: 'Últimos movimientos, con botones para editar o borrar' },
-  { seccion: 'Finanzas', nombre: 'buscar', uso: '<texto o mes>', descripcion: 'Buscar movimientos (por ejemplo: /buscar uber octubre)' },
-  { seccion: 'Finanzas', nombre: 'gastos', descripcion: 'Gastos del mes por categoría y uso de tus tarjetas de crédito' },
-  { seccion: 'Finanzas', nombre: 'plan', uso: '[config | ingreso <monto> | 50 30 20]', descripcion: 'Plan de ahorro del mes: cuánto puedes gastar', menu: 2, menuDescripcion: 'Mi plan de ahorro del mes' },
-  { seccion: 'Finanzas', nombre: 'deudas', descripcion: 'Quién te debe y cuánto' },
-  { seccion: 'Finanzas', nombre: 'pago', uso: '<persona> <monto>', descripcion: 'Registrar el pago de una deuda (por ejemplo: /pago Pedro 20 mil)' },
+  { seccion: 'Finanzas', nombre: 'resumen', ejemplo: '/resumen', descripcion: 'Resumen del mes: ingresos, gastos y saldo' },
+  { seccion: 'Finanzas', nombre: 'ultimos', ejemplo: '/ultimos', descripcion: 'Últimos movimientos, con botones para editar o borrar' },
+  { seccion: 'Finanzas', nombre: 'buscar', uso: '<texto o mes>', ejemplo: '/buscar uber octubre', descripcion: 'Buscar movimientos' },
+  { seccion: 'Finanzas', nombre: 'gastos', ejemplo: '/gastos', descripcion: 'Gastos del mes por categoría y uso de tus tarjetas de crédito' },
+  { seccion: 'Finanzas', nombre: 'plan', uso: '[config | ingreso <monto> | 50 30 20]', ejemplo: '/plan ingreso 1500000', descripcion: 'Plan de ahorro del mes: cuánto puedes gastar', menu: 2, menuDescripcion: 'Mi plan de ahorro del mes' },
+  { seccion: 'Finanzas', nombre: 'deudas', ejemplo: '/deudas', descripcion: 'Quién te debe y cuánto' },
+  { seccion: 'Finanzas', nombre: 'pago', uso: '<persona> <monto>', ejemplo: '/pago Pedro 20 mil', descripcion: 'Registrar el pago de una deuda' },
 
   // Cuotas y fijos
-  { seccion: 'Cuotas y fijos', nombre: 'cuotas', uso: '[nueva ... | cartola ...]', descripcion: 'Todas tus compras en cuotas (activas y terminadas) por titular', menu: 4, menuDescripcion: 'Mis compras en cuotas' },
-  { seccion: 'Cuotas y fijos', nombre: 'fijo', uso: '<nombre> <monto> [el <día>]', descripcion: 'Agregar un gasto fijo (por ejemplo: /fijo arriendo 350 mil el 5)' },
-  { seccion: 'Cuotas y fijos', nombre: 'fijos', descripcion: 'Ver tus gastos fijos, editarlos o desactivarlos' },
+  { seccion: 'Cuotas y fijos', nombre: 'cuotas', uso: '[nueva ... | cartola ...]', ejemplo: '/cuotas', descripcion: 'Todas tus compras en cuotas (activas y terminadas) por titular', menu: 4, menuDescripcion: 'Mis compras en cuotas' },
+  { seccion: 'Cuotas y fijos', nombre: 'fijo', uso: '<nombre> <monto> [el <día>]', ejemplo: '/fijo arriendo 350 mil el 5', descripcion: 'Agregar un gasto fijo' },
+  { seccion: 'Cuotas y fijos', nombre: 'fijos', ejemplo: '/fijos', descripcion: 'Ver tus gastos fijos, editarlos o desactivarlos' },
 
   // Cuentas y datos
-  { seccion: 'Cuentas y datos', nombre: 'cuentas', alias: ['datosguardados'], descripcion: 'Tus cuentas con vínculos, titulares, cuotas y totales', menu: 3, menuDescripcion: 'Mis cuentas, vínculos y datos guardados' },
-  { seccion: 'Cuentas y datos', nombre: 'estadocuenta', alias: ['cartolas', 'historial'], uso: '[últimos 4 dígitos o titular]', descripcion: 'Revisar tus estados de cuenta guardados por año y mes, y descargar la cartola' },
-  { seccion: 'Cuentas y datos', nombre: 'resetcuenta', alias: ['limpiarcuenta'], uso: '[últimos 4 dígitos] [mes 1 | enero 2026 | mes 1 a 3]', descripcion: 'Borrar las importaciones (o todo) de una cuenta, o solo de un mes o rango, con respaldo y Deshacer' },
-  { seccion: 'Cuentas y datos', nombre: 'savecard', alias: ['nuevacuenta'], uso: '<descripción>', descripcion: 'Crear una cuenta o tarjeta (con los últimos 4 dígitos)' },
-  { seccion: 'Cuentas y datos', nombre: 'editarcuenta', alias: ['editartarjeta'], descripcion: 'Editar una cuenta o tarjeta: nombre, tipo, banco, titular, dígitos, vínculo y predeterminada' },
-  { seccion: 'Cuentas y datos', nombre: 'borrarcuenta', uso: '[número]', descripcion: 'Desactivar una cuenta (sus movimientos se conservan)' },
-  { seccion: 'Cuentas y datos', nombre: 'savetrans', descripcion: 'Guardar tus datos de transferencia (para que te depositen)' },
-  { seccion: 'Cuentas y datos', nombre: 'misdatos', descripcion: 'Ver tus datos de transferencia guardados' },
-  { seccion: 'Cuentas y datos', nombre: 'datos', uso: '<alias o banco>', descripcion: 'Pedir los datos de transferencia de una de tus cuentas' },
-  { seccion: 'Cuentas y datos', nombre: 'borrardatos', uso: '[número]', descripcion: 'Desactivar datos de transferencia' },
+  { seccion: 'Cuentas y datos', nombre: 'cuentas', alias: ['datosguardados'], ejemplo: '/cuentas', descripcion: 'Tus cuentas con vínculos, titulares, cuotas y totales', menu: 3, menuDescripcion: 'Mis cuentas, vínculos y datos guardados' },
+  { seccion: 'Cuentas y datos', nombre: 'estadocuenta', alias: ['cartolas', 'historial'], uso: '[últimos 4 dígitos o titular]', ejemplo: '/estadocuenta 8263', descripcion: 'Revisar tus estados de cuenta guardados por año y mes, y descargar la cartola' },
+  { seccion: 'Cuentas y datos', nombre: 'resetcuenta', alias: ['limpiarcuenta'], uso: '[últimos 4 dígitos] [mes 1 | enero 2026 | mes 1 a 3]', ejemplo: '/resetcuenta 8263 mes 1', descripcion: 'Borrar las importaciones (o todo) de una cuenta, o solo de un mes o rango, con respaldo y Deshacer' },
+  { seccion: 'Cuentas y datos', nombre: 'savecard', alias: ['nuevacuenta'], uso: '<descripción>', ejemplo: '/savecard tarjeta débito FAN banco de chile terminada en 1234', descripcion: 'Crear una cuenta o tarjeta (con los últimos 4 dígitos)' },
+  { seccion: 'Cuentas y datos', nombre: 'editarcuenta', alias: ['editartarjeta'], uso: '[últimos 4 dígitos]', ejemplo: '/editarcuenta 8263', descripcion: 'Editar una cuenta o tarjeta: nombre, tipo, banco, titular, dígitos, vínculo y predeterminada' },
+  { seccion: 'Cuentas y datos', nombre: 'borrarcuenta', uso: '[número]', ejemplo: '/borrarcuenta 2', descripcion: 'Desactivar una cuenta (sus movimientos se conservan)' },
+  { seccion: 'Cuentas y datos', nombre: 'savetrans', ejemplo: '/savetrans', descripcion: 'Guardar tus datos de transferencia (para que te depositen)' },
+  { seccion: 'Cuentas y datos', nombre: 'misdatos', ejemplo: '/misdatos', descripcion: 'Ver tus datos de transferencia guardados' },
+  { seccion: 'Cuentas y datos', nombre: 'datos', uso: '<alias o banco>', ejemplo: '/datos fan', descripcion: 'Pedir los datos de transferencia de una de tus cuentas' },
+  { seccion: 'Cuentas y datos', nombre: 'borrardatos', uso: '[número]', ejemplo: '/borrardatos 1', descripcion: 'Desactivar datos de transferencia' },
 
   // Categorías y reglas
-  { seccion: 'Categorías y reglas', nombre: 'categorias', descripcion: 'Ver las categorías' },
-  { seccion: 'Categorías y reglas', nombre: 'categoria', uso: 'nueva <nombre>', descripcion: 'Crear una categoría' },
-  { seccion: 'Categorías y reglas', nombre: 'regla', uso: '<texto> <categoría>', descripcion: 'Categorizar solo lo que contenga ese texto (sin argumentos: lista las reglas)' },
+  { seccion: 'Categorías y reglas', nombre: 'categorias', ejemplo: '/categorias', descripcion: 'Ver las categorías' },
+  { seccion: 'Categorías y reglas', nombre: 'categoria', uso: 'nueva <nombre>', ejemplo: '/categoria nueva Mascotas', descripcion: 'Crear una categoría' },
+  { seccion: 'Categorías y reglas', nombre: 'regla', uso: '<texto> <categoría>', ejemplo: '/regla uber transporte', descripcion: 'Categorizar solo lo que contenga ese texto (sin argumentos: lista las reglas)' },
 
   // Sistema
-  { seccion: 'Sistema', nombre: 'update', descripcion: 'Actualizar la app y reiniciarla (solo en el servidor)', menu: 6, menuDescripcion: 'Actualizar y reiniciar la app' },
-  { seccion: 'Sistema', nombre: 'reboot', descripcion: 'Reiniciar la app (solo en el servidor)' },
-  { seccion: 'Sistema', nombre: 'reset', descripcion: 'Empezar de cero: respaldo, doble confirmación y opción de restaurar' }
+  { seccion: 'Sistema', nombre: 'update', ejemplo: '/update', descripcion: 'Actualizar la app y reiniciarla (solo en el servidor)', menu: 6, menuDescripcion: 'Actualizar y reiniciar la app' },
+  { seccion: 'Sistema', nombre: 'reboot', ejemplo: '/reboot', descripcion: 'Reiniciar la app (solo en el servidor)' },
+  { seccion: 'Sistema', nombre: 'reset', ejemplo: '/reset', descripcion: 'Empezar de cero: respaldo, doble confirmación y opción de restaurar' }
 ];
 
 /** Todos los nombres y alias (sin la barra) que el bot atiende */
@@ -83,35 +85,54 @@ export function lineaComando(c, esc = (t) => t) {
   return `/${c.nombre}${alias ? ` (o ${alias})` : ''}${c.uso ? ` ${esc(c.uso)}` : ''} - ${esc(c.descripcion)}`;
 }
 
+/** La línea del comando y debajo "Ej: ..." (así se muestra en /help) */
+export function entradaComando(c, esc = (t) => t) {
+  return `${lineaComando(c, esc)}\nEj: ${esc(c.ejemplo)}`;
+}
+
 /**
  * La ayuda completa lista para enviar: la lista de todos los comandos por sección y, al final, los ejemplos. Si no cabe en un
  * mensaje de Telegram, se parte en varios (siempre entre líneas, nunca a la mitad de una).
  * `esc` escapa el texto para HTML; `saludo` es una primera línea opcional (para /start).
  */
 export function mensajesAyuda(esc = (t) => t, { saludo = null } = {}) {
+  // Cada bloque es un grupo de entradas que no se debe cortar a la mitad; una sección grande se parte entre entradas, nunca dentro de una
   const bloques = [];
-  if (saludo) bloques.push(`${saludo}\n`);
-  bloques.push('<b>Comandos</b> (también puedes escribirme como hablas)\n');
+  if (saludo) bloques.push([`${saludo}\n`]);
+  bloques.push(['<b>Comandos</b> (también puedes escribirme como hablas)']);
   for (const seccion of SECCIONES) {
-    const lineas = COMANDOS.filter(c => c.seccion === seccion).map(c => lineaComando(c, esc));
-    if (lineas.length === 0) continue;
-    bloques.push(`<b>${esc(seccion)}</b>\n${lineas.join('\n')}\n`);
+    const entradas = COMANDOS.filter(c => c.seccion === seccion).map(c => entradaComando(c, esc));
+    if (entradas.length === 0) continue;
+    bloques.push([`<b>${esc(seccion)}</b>`, ...entradas]);
   }
-  bloques.push(
-    '<b>Ejemplos de frases</b>\n' +
-    EJEMPLOS.map(e => `• ${esc(e.titulo)}: ${esc(e.frase)}`).join('\n')
-  );
+  bloques.push(['<b>Ejemplos de frases</b>', ...EJEMPLOS.map(e => `• ${esc(e.titulo)}: ${esc(e.frase)}`)]);
 
-  // Se agrupan los bloques en mensajes sin pasar del límite (un bloque nunca se parte)
   const mensajes = [];
   let actual = '';
+  const cerrar = () => {
+    if (actual.trim()) mensajes.push(actual.trimEnd());
+    actual = '';
+  };
   for (const bloque of bloques) {
-    if (actual && actual.length + bloque.length + 1 > LIMITE_MENSAJE) {
-      mensajes.push(actual.trimEnd());
-      actual = '';
+    const texto = `${bloque.join('\n')}\n`;
+    if (actual && actual.length + texto.length + 1 > LIMITE_MENSAJE) cerrar();
+    if (texto.length <= LIMITE_MENSAJE) {
+      actual += `${texto}\n`;
+      continue;
     }
-    actual += `${bloque}\n`;
+    // Una sección que sola no cabe: se reparte por entradas, repitiendo su título en cada mensaje
+    const [titulo, ...entradas] = bloque;
+    let parcial = `${titulo}\n`;
+    for (const entrada of entradas) {
+      if (parcial.length + entrada.length + 1 > LIMITE_MENSAJE) {
+        actual += parcial;
+        cerrar();
+        parcial = `${titulo} (cont.)\n`;
+      }
+      parcial += `${entrada}\n`;
+    }
+    actual += `${parcial}\n`;
   }
-  if (actual.trim()) mensajes.push(actual.trimEnd());
+  cerrar();
   return mensajes;
 }
