@@ -31,7 +31,7 @@ export const COMANDOS = [
   { seccion: 'Finanzas', nombre: 'pago', uso: '<persona> <monto>', descripcion: 'Registrar el pago de una deuda (por ejemplo: /pago Pedro 20 mil)' },
 
   // Cuotas y fijos
-  { seccion: 'Cuotas y fijos', nombre: 'cuotas', uso: '[nueva ... | cartola ...]', descripcion: 'Compras en cuotas y lo del mes por titular', menu: 4, menuDescripcion: 'Mis compras en cuotas' },
+  { seccion: 'Cuotas y fijos', nombre: 'cuotas', uso: '[nueva ... | cartola ...]', descripcion: 'Todas tus compras en cuotas (activas y terminadas) por titular', menu: 4, menuDescripcion: 'Mis compras en cuotas' },
   { seccion: 'Cuotas y fijos', nombre: 'fijo', uso: '<nombre> <monto> [el <día>]', descripcion: 'Agregar un gasto fijo (por ejemplo: /fijo arriendo 350 mil el 5)' },
   { seccion: 'Cuotas y fijos', nombre: 'fijos', descripcion: 'Ver tus gastos fijos, editarlos o desactivarlos' },
 

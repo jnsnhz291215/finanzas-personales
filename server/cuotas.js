@@ -32,6 +32,15 @@ function normalizarFila(f) {
   };
 }
 
+/** Suma real de los pagos ligados a cada compra (movimientos con compra_cuota_id): Map compraId -> total */
+export async function pagosRealesPorCompra() {
+  const query = await consulta();
+  const [filas] = await query(
+    'SELECT compra_cuota_id, SUM(monto) AS total FROM movimientos WHERE compra_cuota_id IS NOT NULL GROUP BY compra_cuota_id'
+  );
+  return new Map(filas.map(f => [Number(f.compra_cuota_id), Number(f.total)]));
+}
+
 /** Compras en curso (activas y no terminadas); con incluirTerminadas también las terminadas */
 export async function listarCompras({ incluirTerminadas = false } = {}) {
   const query = await consulta();

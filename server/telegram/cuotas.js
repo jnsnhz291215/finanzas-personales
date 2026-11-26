@@ -260,7 +260,18 @@ export function detectarConsultaCuotas(texto) {
   if (!original || original.startsWith('/') || /\d/.test(original) || analizarMonto(original)) return null;
   const norm = normalizar(original).replace(/[?¿!¡.,]/g, ' ').replace(/\s+/g, ' ').trim();
 
+  // "cuotas", "mis cuotas", "que cuotas tengo": la lista completa
+  if (/^(?:mis\s+)?cuotas(?:\s+pendientes)?$|^(?:que|cuales)\s+cuotas\s+(?:tengo|debo|me\s+quedan)$|^compras\s+en\s+cuotas$/.test(norm)) {
+    return { tipo: 'lista', termino: null };
+  }
+
   let m = /\bcuanto\s+(?:le\s+)?debo\s+(?:a|al)\s+(.+)$/.exec(norm);
+  if (m) return { tipo: 'acreedor', termino: tokens(m[1]).join(' ') || null };
+
+  m = /\bcuanto\s+(?:me\s+)?debo\s+(?:de|del|de\s+la)\s+(.+)$/.exec(norm);
+  if (m) return { tipo: 'compra', termino: tokens(m[1]).join(' ') || null };
+
+  m = /\bcuanto\s+(?:le\s+)?debo\s+(?:a|al)\s+(.+)$/.exec(norm);
   if (m) return { tipo: 'acreedor', termino: tokens(m[1]).join(' ') || null };
 
   m = /\bcuantas\s+cuotas\s+(?:me\s+)?(?:quedan|faltan)(?:\s+(?:de|del|de\s+la)\s+(.+))?$/.exec(norm);
@@ -330,6 +341,76 @@ export function calzarConCartola(descripcion, compras) {
  * Líneas "Valeska: cuotas del mes $130.000 · pagado $85.000 · pendiente $45.000" por titular. `titulares` viene de
  * resumenMensualPorTitular(); `dinero` da formato a un monto y `esc` escapa el nombre (HTML).
  */
+const mayuscula = (t) => { const s = String(t ?? '').trim(); return s ? s[0].toUpperCase() + s.slice(1) : s; };
+
+/**
+ * Cada compra con lo pagado y lo que se debe. Pagado = suma real de los pagos ligados a la compra si existe; si no, cuotas
+ * pagadas x valor de la cuota. Se debe = total de la compra menos lo pagado (nunca negativo). `pagosReales`: Map compraId -> suma.
+ */
+export function detalleCompra(c, pagosReales = new Map()) {
+  const total = Number(c.total_cuotas);
+  const pagadas = Number(c.cuotas_pagadas);
+  const cuota = Number(c.monto_cuota);
+  const totalCompra = c.monto_total ? Number(c.monto_total) : cuota * total;
+  const real = pagosReales.get(Number(c.id)) ?? 0;
+  const pagado = real > 0 ? real : pagadas * cuota;
+  const terminada = Boolean(c.terminada) || pagadas >= total;
+  return { compra: c, total, pagadas, cuota, pagado, debe: terminada ? 0 : Math.max(0, totalCompra - pagado), quedan: Math.max(0, total - pagadas), terminada };
+}
+
+/** "Macbook 6/12 · cuota $X · pagado $Y · se debe $Z · quedan N cuotas" o "Macbook 12/12 · pagado $Y · terminada" */
+export function lineaDetalleCompra(d, dinero, esc = (t) => t) {
+  const nombre = esc(mayuscula(d.compra.alias));
+  if (d.terminada) return `${nombre} ${d.total}/${d.total} · pagado ${dinero(d.pagado)} · terminada`;
+  return `${nombre} ${d.pagadas}/${d.total} · cuota ${dinero(d.cuota)} · pagado ${dinero(d.pagado)} · se debe ${dinero(d.debe)} · ` +
+    `${d.quedan === 1 ? 'queda 1 cuota' : `quedan ${d.quedan} cuotas`}`;
+}
+
+/**
+ * Todas las compras en cuotas (activas y terminadas), agrupadas por titular: primero las activas y después las terminadas,
+ * con el total pagado y lo que se debe de cada grupo y un total general. Devuelve las líneas (sin cortar ninguna).
+ */
+export function lineasListaCuotas(compras, pagosReales, dinero, esc = (t) => t) {
+  const grupos = new Map();
+  for (const c of compras) {
+    const clave = normalizar(c.acreedor).trim();
+    const g = grupos.get(clave) ?? { titular: c.acreedor, items: [] };
+    g.items.push(detalleCompra(c, pagosReales));
+    grupos.set(clave, g);
+  }
+  const lineas = [];
+  let pagadoTotal = 0;
+  let debeTotal = 0;
+  for (const g of [...grupos.values()].sort((a, b) => a.titular.localeCompare(b.titular))) {
+    const activas = g.items.filter(d => !d.terminada).sort((a, b) => a.compra.alias.localeCompare(b.compra.alias));
+    const terminadas = g.items.filter(d => d.terminada).sort((a, b) => a.compra.alias.localeCompare(b.compra.alias));
+    const pagado = g.items.reduce((s, d) => s + d.pagado, 0);
+    const debe = g.items.reduce((s, d) => s + d.debe, 0);
+    pagadoTotal += pagado;
+    debeTotal += debe;
+    lineas.push(`<b>${esc(g.titular)}</b>`);
+    for (const d of [...activas, ...terminadas]) lineas.push(lineaDetalleCompra(d, dinero, esc));
+    lineas.push(`Total pagado ${dinero(pagado)} · se debe ${dinero(debe)}`, '');
+  }
+  lineas.push(`<b>Total general</b>: pagado ${dinero(pagadoTotal)} · se debe ${dinero(debeTotal)}`);
+  return lineas;
+}
+
+/** Junta líneas en mensajes de a lo más `limite` caracteres sin cortar ninguna línea */
+export function partirEnMensajes(lineas, limite = 3500) {
+  const mensajes = [];
+  let actual = '';
+  for (const linea of lineas) {
+    if (actual && actual.length + linea.length + 1 > limite) {
+      mensajes.push(actual.trimEnd());
+      actual = '';
+    }
+    actual += `${linea}\n`;
+  }
+  if (actual.trim()) mensajes.push(actual.trimEnd());
+  return mensajes;
+}
+
 export function lineasPorTitular(titulares, dinero, esc = (t) => t) {
   return titulares.map(t =>
     `<b>${esc(t.titular)}</b>: cuotas del mes ${dinero(t.cuotasMes)} · pagado ${dinero(t.pagado)} · pendiente ${dinero(t.pendiente)}`

@@ -5,6 +5,8 @@ import {
   validarPagoCuota,
   buscarCompras,
   detectarConsultaCuotas,
+  lineasListaCuotas,
+  partirEnMensajes,
   proximaFechaPago,
   resumenCompra,
   calzarConCartola
@@ -201,5 +203,34 @@ describe('calzarConCartola', () => {
   test('"transferencia a Valeska" calza con el alias de la cartola', () => {
     expect(calzarConCartola('Transferencia a Valeska', [MAC, CELULAR]).map(c => c.id)).toEqual([1]);
     expect(calzarConCartola('Transferencia a Pedro', [MAC, CELULAR])).toEqual([]);
+  });
+});
+
+describe('lista completa de cuotas', () => {
+  const d = (n) => `$${n}`;
+  const compras = [
+    { id: 1, alias: 'macbook', acreedor: 'Valeska', monto_total: null, monto_cuota: 100, total_cuotas: 12, cuotas_pagadas: 6, terminada: false },
+    { id: 2, alias: 'tele', acreedor: 'Valeska', monto_total: null, monto_cuota: 50, total_cuotas: 6, cuotas_pagadas: 6, terminada: true }
+  ];
+
+  test('activas primero, terminadas después, con totales por titular y general', () => {
+    const lineas = lineasListaCuotas(compras, new Map(), d);
+    expect(lineas[1]).toBe('Macbook 6/12 · cuota $100 · pagado $600 · se debe $600 · quedan 6 cuotas');
+    expect(lineas[2]).toBe('Tele 6/6 · pagado $300 · terminada');
+    expect(lineas[3]).toBe('Total pagado $900 · se debe $600');
+    expect(lineas[lineas.length - 1]).toContain('Total general');
+  });
+
+  test('usa la suma real de pagos si existe', () => {
+    expect(lineasListaCuotas(compras, new Map([[1, 550]]), d)[1]).toContain('pagado $550');
+  });
+
+  test('parte los mensajes sin cortar líneas', () => {
+    expect(partirEnMensajes(['a'.repeat(3000), 'b'.repeat(600)])).toHaveLength(2);
+  });
+
+  test('frases con regla local', () => {
+    expect(detectarConsultaCuotas('cuotas')).toEqual({ tipo: 'lista', termino: null });
+    expect(detectarConsultaCuotas('cuánto debo del mac')).toEqual({ tipo: 'compra', termino: 'mac' });
   });
 });

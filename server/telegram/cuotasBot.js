@@ -21,6 +21,10 @@ import {
   detectarConsultaCuotas,
   resumenCompra,
   lineasPorTitular,
+  lineasListaCuotas,
+  lineaDetalleCompra,
+  detalleCompra,
+  partirEnMensajes,
   normalizar
 } from './cuotas.js';
 import {
@@ -32,7 +36,8 @@ import {
   registrarPagoCuota,
   vincularMovimientoACuota,
   buscarCuotasPorCartola,
-  resumenMensualPorTitular
+  resumenMensualPorTitular,
+  pagosRealesPorCompra
 } from '../cuotas.js';
 
 const ESPERA_MS = 5 * 60 * 1000;
@@ -86,31 +91,37 @@ export function crearCuotas(ctx) {
   }
 
   async function enviarLista(chatId) {
-    const compras = await listarCompras();
-    if (compras.length === 0) {
+    // Todas: activas y terminadas, de todos los titulares
+    const todas = await listarCompras({ incluirTerminadas: true });
+    if (todas.length === 0) {
       await enviar(chatId,
-        'No tienes compras en cuotas en curso.\n\nCrea una con: /cuotas nueva mac 12 cuotas de 85 mil tía, pagadas 6'
+        'No tienes compras en cuotas.\n\nCrea una con: /cuotas nueva mac 12 cuotas de 85 mil tía, pagadas 6'
       );
       return;
     }
     const hoy = fechaHoySantiago();
-    const total = compras.reduce((suma, c) => suma + resumenCompra(c, hoy).montoPendiente, 0);
     const titulares = await resumenMensualPorTitular(hoy);
-    await enviar(chatId,
-      '<b>Compras en cuotas:</b>\n\n' +
-      compras.map((c, i) => lineaCompra(c, hoy, `${i + 1}. `)).join('\n') +
-      `\n\nTotal pendiente: ${dinero(total)}` +
-      (titulares.length > 0 ? `\n\n<b>Este mes, por titular:</b>\n${lineasPorTitular(titulares, dinero, esc).join('\n')}` : '') +
-      '\n\nPaga una cuota escribiendo, por ejemplo: pagué cuota tía mac',
-      {
-        reply_markup: {
-          inline_keyboard: compras.map((c, i) => [{
-            text: `Desactivar ${i + 1}. ${c.alias}`.slice(0, 40),
-            callback_data: `cqe_${c.id}`
-          }])
-        }
-      }
-    );
+    const activas = todas.filter(c => !detalleCompra(c).terminada);
+    const lineas = [
+      '<b>Compras en cuotas</b>',
+      '',
+      ...lineasListaCuotas(todas, await pagosRealesPorCompra(), dinero, esc),
+      ...(titulares.length > 0 ? ['', '<b>Este mes, por titular:</b>', ...lineasPorTitular(titulares, dinero, esc)] : []),
+      '',
+      'Paga una cuota escribiendo, por ejemplo: pagué cuota tía mac'
+    ];
+    const mensajes = partirEnMensajes(lineas);
+    for (let i = 0; i < mensajes.length; i++) {
+      const ultimo = i === mensajes.length - 1;
+      // Los botones para desactivar una compra van en el último mensaje
+      await enviar(chatId, mensajes[i], ultimo && activas.length > 0
+        ? {
+            reply_markup: {
+              inline_keyboard: activas.map(c => [{ text: `Desactivar ${c.alias}`.slice(0, 40), callback_data: `cqe_${c.id}` }])
+            }
+          }
+        : undefined);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -429,6 +440,10 @@ export function crearCuotas(ctx) {
 
   /** "cuánto le debo a mi tía", "cuántas cuotas me quedan del mac". true si respondió. */
   async function responderConsulta(chatId, consulta) {
+    if (consulta.tipo === 'lista') {
+      await enviarLista(chatId);
+      return true;
+    }
     const compras = await listarCompras();
     if (compras.length === 0) return false;
 
@@ -441,8 +456,9 @@ export function crearCuotas(ctx) {
     if (coinciden.length === 0) return false;
 
     const hoy = fechaHoySantiago();
+    const pagos = await pagosRealesPorCompra();
     const total = coinciden.reduce((suma, c) => suma + resumenCompra(c, hoy).montoPendiente, 0);
-    const lineas = coinciden.map(c => lineaCompra(c, hoy, '- '));
+    const lineas = coinciden.map(c => lineaDetalleCompra(detalleCompra(c, pagos), dinero, esc));
 
     if (consulta.tipo === 'acreedor') {
       const nombre = esc(coinciden[0].acreedor);
